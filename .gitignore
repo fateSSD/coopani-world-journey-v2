@@ -1,0 +1,18 @@
+# 依赖与构建产物
+node_modules/
+*.tgz
+
+# 注意：`dist/` 不忽略。
+# 这里的 dist/webui.js 与 dist/webui.css 是**手写源码**，不是构建产物
+# （文件头自己写着「原生 ES module，不打包」）。旧版 .gitignore 把它们挡在外面，
+# 一旦 git init，首页要改的那个文件就不在版本控制里了 —— 2026-11-10 改。
+
+# wrangler 本地状态（账号缓存、临时包）
+.wrangler/
+.dev.vars
+
+# 本地留的密钥备份 —— 绝不入库
+.admin-key.local.txt
+
+# 生成的报告（里面全是她的照片路径，按需自己留）
+reports/
