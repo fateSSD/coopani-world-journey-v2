@@ -132,6 +132,11 @@ pre code{background:none;border:0;padding:0;white-space:pre;font-size:inherit;co
 .tbl-3c th:nth-child(1),.tbl-3c td:nth-child(1){width:40%}
 .tbl-3c th:nth-child(2),.tbl-3c td:nth-child(2){width:21%}
 
+/* 11 节那张：第一列是完整 URL（22 字符等宽），21% 放不下会被断成 github.c|om */
+.tbl-3d>table{table-layout:fixed;min-width:600px}
+.tbl-3d th:nth-child(1),.tbl-3d td:nth-child(1){width:34%}
+.tbl-3d th:nth-child(2),.tbl-3d td:nth-child(2){width:16%}
+
 .badge{display:inline-block;font-size:11px;padding:1px 7px;border-radius:20px;font-weight:600;
   white-space:nowrap;line-height:1.7}
 .b-ok{background:var(--ok-bg);color:var(--ok);border:1px solid #cfe8da}
@@ -158,9 +163,9 @@ footer b{color:var(--tx2)}
 <div class="tip">
   <b>这份报告只做一件事：</b>把「哪些静态数据可以改成运行时生成或查询」列清楚，
   每条都标上性质（事实还是判断）、代价和风险。
-  <b>正文 01–06 是拍板之前写的，一个字没改</b>；07–11 是当天做出来的、
-  发出去之后又补的落地记录 —— 两边对得上对不上，你自己看。08 往后的内容是
-  <b>1.6.18 上线当天下午</b>补的，不是事后回忆。
+  <b>正文 01–06 是拍板之前写的，一个字没改</b>；07–12 是当天做出来的、
+  发出去之后又补的落地记录 —— 两边对得上对不上，你自己看。08–10 是
+  <b>1.6.18 上线当天下午</b>补的，11–12 是<b>同一天推完公开仓库、回完 #659</b> 之后补的。
 </div>
 
 <div class="summary">
@@ -813,12 +818,114 @@ if (!impl) return undefined;   // 没人接，把电话收回去
 </div>
 
 
-<h2><span class="n">11</span>现在还剩什么</h2>
+<h2><span class="n">11</span>仓库是「推」上去的，不是 clone 出来的</h2>
+
+<p>
+  这一步本来以为十分钟的事，实际卡了两次，两次都不是小问题。
+</p>
+
+<h3>第一次：<code>git push</code> 挂了 8 分 28 秒，零输出</h3>
+
+<p>
+  推送命令发出去之后没有任何反应 —— 不是报错，是一个字都不吐。等了 8 分半手动停掉，
+  开始怀疑是凭证或者分支名的问题，结果都不是：<b>是这台机器到 <code>github.com</code> 的路太慢。</b>
+</p>
+
+<div class="tbl tbl-3d">
+  <table>
+    <thead><tr><th>测的地址</th><th>单请求耗时</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr class="hl"><td><code>https://github.com</code>（主站）</td><td><b>12 秒</b></td>
+        <td>能通，不是墙。慢到不能用</td></tr>
+      <tr class="hl"><td><code>https://api.github.com</code></td><td><b>3 秒</b></td>
+        <td>同一台机器，同一个代理，快四倍</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <code>git push</code> 不是一次 HTTP 请求，是十来次往返协商：查 ref、谈能力、传 pack、
+  等确认。单次 12 秒乘上去，8 分钟不够走完一轮。而 API 是「一问一答」，每次 3 秒，
+  请求数多但每次都是终局。
+</p>
+
+<div class="bad-note">
+  <b>判据：</b>「命令没输出」不等于「卡在认证」。先量一下目标域名的单请求耗时 ——
+  能通但慢到十几秒的，任何需要多次往返的 git 操作都别指望。
+</div>
+
+<h3>改走 Git Data API：158 个文件，35 秒</h3>
+
+<p>
+  这条路是四步，本质是「手工拼一个 commit」：
+</p>
+
+<ol>
+  <li><code>POST /git/blobs</code> —— 一个文件一个，拿回每份内容的 sha</li>
+  <li><code>POST /git/trees</code> —— 把「路径 → 文件 sha」列成一张树，拿回树 sha</li>
+  <li><code>POST /git/commits</code> —— 挂上树和父提交，拿回提交 sha</li>
+  <li><code>PATCH /git/refs/heads/main</code> —— 把分支指向这个提交</li>
+</ol>
+
+<h3>第二个坑：差点凭一个样本判「推对了」</h3>
+
+<p>
+  第一版是用工作区里的文件直接上传的。传完挑四个文件比 sha，<code>README.md</code> 对得上，
+  另外三个全不对 —— 当时第一反应是「上传过程损坏了」。
+</p>
+
+<p>
+  实际原因是行尾：<b>工作区是 CRLF，git 对象里存的是 LF。</b>而 <code>README.md</code>
+  恰好没有换行结构，所以只有它看起来是对的。<b>如果只挑了它一个来验，这件事就漏过去了。</b>
+</p>
+
+<p>
+  正确做法不是改文件、也不是重传，而是用 <code>git cat-file blob</code> 取出 git 里的原始字节去上传 ——
+  内容相同，sha 自然相同，于是两边可以逐文件对账，而不是「看着差不多」。
+</p>
+
+<div class="tbl tbl-3a">
+  <table>
+    <thead><tr><th>校验项</th><th>结果</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr class="hl"><td>整棵树的 sha</td><td><b>相等</b></td>
+        <td>远端 <code>main</code> 的 tree == 本地 <code>public</code> 分支的 tree</td></tr>
+      <tr class="hl"><td>逐文件 blob sha</td><td><b>158 个全等</b></td>
+        <td>含中文路径的 <code>docs/静态表搬迁可行性清单.html</code></td></tr>
+      <tr><td>白名单生效</td><td>无越权</td>
+        <td>顶层没有 <code>cloud/</code>、<code>data-research/</code>、<code>.workbuddy/</code>、
+          <code>PROGRESS.md</code>、<code>_状态.md</code></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>收尾也绊了一下</h3>
+
+<p>
+  切回 <code>master</code> 时被两个文件挡住：<code>tools/.play-inbox.txt</code> 与
+  <code>docs/reply-659.md</code>。它们在 <code>public</code> 分支上被剔掉了，在
+  <code>master</code> 上仍然被跟踪，<code>checkout</code> 认为「你要切过去就得覆盖未跟踪文件」，
+  于是拒绝。
+</p>
+
+<p>
+  用 <code>-f</code> 切回之后，恢复出来的 <code>.play-inbox.txt</code> 字节数变大了 —— 那是
+  LF 被转成 CRLF 的正常结果，用 <code>diff --strip-trailing-cr</code> 核过内容一致。
+  <b>「字节数变了」和「内容变了」是两件事，别混。</b>
+</p>
+
+
+<h2><span class="n">12</span>现在还剩什么</h2>
 
 <div class="tbl tbl-3c">
   <table>
     <thead><tr><th>事项</th><th>性质</th><th>状态</th></tr></thead>
     <tbody>
+      <tr class="hl"><td>回复市场审核 #659</td><td>挂了 11 天</td>
+        <td><b>已发</b>（11-13 08:04 UTC），等作者回</td></tr>
+      <tr class="hl"><td>市场索引还停在 1.6.17</td><td>cron 实测 5–8 小时才跑一次</td>
+        <td>开了 <code>[sync]</code> issue <b>#910</b>，<b>100 秒后已收录 1.6.19</b>，
+          issue 被 Action 自动关闭（WebUI 还要等约 10 分钟 CDN 缓存）</td></tr>
       <tr><td>夜景与景色描写改成运行时生成（第二步）</td><td>没做</td>
         <td>跟这次反馈无关，单独一轮做</td></tr>
       <tr class="hl"><td>她会不会主动调 <code>journey_eat</code></td><td><b>测不出来</b></td>
@@ -856,8 +963,11 @@ if (!impl) return undefined;   // 没人接，把电话收回去
   <p style="margin:8px 0 0">
     体积均为 UTF-8 字节数按 1024 折算；「约 171 KB」为按上表相减的估算值，不是实测。
     07 的落地记录对应 <b>1.6.18（已发布）</b>，测试 996 / 996；
-    08 之后是发版当天下午与次日的补记，当前工作区 1.6.19 <b>1007 / 1007 通过</b>。
-    外部单据：Discussion #586、市场审核 #659 / #801、宿主 issue #714。
+    08–10 是发版当天下午的补记，11–12 是同日推公开仓库、回 #659 之后补的；
+    当前工作区 1.6.19 <b>已发布到 npm</b>，测试 1007 / 1007 通过。
+    外部单据：Discussion #586、市场审核 #659 / #801、宿主 issue #714、同步请求 #910。
+    耗时与 sha 比对来自本机实调（2026-11-13）；<code>[sync]</code> issue 的触发条件引自
+    <code>.github/workflows/sync.yml</code>（认标题含 <code>sync</code>，不看标签）。
     <b>报告由 Chloé 生成</b>。
   </p>
 </footer>
