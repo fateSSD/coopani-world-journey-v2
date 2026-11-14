@@ -47,6 +47,28 @@ CREATE INDEX IF NOT EXISTS idx_presence_date
 CREATE INDEX IF NOT EXISTS idx_presence_at
   ON presence (at);
 
+-- ------------------------------------------------------------------
+-- `(at, uid)` 覆盖索引（2026-11-14）
+--
+-- **这条索引是省额度用的，不是省时间的。**
+--
+-- `COUNT(DISTINCT uid) ... WHERE at >= ?` 原本被优化器选中 `idx_presence_uid`
+-- （`uid, at DESC`）—— 那是覆盖索引，但**按 uid 排序**，`at >= ?` 无法定位起点，
+-- 只能从头扫到尾。实测：表里 1,647 行，每次 COUNT 读 **1,663 行**。
+--
+-- 而 `(at, uid)` 能按 `at` 做范围定位、且 `uid` 就在索引里不用回表：
+-- 同一个查询读 **57 行**。**差 29 倍。**
+--
+-- D1 免费版按「读行数」计量（500 万/天），这一条就是 11-10 到 11-13 反复
+-- 顶穿额度的真正原因 —— 不是查询次数多，是每次扫全表。
+--
+-- **优化器不会自己选它**（仍偏好 `idx_presence_uid` 的覆盖性），所以
+-- worker.js 里那几处 COUNT 都写了 `INDEXED BY idx_presence_at_uid` 强制指定。
+-- 改这些查询时**别把 INDEXED BY 删了** —— 删了不会报错，只会悄悄退回全表扫。
+-- ------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_presence_at_uid
+  ON presence (at, uid);
+
 /*
  * 限速计数器。
  *
@@ -155,105 +177,6 @@ CREATE INDEX IF NOT EXISTS idx_invites_owner ON invites (uid, date_key);
 -- 定时清理按过期时间批量删。
 CREATE INDEX IF NOT EXISTS idx_invites_exp ON invites (expires_at);
 
-/* ---------------- 同行卡（2026-11-11，Discussion #586） ---------------- */
-
-/*
- * 一起走过几天之后，互留的那张卡。
- *
- * ## 为什么有这张表
- *
- * 用户来信（原文是个孩子写的）：「约到一起的那几天里，让同行的伙伴能留下一个号，
- * 或者留一句话。不用多复杂，能让我在别处说一句『我在』就够了。」
- *
- * 在那之前，`presence` 只回答「谁在哪」、`invites` 只回答「谁想跟谁走」，
- * 散了之后什么都不剩 —— 名字都没记全就下车了。
- *
- * ## 边界（和「碰面归碰面，聊天归聊天」那条线对齐）
- *
- * 这不是聊天：没有回复、没有好友列表、没有未读、不能反复骚扰。
- * 一条邀约里的每个人最多留一张，留过就覆盖。**它是名片，不是信箱。**
- *
- * ## 主键为什么是 (id, uid)
- *
- * `id` 是邀约编号 —— 那段同行的锚；`uid` 是留卡的人。
- * 合起来保证「一段同行里一个人一张」，重复提交就是覆盖，天然幂等。
- *
- * `uid` **永远不出接口**：别人只该看见 pet、note、contact，看不见谁是谁。
- * 这条和 `invites.uid` 同一条线。
- *
- * ## 30 天
- *
- * 比 `invites` 的 24 小时长得多 —— 卡的意义就是「散伙之后还能找」，
- * 隔天就删等于没做。但也不留永久：这是别人给的号，
- * 一直挂着不合适，30 天足够一次「我下次去你那儿」的往来。
- */
-CREATE TABLE IF NOT EXISTS party_cards (
-  /* 邀约编号，16 位 hex。也是「同一段同行」的锚。 */
-  id      TEXT NOT NULL,
-  /* 留卡的人。永远不出接口。 */
-  uid     TEXT NOT NULL,
-  /* 留卡时的宠物名，已经过 safePet。 */
-  pet     TEXT NOT NULL,
-  /* 她写的那句话。唯一一段「她的话」的自由文本。 */
-  note    TEXT NOT NULL DEFAULT '',
-  /* 他留的号。**空串是正常值** —— 很多人不会填，那就不给。 */
-  contact TEXT NOT NULL DEFAULT '',
-  /* 真实写入时刻（ISO）。 */
-  at      TEXT NOT NULL,
-  /* 过期时刻。过了就没人取得到，由定时清理删掉。 */
-  exp     TEXT NOT NULL,
-  PRIMARY KEY (id, uid)
-);
-
--- 定时清理按过期批量删。
-CREATE INDEX IF NOT EXISTS idx_cards_exp ON party_cards (exp);
-
--- 取「这段同行里别人留了什么」：按 id 查，主键已经覆盖，这条索引只用于清理之外的分析。
-CREATE INDEX IF NOT EXISTS idx_cards_id ON party_cards (id);
-
-/* ---------------- 名片（2026-11-11，Discussion #586 的后半段） ---------------- */
-
-/*
- * 一段长期自我介绍。和「同行卡」是两回事，别混：
- *
- *   卡   = 某一段同行结束时的临别留言，按邀约编号存，一段一张
- *   名片 = 这个人本身的样子，全局一张，改了就覆盖
- *
- * ## 为什么要有
- *
- * 用户 chloveln 在讨论里提的做法：「给每条鱼加一个简介，鱼之间可以通过简介里
- * 提供的花语乡/星邮/客厅的 id 来找到对方加上好友」。他 11-10 回了「明天我试试看」。
- *
- * ## 可见性：只有同行过的人
- *
- * 这是这一版和 chloveln 提议最大的不同 —— **不做「请求-同意」**。
- * 理由不是省事：同意流程要求她知道「有人在请求」，而这个扩展没有通知通道，
- * 只能等下次碰面才说得出来。一个要等三天的同意，比不给更让人难受。
- *
- * 所以改成：**看得见的条件从「对方点了同意」换成「你们真的一起走过」**。
- * 一起走过几天的人，本来就知道彼此的存在；陌生人无论怎么请求都看不见。
- *
- * ## 为什么是 30 天
- *
- * 名片是「现在还想不想被人找到」的表达，不是档案。一直挂着不合适，
- * 30 天不续就等于自己收回去了。跟卡同一个尺度，用户不用记两套规矩。
- */
-CREATE TABLE IF NOT EXISTS profiles (
-  /* 跟 presence / invites 同一套匿名标识，按机器分。 */
-  uid  TEXT PRIMARY KEY,
-  /* 宠物名，已经过 safePet。 */
-  pet  TEXT NOT NULL,
-  /* 那段自我介绍。可以写花语乡/星邮/客厅的 id —— 用户自己要写什么就写什么。 */
-  text TEXT NOT NULL DEFAULT '',
-  /* 真实写入时刻（ISO）。 */
-  at   TEXT NOT NULL,
-  /* 过期时刻。30 天不续就查不到。 */
-  exp  TEXT NOT NULL
-);
-
--- 定时清理按过期批量删。
-CREATE INDEX IF NOT EXISTS idx_profiles_exp ON profiles (exp);
-
 /* ---------------- 人工标记（管理面板 · 2026-11-05） ---------------- */
 
 -- Cloudflare D1（SQLite）。和 `cloud/sight/schema.sql` 那张同名表是一个意思：
@@ -296,3 +219,40 @@ create index if not exists idx_invite_takers_id on invite_takers (id);
 -- 迁移：这张表之前的邀约（只走过 taken_by）补进来，seen 置 1 —— 那些发起者早就认领过了。
 insert or ignore into invite_takers (id, uid, pet, at, seen)
 select id, taken_by, taken_pet, at, 1 from invites where taken_by <> '';
+
+-- ------------------------------------------------------------------
+-- 足迹：她去过哪些城（2026-11-14）。
+--
+-- `presence` 只留 4 天，那是「池子」的数据；履历不该跟着池子一起被清掉。
+-- 只在「到达一座新城」时写（客户端的 `journey.arrive`），**不挂心跳上报** ——
+-- 心跳一天 72 次，挂上去就是把省下的额度原样烧回来。
+-- ------------------------------------------------------------------
+create table if not exists footprints (
+  uid      text not null,
+  city     text not null,
+  first_at text not null,
+  last_at  text not null,
+  visits   integer not null default 1,
+  primary key (uid, city)
+);
+
+create index if not exists idx_footprints_uid on footprints (uid, last_at desc);
+
+-- ------------------------------------------------------------------
+-- 路标：她在一座城留一句「这里值得来」（2026-11-14）。
+--
+-- 是**推荐**不是聊天 —— 只有去留，没有来回，所以冷门城市空着也成立。
+-- 一只鱼一城一天一条（重留覆盖旧的）；一城封顶 20 条，7 天过期。
+-- ------------------------------------------------------------------
+create table if not exists signposts (
+  id         text primary key,
+  uid        text not null,
+  pet        text not null,
+  city       text not null,
+  text       text not null,
+  at         text not null,
+  expires_at text not null
+);
+
+create index if not exists idx_signposts_city on signposts (city, at desc);
+create index if not exists idx_signposts_exp on signposts (expires_at);

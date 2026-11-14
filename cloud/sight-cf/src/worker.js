@@ -131,6 +131,81 @@ const todayStartIso = () => {
 const ONLINE_WINDOW_MS = 30 * 60_000;
 const onlineSinceIso = () => new Date(Date.now() - ONLINE_WINDOW_MS).toISOString();
 
+/*
+ * `pool` / `online` 两个数 —— **贵的那个缓存 15 分钟，便宜的那个每次现算**（2026-11-14）。
+ *
+ * ## 修了三次才找对靶子
+ *
+ * 11-10 改成每次请求现算 → 读行数从 168 万涨到 575 万，连穿三天额度。
+ * 11-12 修成「一次扫描 + 5 分钟缓存」→ 11-13 第一个跑满全天的日子，**583 万，更高**。
+ * 11-13 又改成「pool 长缓存 + online 现算」→ 还是不够。
+ *
+ * 三次都在调「扫多少次」。真正的问题是「每次扫多少行」：
+ * `COUNT(DISTINCT uid) ... WHERE at >= ?` 被优化器选中 `idx_presence_uid` ——
+ * 它是覆盖索引，但按 `uid` 排序，`at >= ?` 定位不了起点，**只能全索引扫到尾**。
+ * 表里 1,647 行，每次读 1,663 行。换成 `(at, uid)` 索引后只读 **57 行**，差 29 倍。
+ *
+ * 索引那半在 schema.sql 的 `idx_presence_at_uid`，查询侧用 `INDEXED BY` 强制指定
+ * （优化器不会自己选它）。下面是次数那半，两半配合着用：
+ *
+ * - `poolToday`（今天来过多少只）：扫今天全部行 —— **15 分钟一算，96 次/天**。
+ *   它是个日粒度的数（一天只增不减），滞后一刻钟看不出来。窗口不敢放长：
+ *   跨零点后的第一次计算结果是「刚过午夜只有几只」，缓存一小时就会跟
+ *   `online` 的八十几只并排显示，看着像坏了。
+ * - `onlineNow`（此刻在线多少只）：只扫最近 30 分钟 —— **每次现算**，必须实时。
+ *
+ * 拆开之后，在线窗口的午夜跨天问题也自动没了：它自己从「30 分钟前」开始扫，
+ * 不必跟 `pool` 共用一个起点。
+ *
+ * **缓存 key 带「时间片」，不靠 max-age 过期。** Cache API 对 put 进去的响应
+ * 是否遵守 cache-control 各环境不一致，指望它过期就有「缓一整天不更新」的风险。
+ * 时间片是确定性的：换一片就是换一个 key。
+ *
+ * `caches` 在本地 node 测试里不存在 —— 先判一下，没有缓存也必须算得对。
+ */
+const POOL_CACHE_MS = 15 * 60_000;
+
+/** 今天来过多少只。要扫今天全部行，贵 —— 15 分钟缓存一次。 */
+async function poolToday(db, ctx) {
+  const cache = typeof caches === 'object' && caches.default ? caches.default : null;
+  const key = new Request(`https://sight-count.internal/v2/${Math.floor(Date.now() / POOL_CACHE_MS)}`);
+  if (cache) {
+    const hit = await cache.match(key);
+    if (hit) {
+      const j = await hit.json().catch(() => null);
+      if (j && Number.isFinite(j.pool)) return j.pool;
+    }
+  }
+
+  const row = await db.prepare(
+    'SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1',
+  ).bind(todayStartIso()).first();
+  const pool = Number(row?.n ?? 0) || 0;
+
+  if (cache && ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(cache.put(key, new Response(JSON.stringify({ pool }), {
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        'cache-control': `public, max-age=${Math.round(POOL_CACHE_MS / 1000)}`,
+      },
+    })));
+  }
+  return pool;
+}
+
+/** 此刻在线多少只。只扫最近 30 分钟，便宜到可以每次现算。 */
+async function onlineNow(db) {
+  const row = await db.prepare(
+    'SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1',
+  ).bind(onlineSinceIso()).first();
+  return Number(row?.n ?? 0) || 0;
+}
+
+async function poolAndOnline(db, ctx) {
+  const [pool, online] = await Promise.all([poolToday(db, ctx), onlineNow(db)]);
+  return { pool, online };
+}
+
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET, POST, OPTIONS',
@@ -143,16 +218,10 @@ const CORS = {
   'access-control-max-age': '86400',
 };
 
-const reply = (status, body, extra) => new Response(JSON.stringify(body), {
+const reply = (status, body) => new Response(JSON.stringify(body), {
   status,
   // 接口数据一律不缓存：改名之后要立刻看到新名字，不能被浏览器或边缘拿旧响应糊过去。
-  headers: {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    ...CORS,
-    // 给调用方一个口头补充的位置（目前只用来自报池子计数是不是命中缓存）。
-    ...(extra || {}),
-  },
+  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...CORS },
 });
 
 /* ------------------------------------------------------------------
@@ -543,12 +612,11 @@ async function profileRoute(request, env, url, method) {
     return reply(200, { ok: true });
   } catch (e) {
     /*
-     * **这里原来是个空 catch**（2026-11-13 补）。
+     * **这里原来是空 catch**（2026-11-14 补）。
      *
      * 同一个文件里 invite / status / accept / admin 都有 `console.error`，
      * 只有名片这两条没有 —— 于是 11-12 那天全站 D1 500，客户端只拿到一句
-     * 「服务器回了 500」，而 Worker 侧一个字都没留。
-     * 用户替我们查了一天，我们连「no such table」和「quota exceeded」都分不出来。
+     * 「服务器回了 500」，而 Worker 侧一个字都没留，查了一整天。
      */
     console.error('[sight profile]', e && e.message ? e.message : e);
     return reply(500, { ok: false, error: 'server error' });
@@ -705,7 +773,7 @@ async function cardRoute(request, env, url, method) {
 
     return reply(200, { ok: true });
   } catch (e) {
-    /* 和名片同一条（2026-11-13 补）：留卡失败也得留下是哪种失败。 */
+    /* 和名片同一条（2026-11-14 补）：留卡失败也得留下是哪种失败。 */
     console.error('[sight card]', e && e.message ? e.message : e);
     return reply(500, { ok: false, error: 'server error' });
   }
@@ -878,131 +946,6 @@ async function inviteRoute(request, env, url, method) {
   }
 }
 
-/* ------------------------------------------------------------------
- * 池子计数：全站最贵的一次读（2026-11-13）
- *
- * ## 它贵在哪
- *
- * `SELECT COUNT(DISTINCT uid) FROM presence WHERE at >= 今天零点` ——
- * D1 按**扫过的行数**计费，不是按返回的行数。几万只鱼的时候这条要扫
- * 当天 presence 的全部行；而它被三处调用：`/sight/status`（每只鱼每天 24 次）、
- * `/sight`（排表时问邻居）、落地页（任何人打开域名）。
- *
- * 2026-11-12 事故复盘：免费额度 500 万行读/天，当天 16:12 就打光了，
- * 之后 16 小时全站 500，直到 08:00（UTC 零点）额度重置才自己好。
- * **写有自保闸（`DAILY_WRITE_CAP`），读一个闸都没有** —— 所以爆的必然是读。
- *
- * ## 为什么可以缓存
- *
- * 这两个数是**全站聚合**，跟 uid、城市、时段都无关；它回答的是
- * 「今天来过多少只 / 此刻在线多少只」。晚 60 秒没人看得出来 ——
- * 面板上那行字本来就是「今天一共 N 只」，不是秒级指标。
- *
- * 于是：60 秒内，同一个 Cloudflare 边缘节点（PoP）只查一次库，
- * 其余请求全部命中缓存。行读量与请求数解耦，这才是把平方级成本压成常数。
- *
- * ## 三条不能省的保险
- *
- * ① `caches` 不存在（本地 node 跑测试、非 Workers 环境）→ 直接查库，不报错；
- * ② 缓存读坏了、解析失败 → 当作没命中，绝不让缓存把接口搞挂；
- * ③ 查询抛错（额度耗尽就是这个）→ 照旧往上抛，**不缓存错误结果**，
- *    否则一次失败会被缓存放大成 60 秒的「池子 0 只」。
- */
-
-/** 缓存多久。60 秒：够把请求摊薄两三个数量级，又不至于让面板显示过期数。 */
-const POOL_TTL_S = 60;
-
-/**
- * 缓存键。
- *
- * 用**本站真实域名**造一个不存在的路径，而不是随便编一个 `.internal` 假域名。
- * 原因：`cache.put()` 存不上时**不报错**（官方文档原话：resolves to undefined
- * regardless of whether the cache successfully stored the response）——
- * 假域名能不能存，只能靠线上试出来，而「试不出来」的表现就是缓存静默失效、
- * 额度照常烧。用真实 origin 就没有这个不确定性。
- *
- * 这个路径在路由表里不存在，外部访问只会 404，跟缓存键不冲突。
- * 三处调用必须命中**同一个** key，所以只认 origin，不带 query。
- */
-const poolCacheKey = (origin) => `${origin}/__pool-count`;
-
-/**
- * 造缓存键，造不出来就返回 null。
- *
- * `new Request()` 对非法 URL 会抛 —— 而这是**缓存内部的事**，
- * 绝不能因为它把一个正常请求打成 500。宁可这一次不用缓存。
- */
-function safeCacheKey(origin) {
-  try {
-    return new Request(poolCacheKey(origin));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 拿「今天来过多少只 / 此刻在线多少只」。
- *
- * @param {string} origin 当前请求的 origin，用来造缓存键（见 `poolCacheKey`）
- * @returns {Promise<{pool:number, online:number, cached:boolean}>}
- */
-async function poolCounts(env, ctx, origin) {
-  const cache = typeof caches !== 'undefined' && caches?.default ? caches.default : null;
-  const key = cache ? safeCacheKey(origin) : null;
-
-  if (cache && key) {
-    try {
-      const hit = await cache.match(key);
-      if (hit) {
-        const v = await hit.json();
-        if (Number.isFinite(v?.pool) && Number.isFinite(v?.online)) {
-          return { pool: v.pool, online: v.online, cached: true };
-        }
-      }
-    } catch {
-      /* 缓存层自己的毛病不该传染给接口 —— 当没命中，走下面的直查。 */
-    }
-  }
-
-  const [poolRow, onlineRow] = await Promise.all([
-    env.DB.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
-      .bind(todayStartIso()).first(),
-    env.DB.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
-      .bind(onlineSinceIso()).first(),
-  ]);
-  const out = {
-    pool: Number(poolRow?.n ?? 0) || 0,
-    online: Number(onlineRow?.n ?? 0) || 0,
-  };
-
-  if (cache && key) {
-    /*
-     * 写缓存整体包一层 try。两个原因：
-     * ① `cache.put()` 对非法参数是**同步抛**的，`.catch()` 接不住同步异常；
-     * ② 这活本来就只是「顺手存一份」，失败的正确反应是忽略，不是报错。
-     */
-    try {
-      const put = cache.put(key, new Response(JSON.stringify(out), {
-        headers: {
-          'content-type': 'application/json',
-          // Cache API 只认这个头决定存多久；写成 no-store 会当场被丢掉。
-          'cache-control': `public, max-age=${POOL_TTL_S}`,
-        },
-      })).catch(() => { /* 异步失败同理：下个请求再查一次 */ });
-      /*
-       * 有 `waitUntil` 就不 await —— 响应先回给用户，写缓存的事交给运行时收尾。
-       * 这一句省掉的是「每次冷查都要等一次缓存写盘」的那几十毫秒。
-       */
-      if (ctx?.waitUntil) ctx.waitUntil(put);
-      else await put;
-    } catch {
-      /* 同上：写不进缓存不是业务错误。 */
-    }
-  }
-
-  return { ...out, cached: false };
-}
-
 /**
  * 一次拿齐「池子多大」和「谁在找伴」。
  *
@@ -1018,6 +961,188 @@ async function poolCounts(env, ctx, origin) {
  * 「谁接了她的话」是一次性认领（`taken` → `seen=1`），必须单独走 `/sight/invite?mine=1`，
  * 不能和这个「随便看一眼」的请求混在一起 —— 混了就会出现「顺手看一眼把约定认领了」。
  */
+/**
+ * 足迹：记下「她来过这座城」（2026-11-14）。
+ *
+ * ## 为什么不挂在 `POST /sight` 上
+ *
+ * 上报是心跳（20 分钟一次）：一天 72 次 × 上百只鱼 = 上万行写入，
+ * 而足迹只在**到达一座新城**时才变。挂在心跳上等于拿 99% 的写入换 1% 的信息。
+ * 所以给它单独一个口，由客户端的 `journey.arrive` 触发 —— 一天最多几次。
+ *
+ * ## GET 和 POST 同一个路径
+ *
+ * `/sight/footprints`：GET 查我自己的履历，POST 记一笔到达。
+ * 一只鱼只能查自己的（要带 uid），没有"看别人足迹"的口 —— 那是另一件事，
+ * 真要做也得先有可见性开关，不能默认公开。
+ */
+async function footprintRoute(request, env, url, method) {
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  /* ---------------- 记：她到了 ---------------- */
+  if (method === 'POST') {
+    let body;
+    try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+    const uid = clean(body?.uid, 64);
+    const city = clean(body?.city, 40);
+    if (!okUid(uid) || !okCity(city)) return reply(400, { ok: false, error: 'bad query' });
+
+    const now = new Date().toISOString();
+    try {
+      await db.prepare(
+        /*
+         * 同一个 uid+city 只有一行：第一次到达建行，以后只刷新 `last_at` 并 +1。
+         * `visits` 封顶 999 —— 上限只是防刷（重复 POST 不会无限膨胀这个数），
+         * 真要跑一千次重游，那个数也没人看了。
+         */
+        `INSERT INTO footprints (uid, city, first_at, last_at, visits)
+         VALUES (?1, ?2, ?3, ?3, 1)
+         ON CONFLICT(uid, city) DO UPDATE SET
+           last_at = excluded.last_at,
+           visits = CASE WHEN footprints.visits >= 999 THEN 999 ELSE footprints.visits + 1 END`,
+      ).bind(uid, city, now).run();
+      return reply(200, { ok: true });
+    } catch (e) {
+      console.error('[footprint]', e && e.message ? e.message : e);
+      return reply(500, { ok: false, error: 'server error' });
+    }
+  }
+
+  /* ---------------- 查：她去过哪儿 ---------------- */
+  if (method === 'GET') {
+    const uid = clean(url.searchParams.get('uid'), 64);
+    if (!okUid(uid)) return reply(400, { ok: false, error: 'bad query' });
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 300));
+    try {
+      const { results } = await db.prepare(
+        `SELECT city, first_at, last_at, visits FROM footprints
+         WHERE uid = ?1 ORDER BY last_at DESC LIMIT ${limit}`,
+      ).bind(uid).all();
+      const places = (results ?? []).map((r) => ({
+        city: r.city,
+        first: r.first_at,
+        last: r.last_at,
+        visits: Number(r.visits) || 1,
+      }));
+      return reply(200, { ok: true, total: places.length, places });
+    } catch (e) {
+      console.error('[footprints]', e && e.message ? e.message : e);
+      return reply(500, { ok: false, error: 'server error' });
+    }
+  }
+
+  return reply(405, { ok: false, error: 'method not allowed' });
+}
+
+/**
+ * 路标：她在一座城留一句「这里值得来」（2026-11-14）。
+ *
+ * ## 和「留言板」的区别
+ *
+ * 这是**推荐**，不是聊天。留言板要求有人来回，冷门城市空得像坏了；
+ * 路标只有去留，空态是「这城还没人留过」—— 天然成立，不依赖同一时刻有别人。
+ * 池子里 256 只鱼散在 102 座城，一座城平均两只半，只有这种形态能转起来。
+ *
+ * ## 从《死亡搁浅》借的结构
+ *
+ * 玩家 A 建的桥会出现在 B 的世界里，B 走过去顺手点个赞。两人永不同时在线。
+ * 关键不是「共享」，是**只留正向痕迹**：没有踩、没有举报、没有排序。
+ *
+ * ## 三条限制，都是为了不让它变成广告栏
+ *
+ * 1. 一句话 ≤ 40 字，写入前过 `safeDoing`（禁 URL、禁联系方式）
+ * 2. 一只鱼在一座城**一天只留一条**——重留覆盖旧的，不是刷屏
+ * 3. 一城最多留 20 条，超了删最老的
+ */
+const SIGNPOST_MAX = 20;
+const SIGNPOST_TTL_DAYS = 7;
+
+async function signpostRoute(request, env, url, method) {
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  /* ---------------- 留一个 ---------------- */
+  if (method === 'POST') {
+    let body;
+    try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+    const uid = clean(body?.uid, 64);
+    const pet = clean(body?.pet, 24);
+    const city = clean(body?.city, 40);
+    if (!okUid(uid) || !okCity(city) || !pet) {
+      return reply(400, { ok: false, error: 'bad query' });
+    }
+    const text = safeDoing(clean(body?.text, 60), bannedExtra(env));
+    if (!text) return reply(400, { ok: false, error: 'bad text' });
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const todayKey = todayStartIso();
+    const id = newId();
+    const expires = new Date(now.getTime() + SIGNPOST_TTL_DAYS * 86_400_000).toISOString();
+
+    try {
+      /*
+       * 一天一城一条：先删当天这条鱼在同一城留的旧路标，再插新的。
+       * 用 `at >= todayStart` 判断「同一天」—— `date_key` 是游戏内日期，跟现实对不上。
+       */
+      await db.prepare(
+        'DELETE FROM signposts WHERE uid = ?1 AND city = ?2 AND at >= ?3',
+      ).bind(uid, city, todayKey).run();
+
+      await db.prepare(
+        `INSERT INTO signposts (id, uid, pet, city, text, at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+      ).bind(id, uid, pet, city, text, nowIso, expires).run();
+
+      /* 一城封顶 20 条：删掉超出上限里最老的。 */
+      await db.prepare(
+        `DELETE FROM signposts WHERE city = ?1 AND id NOT IN
+           (SELECT id FROM signposts WHERE city = ?1 ORDER BY at DESC LIMIT ${SIGNPOST_MAX})`,
+      ).bind(city).run();
+
+      return reply(200, { ok: true, id });
+    } catch (e) {
+      console.error('[signpost]', e && e.message ? e.message : e);
+      return reply(500, { ok: false, error: 'server error' });
+    }
+  }
+
+  /* ---------------- 看这城的路标 ---------------- */
+  if (method === 'GET') {
+    const city = clean(url.searchParams.get('city'), 40);
+    const exclude = clean(url.searchParams.get('exclude'), 64);
+    if (!okCity(city)) return reply(400, { ok: false, error: 'bad query' });
+    const nowIso = new Date().toISOString();
+    try {
+      const { results } = await db.prepare(
+        /*
+         * 只回 `pet` 和一句话 —— **不回 uid、不回精确时间**。
+         * 时间只用来排序和过期，出了这个函数就该消失。
+         */
+        `SELECT pet, text, at FROM signposts
+         WHERE city = ?1 AND expires_at > ?2 AND uid <> ?3
+         ORDER BY at DESC LIMIT 10`,
+      ).bind(city, nowIso, exclude).all();
+      const extra = bannedExtra(env);
+      return reply(200, {
+        ok: true,
+        list: (results ?? [])
+          .map((r) => ({
+            pet: safePet(r.pet, extra).name,
+            text: looksBad(String(r.text || ''), extra) ? '' : clean(r.text, 60),
+          }))
+          .filter((r) => r.pet && r.text),
+      });
+    } catch (e) {
+      console.error('[signposts]', e && e.message ? e.message : e);
+      return reply(500, { ok: false, error: 'server error' });
+    }
+  }
+
+  return reply(405, { ok: false, error: 'method not allowed' });
+}
+
 async function statusRoute(request, env, url, ctx) {
   if (request.method !== 'GET') return reply(405, { ok: false, error: 'method not allowed' });
   const db = env?.DB;
@@ -1041,14 +1166,17 @@ async function statusRoute(request, env, url, ctx) {
      * 管理页要看的「现在有几只在跑」必须用 `online`。
      */
     /*
-     * 先编译好邀约那条语句，再并发跑两件事。
+     * **先编译，再并发**（2026-11-14，从另一份源码搬回来）。
      *
-     * 顺序有讲究：`db.prepare()` 是**同步**的，D1 额度耗尽时它会当场抛。
-     * 如果写成 `Promise.all([poolCounts(...), db.prepare(...)])`，
-     * 那么 prepare 抛出的瞬间 `poolCounts` 返回的那个 Promise 就没人接了 ——
-     * 变成 unhandledRejection（Workers 里会打出额外错误、也可能让这次请求判失败）。
-     * 2026-11-13 写测试时真的踩到了，所以把同步部分提到 await 之前。
+     * `db.prepare()` 是**同步**的，D1 额度耗尽时它会当场抛。
+     * 写成 `Promise.all([poolAndOnline(...), db.prepare(...)])` 的话，
+     * prepare 抛出的瞬间 `poolAndOnline` 返回的那个 Promise 就没人接了 ——
+     * 变成 unhandledRejection（Workers 里会打额外错误、也可能判这次请求失败）。
+     * 把同步部分提到 await 之前，抛错就走正常的 catch，不会有孤儿 Promise。
      */
+    const mineStmt = db.prepare(
+      'SELECT COUNT(*) AS n FROM invites WHERE uid = ?1 AND taken_by <> ?2',
+    ).bind(uid, '');
     const inviteStmt = db.prepare(
       `SELECT id, pet, to_city, days, note, at, meet_city, pace,
               CASE WHEN from_city = ?1 THEN 1 ELSE 0 END AS near,
@@ -1059,12 +1187,23 @@ async function statusRoute(request, env, url, ctx) {
        ORDER BY near DESC, at DESC LIMIT 3`,
     ).bind(city, nowIso, uid, MAX_PARTY - 1);
 
-    const [counts, invites] = await Promise.all([poolCounts(env, ctx, url.origin), inviteStmt.all()]);
-    const { results } = invites;
+    const [counts, mine, { results }] = await Promise.all([
+      poolAndOnline(db, ctx),
+      /*
+       * **我发出去的邀约，被接过几次。**
+       *
+       * 这是「她帮到了别人」的唯一一个可数证据 —— `statsSummary` 拿它说一句
+       * 「有人应过她几回」。只给次数，不给是谁：说「谁接了」就变成社交账本，
+       * 而「不回应 = 没看见」那套规矩要求这里不能有对象。
+       */
+      mineStmt.first().catch(() => null),
+      inviteStmt.all(),
+    ]);
     return reply(200, {
       ok: true,
       pool: counts.pool,
       online: counts.online,
+      mineTaken: Number(mine?.n ?? 0) || 0,
       list: (results ?? []).map((r) => ({
         id: r.id,
         pet: safePet(r.pet, extra).name,
@@ -1074,7 +1213,7 @@ async function statusRoute(request, env, url, ctx) {
         meet: clean(r.meet_city, 40),
         pace: Number(r.pace) || 0,
       })),
-    }, { 'x-pool-cache': counts.cached ? 'hit' : 'miss' });
+    });
   } catch (e) {
     console.error('[sight status]', e && e.message ? e.message : e);
     return reply(500, { ok: false, error: 'server error' });
@@ -1203,13 +1342,7 @@ async function flagOf(db, uid) {
   try {
     const row = await db.prepare('SELECT kind, note FROM pet_flags WHERE uid = ?1').bind(uid).first();
     return row ? { kind: String(row.kind || ''), note: String(row.note || '') } : null;
-  } catch (e) {
-    /*
-     * 行为不变：表不存在就当没标，不能把上报卡死。
-     * 但**要留一句**（2026-11-13）—— D1 整体不可用时这里也会静默返回 null，
-     * 于是故障现场只剩后面那句写入报错，看不出前面已经挂过一次。
-     */
-    console.error('[sight flag]', e && e.message ? e.message : e);
+  } catch {
     return null;
   }
 }
@@ -1247,15 +1380,19 @@ const maskUid = (uid) => (typeof uid === 'string' && uid.length > 8
  * 所以根路径给人看，未知子路径照旧 404（不给扫描器留探测面）。
  * 顺手把「今天池子里有几只」打出来 —— 这是最快能证明「服务活着」的数字。
  */
-async function landingPage(env, url, ctx) {
+async function landingPage(env, url) {
   const today = new Date().toISOString().slice(0, 10);
   let pool = 0;
   let online = 0;
   try {
-    /* 和 /sight/status 共用同一份缓存 —— 顺手打开域名的人不该再烧一次额度。 */
-    const counts = await poolCounts(env, ctx, url.origin);
-    pool = counts.pool;
-    online = counts.online;
+    const [a, b] = await Promise.all([
+      env?.DB?.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?')
+        .bind(todayStartIso()).first(),
+      env?.DB?.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?')
+        .bind(onlineSinceIso()).first(),
+    ]);
+    pool = Number(a?.n ?? 0) || 0;
+    online = Number(b?.n ?? 0) || 0;
   } catch { /* 数据库没就绪也不该让这页 500 —— 它只是说明页 */ }
 
   const origin = url.origin;
@@ -1271,6 +1408,15 @@ async function landingPage(env, url, ctx) {
   p.sub{margin:0 0 20px;color:#6b6b70;font-size:13px}
   h2{font-size:14px;margin:22px 0 6px;color:#3a3a3c}
   .big{background:#f2f2f7;border-radius:9px;padding:12px 14px;font-size:14px;word-break:break-all;margin:8px 0}
+  /* 地址 + 复制按钮（2026-11-14）。有人把 cooppets 里的 p 抄漏了一个，连不上还以为服务坏了。 */
+  .copy{display:flex;align-items:stretch;gap:8px;margin:8px 0}
+  .copy code{flex:1;display:flex;align-items:center;background:#f2f2f7;border-radius:9px;
+             padding:12px 14px;font-size:14px;word-break:break-all;line-height:1.4;
+             font-family:ui-monospace,Consolas,"Courier New",monospace;color:#1c1c1e;user-select:all}
+  .copy button{flex:0 0 auto;font:inherit;font-size:14px;padding:0 16px;border-radius:9px;
+               border:1px solid #0a63c9;background:#0a63c9;color:#fff;cursor:pointer;white-space:nowrap}
+  .copy button:active{transform:translateY(1px)}
+  .copy button.done{background:#0a7d32;border-color:#0a7d32}
   .ok{color:#0a7d32;font-weight:600}
   .hint{color:#8e8e93;font-size:12px;margin-top:8px}
   a{color:#0a63c9}
@@ -1288,7 +1434,12 @@ async function landingPage(env, url, ctx) {
 
   <h2>该怎么用</h2>
   <p>把这个地址填进扩展设置里的「碰面」那一栏，保存就好 —— <b>不用在浏览器里打开它</b>。</p>
-  <div class="big">${origin}</div>
+  <div class="copy">
+    <code id="addr">${origin}</code>
+    <button id="copyAddr" type="button">复制</button>
+  </div>
+  <p class="hint">别手打。域名里连着两个相同的字母最容易漏 —— <b>cooppets</b> 是两个 p，
+  抄漏一个就连不上，而且报的错会是「请求失败」，看着像服务坏了。</p>
 
   <h2>扩展本身在哪</h2>
   <p>Coopani 的扩展市场里搜「大肥鱼环游世界」。介绍、更新和反馈在
@@ -1305,7 +1456,49 @@ async function landingPage(env, url, ctx) {
 
   <p class="hint">填完之后：她到站会看一眼这一带还有谁，面板上会多一行「池子 · 今天一共 N 只」。
   不想被别人看见就把那一栏留空，其它功能一点不受影响。</p>
-</main></body></html>`;
+</main>
+<script>
+(function () {
+  var btn = document.getElementById('copyAddr');
+  var addr = document.getElementById('addr');
+  if (!btn || !addr) return;
+  var timer = null;
+  function flash(text) {
+    btn.textContent = text;
+    if (text === '已复制') btn.classList.add('done');
+    clearTimeout(timer);
+    timer = setTimeout(function () {
+      btn.textContent = '复制';
+      btn.classList.remove('done');
+    }, 1600);
+  }
+  /*
+   * 先试 clipboard API；它在非安全上下文（http、某些内嵌窗口）会被直接拒绝，
+   * 那就退回「选中 + execCommand」这套老办法 —— 它反而到处都能用。
+   */
+  function fallback() {
+    var range = document.createRange();
+    range.selectNodeContents(addr);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    sel.removeAllRanges();
+    flash(ok ? '已复制' : '请手动选中');
+  }
+  btn.addEventListener('click', function () {
+    /* 地址块里可能有换行或缩进，复制前把空白全去掉，粘出去才是干净的一串。 */
+    var text = addr.textContent.replace(/\\s+/g, '');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { flash('已复制'); }, fallback);
+    } else {
+      fallback();
+    }
+  });
+})();
+<\/script>
+</body></html>`;
 
   return new Response(html, {
     status: 200,
@@ -1358,9 +1551,9 @@ async function adminRoute(request, env, url, method) {
     if (url.pathname === '/admin/live') {
       const since = onlineSinceIso();
       const [onlineRow, todayRow, listRes] = await Promise.all([
-        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1')
           .bind(since).first(),
-        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1')
           .bind(todayStartIso()).first(),
         db.prepare(
           /*
@@ -1380,7 +1573,7 @@ async function adminRoute(request, env, url, method) {
                   pr.text AS profile_text, pr.at AS profile_at, pr.exp AS profile_exp
              FROM presence p
              JOIN (
-               SELECT uid, MAX(at) AS m FROM presence WHERE at >= ?1 GROUP BY uid
+               SELECT uid, MAX(at) AS m FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1 GROUP BY uid
              ) x ON x.uid = p.uid AND x.m = p.at
              LEFT JOIN profiles pr ON pr.uid = p.uid
             ORDER BY p.at DESC LIMIT 60`,
@@ -1578,12 +1771,12 @@ async function adminRoute(request, env, url, method) {
       const since = todayStartIso();
       const [rateRow, dayRow, uidRow, onlineRow, totalRow, cityRes] = await Promise.all([
         db.prepare('SELECT n FROM rate WHERE key = ?1').bind(`d:${day}`).first(),
-        db.prepare('SELECT COUNT(*) AS n FROM presence WHERE at >= ?1').bind(since).first(),
-        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1').bind(since).first(),
-        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+        db.prepare('SELECT COUNT(*) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1').bind(since).first(),
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1').bind(since).first(),
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?1')
           .bind(onlineSinceIso()).first(),
         db.prepare('SELECT COUNT(*) AS n FROM presence').first(),
-        db.prepare(`SELECT city, COUNT(*) AS n FROM presence
+        db.prepare(`SELECT city, COUNT(*) AS n FROM presence INDEXED BY idx_presence_at_uid
                     WHERE at >= ?1 GROUP BY city ORDER BY n DESC LIMIT 12`).bind(since).all(),
       ]);
 
@@ -1697,8 +1890,10 @@ export default {
     if (path === '/sight/accept') return acceptRoute(request, env, url, method);
     if (path === '/sight/card') return cardRoute(request, env, url, method);
     if (path === '/sight/profile') return profileRoute(request, env, url, method);
+    if (path === '/sight/footprints') return footprintRoute(request, env, url, method);
+    if (path === '/sight/signposts') return signpostRoute(request, env, url, method);
     // 根路径给人看（浏览器里打开的那种），别回一句 not found。
-    if (path === '/' && (method === 'GET' || method === 'HEAD')) return landingPage(env, url, ctx);
+    if (path === '/' && (method === 'GET' || method === 'HEAD')) return landingPage(env, url);
     // 管鱼页：同一个域名发出去，国内能打开；页面里地址栏会自动填成它自己。
     /*
      * 管鱼页有**两个地址**（2026-11-11）：
@@ -1755,7 +1950,27 @@ export default {
              ORDER BY at DESC LIMIT ${MAX}`,
           ).bind(city, slot, since);
 
-        const { results } = await stmt.all();
+        /*
+         * 邻居列表和两个计数一起发出去（2026-11-12）。原来 `pool` / `online`
+         * 是两个独立的 `COUNT(DISTINCT uid)`，每来一次请求就全表扫两遍 ——
+         * 这是 D1 读额度被顶穿的主因，现在走 `poolAndOnline()` 的一次扫描 + 一分钟缓存。
+         */
+        const [{ results }, counts, hereRow] = await Promise.all([
+          stmt.all(),
+          poolAndOnline(db, ctx).catch(() => ({ pool: 0, online: 0 })),
+          /*
+           * **今天这座城来过几只**（2026-11-14）。
+           *
+           * `pool` 是「全池子今天来过多少只」，跨城统计 —— 一个人在小城待着，
+           * 那个数会显示几十，但她周围其实一个人都没有。这个数只算当前城。
+           *
+           * 成本实测：热门城（西安 17 只）读 122 行，小城 13 行 —— 走
+           * `idx_presence_query (city=?)` 只扫该城 4 天留存内的行，很便宜。
+           */
+          db.prepare(
+            'SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE city = ?1 AND at >= ?2',
+          ).bind(city, todayStartIso()).first().catch(() => null),
+        ]);
         /*
          * **只挑两个字段。** 防线设在最外层：以后有人改了客户端或 SQL，
          * 这里仍然漏不出 id 和时间戳。
@@ -1781,34 +1996,13 @@ export default {
          * 只回**数量**，不回任何 uid/名字 —— 聚合数字不构成隐私问题。
          * 旧客户端会忽略这个字段，旧服务端不回它，客户端那边按 0 处理。
          */
-        let pool = 0;
-        let online = 0;
-        /* null = 没查成（或没查），此时不带头，别让人误读成「miss」。 */
-        let poolCached = null;
-        try {
-          /*
-           * 按 `at` 数（2026-11-10）：`date_key` 是游戏内日期，跟现实对不上，
-           * 拿它数出来的池子会永远停在一个数上 —— 管理页「卡在 19」就是这么来的。
-           *
-           * 2026-11-13：换成共享缓存版（见 `poolCounts`）。这里是全站最贵的读，
-           * 而它只是面板上那行「今天一共 N 只」—— 晚 60 秒没有人在意。
-           */
-          const counts = await poolCounts(env, ctx, url.origin);
-          pool = counts.pool;
-          online = counts.online;
-          poolCached = counts.cached;
-        } catch (e) {
-          /* 数不出来不能让整张邻居列表 500 —— 但也不能不留痕迹。 */
-          console.error('[sight list counts]', e && e.message ? e.message : e);
-          pool = 0;
-          online = 0;
-        }
-
-        return reply(
-          200,
-          { ok: true, list, pool, online },
-          poolCached === null ? {} : { 'x-pool-cache': poolCached ? 'hit' : 'miss' },
-        );
+        return reply(200, {
+          ok: true,
+          list,
+          pool: counts.pool,
+          online: counts.online,
+          here: Number(hereRow?.n ?? 0) || 0,
+        });
       }
 
       /* ---------------- 报：我在这儿 ---------------- */
