@@ -50,7 +50,8 @@ import {
   type Journey,
 } from './plan/journey.ts';
 import {
-  slotOf, findNeighbors, neighborLine, knownNeighborLine, reportPresence, fetchStatus, paceGap,
+  slotOf, findNeighbors, neighborLine, knownNeighborLine, reportPresence,
+  reportFootprint, reportSignpost, fetchStatus, paceGap,
   putCard, fetchCards, EMPTY_BOARD,
   putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, explainNet,
   sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine,
@@ -1064,6 +1065,41 @@ const TOOL_DECLS = [
     tags: ['write'] as const,
     summary: { zh: '特意去吃某一样，顺手把真店名查出来。', en: 'Go eat something specific, with a real restaurant looked up.' },
   },
+  /*
+   * 路标（2026-11-14，第 23 个工具 = index 22）。
+   *
+   * 借的是《死亡搁浅》：玩家 A 建的桥会出现在 B 的世界里，两人永不同时在线。
+   * 这里是一次**推荐** —— 她在这座城留一句话，之后来这城的人能看见。
+   *
+   * 参数里故意没有 `kind`、没有评分、没有踩 —— 只留正向痕迹。
+   * 一只鱼一城一天只能留一条（服务端覆盖旧的），所以反复留不会刷屏。
+   */
+  {
+    name: 'journey_signpost',
+    description:
+      'Leave one short line in the city she is in right now, telling whoever comes later what is worth it here - '
+      + 'the wall is windy but worth the climb, the noodle shop behind the station, the light at six. '
+      + 'It is a recommendation, not a chat: nobody replies, and she will not see it again. '
+      + 'One line per city per day; leaving another replaces the old one. '
+      + 'Use it when she has something specific worth passing on, not on every arrival.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        text: {
+          type: 'string',
+          description: 'One short line in her own voice, at most 40 characters. No links - they get rejected.',
+        },
+        city: {
+          type: 'string',
+          description: 'Which city, by name or id, if not the one she is in right now. Leave it out normally.',
+        },
+      },
+      required: ['text'],
+    },
+    tags: ['write'] as const,
+    summary: { zh: '在这座城留一句话，给以后来的人看。', en: 'Leave one line for whoever comes to this city later.' },
+  },
 ] as const;
 
 export interface JourneyWorldOptions {
@@ -1925,6 +1961,33 @@ export class JourneyWorld implements World {
     return a.country !== b.country;
   }
 
+  /**
+   * 留一个路标（2026-11-14）。
+   *
+   * 借《死亡搁浅》的结构：前人留下的痕迹让后人受益，两个人永不同时在线。
+   * **这不是聊天** —— 她留完就看不到它了，也没有人会回。所以话说给「以后来这儿的人」，
+   * 不是说给某个具体的人。
+   *
+   * 服务端一支鱼一城一天只收一条（重留覆盖旧的），带链接的会被直接拒掉。
+   */
+  private async signpost(text: string, cityArg: string): Promise<string> {
+    const meet = this.meetOptions();
+    if (!meet || !meet.url) return '（没配碰面服务器，路标留不下来。）';
+    const body = text.trim().slice(0, 40);
+    if (!body) return '（要留的那句话是空的。）';
+
+    /* 给了城市就按名字或 id 找；没给就用她这会儿待的城。 */
+    const named = cityArg.trim()
+      ? CITIES.find((c) => c.name === cityArg.trim() || c.id === cityArg.trim())
+      : undefined;
+    const cityId = named?.id ?? this.st.hereId;
+    if (!cityId) return '（不知道她现在在哪座城，留不了。）';
+
+    const ok = await reportSignpost(meet, cityId, body);
+    if (!ok) return '（路标没留成，服务端没接。）';
+    return `在${named?.name ?? this.cityName(cityId)}的路边留了一句话，以后来这儿的人能看见。`;
+  }
+
   private cityName(id: string): string {
     return cityById(id)?.name ?? id;
   }
@@ -2184,7 +2247,7 @@ export class JourneyWorld implements World {
   /* ---------------- 池子总数 ---------------- */
 
   /** 最近一次取到的「今天池子里多少只」。见 `probeStatus`。 */
-  private poolProbe: { at: number; value: number } | null = null;
+  private poolProbe: { at: number; value: number; taken: number } | null = null;
 
   /**
    * 单独去问一次池子多大（20 分钟一次）。
@@ -2229,7 +2292,11 @@ export class JourneyWorld implements World {
        * 修法：不管成不成，先记下这次尝试。失败就沿用上一次的值，
        * 面板上的池子数字最多旧一小时 —— 比把服务器打爆划算太多。
        */
-      this.poolProbe = { at: real, value: r.ok ? r.pool : (this.poolProbe?.value ?? 0) };
+      this.poolProbe = {
+        at: real,
+        value: r.ok ? r.pool : (this.poolProbe?.value ?? 0),
+        taken: r.ok ? r.mineTaken : (this.poolProbe?.taken ?? 0),
+      };
       if (!r.ok) return;
       await this.handleInvites(r.invites, now);
     } catch {
@@ -3020,6 +3087,17 @@ export class JourneyWorld implements World {
       this.st = { ...this.st, wishes: this.st.wishes.filter((x) => x !== to.id) };
     }
     this.persist();
+
+    /*
+     * 足迹：到站才记一笔（2026-11-14）。
+     *
+     * 本地那份是 `everVisited`（城市 id 数组），只在这台机器上；
+     * 这一笔是云端备份 —— 换电脑、清缓存之后，她还认得自己走过的地方。
+     *
+     * **不 await、不重试**：这是履历，不是行程的一部分。让它挡住行程推进，
+     * 一次网络抖动就会把她卡在站台上；而失败了下次到站还会再记。
+     */
+    void reportFootprint(this.meetOptions(), to.id);
 
     /*
      * 到站那一刻就把「这一带还有谁」说出来，不等第二天早上那句 `journey.day`。
@@ -6467,6 +6545,17 @@ export class JourneyWorld implements World {
           return await this.eat(a.dish ?? '', a.time ?? '');
         },
       },
+      {
+        /* 22：留路标（2026-11-14 加）。前面 0–21 的号一个都没动。 */
+        name: decl[22].name,
+        description: decl[22].description,
+        parameters: decl[22].parameters,
+        tags: [...decl[22].tags],
+        handler: async (args) => {
+          const a = (args ?? {}) as { text?: string; city?: string };
+          return this.signpost(a.text ?? '', a.city ?? '');
+        },
+      },
     ];
   }
 
@@ -8620,6 +8709,17 @@ export class JourneyWorld implements World {
         ? `这一趟从 ${this.st.tripStartedAt.slice(0, 10)} 开始，已经 ${Math.max(1, Math.round((this.worldNow().getTime() - Date.parse(this.st.tripStartedAt)) / 86_400_000))} 天。`
         : '现在没在旅行。',
       this.moneyLine(),
+      /*
+       * 「有人应过她几回」（2026-11-14）。
+       *
+       * 这是整套设计里唯一一处她能看见「我帮到别人了」的地方 ——
+       * 《死亡搁浅》只给 Like 不给踩，因为负向按钮一旦存在就会被用来发泄。
+       * 同理，这里**只说次数，不说谁**：说得出是谁，账就变成了社交债。
+       *
+       * 数来自 `/sight/status` 的 `mineTaken`，跟着池子探针一起刷新；
+       * 没连服务器时是 0，那一行干脆不出现（0 次邀约和「没连上」不该长得一样）。
+       */
+      this.poolProbe?.taken ? `有人应过她 ${this.poolProbe.taken} 回约。` : '',
       `日记目录：${h.dir}`,
       h.problem ? `⚠ ${h.problem}` : h.notice ? `ℹ ${h.notice}` : '目录可写。',
     ].filter(Boolean).join('\n');

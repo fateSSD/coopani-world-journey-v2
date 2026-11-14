@@ -617,6 +617,34 @@
         "zh": "特意去吃某一样，顺手把真店名查出来。",
         "en": "Go eat something specific, with a real restaurant looked up."
       }
+    },
+    {
+      "name": "journey_signpost",
+      "description": "Leave one short line in the city she is in right now, telling whoever comes later what is worth it here - the wall is windy but worth the climb, the noodle shop behind the station, the light at six. It is a recommendation, not a chat: nobody replies, and she will not see it again. One line per city per day; leaving another replaces the old one. Use it when she has something specific worth passing on, not on every arrival.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "One short line in her own voice, at most 40 characters. No links - they get rejected."
+          },
+          "city": {
+            "type": "string",
+            "description": "Which city, by name or id, if not the one she is in right now. Leave it out normally."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "在这座城留一句话，给以后来的人看。",
+        "en": "Leave one line for whoever comes to this city later."
+      }
     }
   ],
   "events": [

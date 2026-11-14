@@ -264,6 +264,16 @@ export async function reportPresence(
 export interface NeighborBoard {
   readonly list: readonly Neighbor[];
   readonly pool: number;
+  /**
+   * **今天这座城来过多少只**（2026-11-14）。
+   *
+   * 跟 `pool` 不是一回事：`pool` 是全池子跨城的总数，一个人待在小城时会显示几十，
+   * 让她误以为周围有一堆人。这个只算当前城。
+   *
+   * 旧服务端不回这个字段，按 0 处理 —— 0 的含义是「不知道」，不是「没人」，
+   * 所以别拿它说「这城一个人都没有」。
+   */
+  readonly here: number;
 }
 
 export async function findNeighbors(
@@ -272,7 +282,7 @@ export async function findNeighbors(
   slot: Slot,
 ): Promise<NeighborBoard> {
   const url = clean(opt.url);
-  if (!url || !clean(opt.uid)) return { list: [], pool: 0 };
+  if (!url || !clean(opt.uid)) return { list: [], pool: 0, here: 0 };
   /*
    * **不再传 `date`（2026-11-10）。**
    *
@@ -291,10 +301,11 @@ export async function findNeighbors(
     const res = await fetch(`${endpointOf(url)}?${q}`, {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) return { list: [], pool: 0 };
-    const body = (await res.json()) as { list?: unknown; pool?: unknown };
-    if (!Array.isArray(body.list)) return { list: [], pool: 0 };
+    if (!res.ok) return { list: [], pool: 0, here: 0 };
+    const body = (await res.json()) as { list?: unknown; pool?: unknown; here?: unknown };
+    if (!Array.isArray(body.list)) return { list: [], pool: 0, here: 0 };
     const pool = typeof body.pool === 'number' && body.pool > 0 ? Math.floor(body.pool) : 0;
+    const here = typeof body.here === 'number' && body.here > 0 ? Math.floor(body.here) : 0;
     /*
      * 只认两个字段。服务器多返什么都丢掉 —— 别人的 id、时间戳、余额
      * 一律不该出现在她的世界里，也不该出现在日志里。
@@ -308,9 +319,157 @@ export async function findNeighbors(
         .filter((x) => x.pet && x.pet !== clean(opt.pet))
         .slice(0, MEET_MAX - 1),
       pool,
+      here,
     };
   } catch {
-    return { list: [], pool: 0 };
+    return { list: [], pool: 0, here: 0 };
+  }
+}
+
+/* ---------------- 足迹 ---------------- */
+
+export interface Footprint {
+  readonly city: string;
+  readonly first: string;
+  readonly last: string;
+  readonly visits: number;
+}
+
+/**
+ * 记一笔「她到了这座城」（2026-11-14）。
+ *
+ * **只在真到达时调**（`journey.arrive` 那一下），别挂在心跳上报上 ——
+ * 心跳一天 72 次、上百只鱼就是上万行写入，而足迹一天只该变几次。
+ * 挂错了地方，省下来的额度会原样烧回去。
+ *
+ * 失败就返回 false，不重试、不影响行程：这是履历，丢一次不致命，
+ * 下次到站还会再记。
+ */
+export async function reportFootprint(
+  opt: MeetOptions | null,
+  cityId: string,
+): Promise<boolean> {
+  /* `meetOptions()` 在没配服务器时返回 null —— 直接读 `opt.url` 会把她到站的整条链路炸掉。 */
+  if (!opt) return false;
+  const url = clean(opt.url);
+  if (!url || !clean(opt.uid)) return false;
+  try {
+    const res = await fetch(`${endpointOf(url)}/footprints`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ uid: clean(opt.uid), city: cityId }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 取回她在云端的足迹。
+ *
+ * 服务端一次最多给 300 座（上限 500）—— 跑一辈子也去不到那么多。
+ * **拉不到返回空数组，调用方不要拿空去覆盖本地那份**：
+ * 本地 `everVisited` 才是主，云端只是「换机器还认得她」的备份。
+ */
+export async function fetchFootprints(opt: MeetOptions | null): Promise<Footprint[]> {
+  if (!opt) return [];
+  const url = clean(opt.url);
+  if (!url || !clean(opt.uid)) return [];
+  try {
+    const q = new URLSearchParams({ uid: clean(opt.uid) });
+    const res = await fetch(`${endpointOf(url)}/footprints?${q}`, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { places?: unknown };
+    if (!Array.isArray(body.places)) return [];
+    return body.places
+      .filter((p): p is Footprint => !!p && typeof p === 'object'
+        && typeof (p as Footprint).city === 'string')
+      .map((p) => ({
+        city: p.city,
+        first: String(p.first ?? ''),
+        last: String(p.last ?? ''),
+        visits: Number(p.visits) || 1,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/* ---------------- 路标 ---------------- */
+
+export interface Signpost {
+  readonly pet: string;
+  readonly text: string;
+}
+
+/**
+ * 在一座城留一句「这里值得来」（2026-11-14）。
+ *
+ * 借的是《死亡搁浅》的结构：两个玩家永不同时在线，但前人留下的东西让后人受益。
+ * **只留正向痕迹** —— 没有踩、没有举报、没有排序。
+ *
+ * 一只鱼一城一天只能留一条（服务端覆盖旧的），所以反复留不会变成刷屏。
+ * 带链接的话会被服务端拒掉（400），那不是失败，是它在防广告。
+ */
+export async function reportSignpost(
+  opt: MeetOptions | null,
+  cityId: string,
+  text: string,
+): Promise<boolean> {
+  if (!opt) return false;
+  const url = clean(opt.url);
+  if (!url || !clean(opt.uid) || !clean(opt.pet)) return false;
+  try {
+    const res = await fetch(`${endpointOf(url)}/signposts`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        uid: clean(opt.uid),
+        pet: clean(opt.pet).slice(0, 24),
+        city: cityId,
+        text: clean(text).slice(0, 40),
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 看这座城别人留过什么。
+ *
+ * 拉不到返回空数组 —— **空不代表「这城不好」，只代表还没人留过**。
+ * 调用方别把「空」说成「没人来过」。
+ */
+export async function fetchSignposts(
+  opt: MeetOptions | null,
+  cityId: string,
+): Promise<Signpost[]> {
+  if (!opt) return [];
+  const url = clean(opt.url);
+  if (!url || !clean(opt.uid)) return [];
+  try {
+    const q = new URLSearchParams({ city: cityId, exclude: clean(opt.uid) });
+    const res = await fetch(`${endpointOf(url)}/signposts?${q}`, {
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) return [];
+    const body = (await res.json()) as { list?: unknown };
+    if (!Array.isArray(body.list)) return [];
+    return body.list
+      .filter((x): x is Signpost => !!x && typeof x === 'object'
+        && typeof (x as Signpost).pet === 'string'
+        && typeof (x as Signpost).text === 'string')
+      .map((x) => ({ pet: x.pet.slice(0, 24), text: x.text.slice(0, 40) }))
+      .filter((x) => x.pet && x.text);
+  } catch {
+    return [];
   }
 }
 
@@ -636,7 +795,7 @@ export async function listInvites(
 export async function fetchStatus(
   opt: MeetOptions,
   cityId: string,
-): Promise<{ ok: true; pool: number; invites: Invite[] } | InviteFail> {
+): Promise<{ ok: true; pool: number; invites: Invite[]; mineTaken: number } | InviteFail> {
   const url = clean(opt.url);
   if (!url || !clean(opt.uid)) return { ok: false, reason: '没配碰面服务器' };
   const q = new URLSearchParams({ city: cityId, uid: clean(opt.uid) });
@@ -650,6 +809,12 @@ export async function fetchStatus(
       ok: true,
       pool: Math.max(0, Math.floor(Number(body.raw?.pool) || 0)),
       invites: toInvites(body.raw?.list),
+      /*
+       * 我发出去的邀约被接过几次（2026-11-14）。**只给数，不给是谁** ——
+       * 「谁接了」一旦能查到就变成社交账本，跟「不回应 = 没看见」冲突。
+       * 旧服务端不回这个字段，按 0 处理。
+       */
+      mineTaken: Math.max(0, Math.floor(Number(body.raw?.mineTaken) || 0)),
     };
   } catch (e) {
     return { ok: false, reason: netFail(e) };

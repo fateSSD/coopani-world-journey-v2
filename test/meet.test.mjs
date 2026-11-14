@@ -80,7 +80,7 @@ test('没配地址就一个请求都不发', async () => {
   try {
     const opt = { url: '', uid: 'u1', pet: '大肥鱼' };
     assert.equal(await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面'), false);
-    assert.deepEqual(await findNeighbors(opt, 'xian', 'evening'), { list: [], pool: 0 });
+    assert.deepEqual(await findNeighbors(opt, 'xian', 'evening'), { list: [], pool: 0, here: 0 });
     assert.equal(calls.length, 0, `没配地址还发了 ${calls.length} 个请求`);
   } finally { globalThis.fetch = orig; }
 });
@@ -91,7 +91,7 @@ test('服务器挂了不抛错，当没碰见', async () => {
   try {
     const opt = { url: 'https://example.test', uid: 'u1', pet: '大肥鱼' };
     assert.equal(await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面'), false);
-    assert.deepEqual(await findNeighbors(opt, 'xian', 'evening'), { list: [], pool: 0 },
+    assert.deepEqual(await findNeighbors(opt, 'xian', 'evening'), { list: [], pool: 0, here: 0 },
       '连不上就该给空列表，不能抛');
   } finally { globalThis.fetch = orig; }
 });
