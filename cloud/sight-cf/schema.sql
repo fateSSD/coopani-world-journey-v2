@@ -256,3 +256,74 @@ create table if not exists signposts (
 
 create index if not exists idx_signposts_city on signposts (city, at desc);
 create index if not exists idx_signposts_exp on signposts (expires_at);
+
+-- ------------------------------------------------------------------
+-- 错误计数（2026-11-14）。
+--
+-- 11-12 那次全站 500，Worker 侧一个字都没留，用户替我们查了一整天。
+-- 之后各处补了 console.error，但那是**实时日志**——dashboard 上翻，
+-- 没人会天天去看，事后也没有趋势。
+--
+-- 这张表只回答一个问题：**这一小时哪个接口在报错、报了哪种、多少次**。
+--
+-- ## 为什么不每次错误写一行
+--
+-- D1 写入按行计费。错误风暴恰恰是最需要记录的时候，也最容易把额度打爆
+-- （全站 500 → 每个请求都报错 → 一次事故烧掉整个月的写额度）。
+-- 所以写入前有一道**进程内闸**：同一 tag 每分钟最多写一次，
+-- 之后靠 `count = count + 1` 累加。写入量上限 = 错误种类数 × 60/小时。
+-- ------------------------------------------------------------------
+create table if not exists errors (
+  -- 2026-11-14 / 2026-11-14T19（UTC）
+  day      text not null,
+  hour     text not null,
+  -- 哪个路由
+  path     text not null,
+  -- 代码里的标记，如 '[sight profile]'
+  tag      text not null,
+  count    integer not null default 1,
+  -- 最后一条原始消息（截断到 200 字），排查时看这个
+  last_msg text,
+  last_at  text not null,
+  primary key (day, hour, path, tag)
+);
+
+create index if not exists idx_errors_day on errors (day, hour desc);
+
+-- ------------------------------------------------------------------
+-- 同行卡与名片（2026-11-14 补）
+--
+-- 这两张表**线上一直有，这份 schema 里却从来没有** —— 当初是手工建在 D1 上的。
+--
+-- 后果不是「不好看」：任何人拿这份 schema 新建一个库，名片和同行卡会直接
+-- 500（`no such table`），而这要等真跑起来才暴露。`test/sight-cf.test.mjs`
+-- 里那 14 条一直是红的，根子就在这里 —— 测试用真 SQLite 跑，建不出表。
+--
+-- 结构从线上 `sqlite_master` 原样导出，只做了排版。大写是有原因的：
+-- `test/sight-cf-schema.test.mjs` 用 `/CREATE TABLE IF NOT EXISTS party_cards/`
+-- 去匹配这一行，小写匹配不上。
+-- ------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS party_cards (
+  id      TEXT NOT NULL,
+  uid     TEXT NOT NULL,
+  pet     TEXT NOT NULL,
+  note    TEXT NOT NULL DEFAULT '',
+  contact TEXT NOT NULL DEFAULT '',
+  at      TEXT NOT NULL,
+  exp     TEXT NOT NULL,
+  PRIMARY KEY (id, uid)
+);
+
+CREATE TABLE IF NOT EXISTS profiles (
+  uid  TEXT PRIMARY KEY,
+  pet  TEXT NOT NULL,
+  text TEXT NOT NULL DEFAULT '',
+  at   TEXT NOT NULL,
+  exp  TEXT NOT NULL
+);
+
+-- 卡片相关的索引（2026-11-14 补，与线上一致）
+-- `idx_cards_exp` 是定时清理用的 —— 没有它，每次清理都扫全表。
+CREATE INDEX IF NOT EXISTS idx_cards_exp ON party_cards (exp);
+CREATE INDEX IF NOT EXISTS idx_cards_id ON party_cards (id);
+CREATE INDEX IF NOT EXISTS idx_profiles_exp ON profiles (exp);

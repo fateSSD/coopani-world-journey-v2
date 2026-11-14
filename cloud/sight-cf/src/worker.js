@@ -422,6 +422,62 @@ async function bumpRate(db, key, day) {
   ).bind(key, expSec).run();
 }
 
+/* ------------------------------------------------------------------
+ * 错误计数（2026-11-14）
+ *
+ * 11-12 那次全站 500，Worker 侧一个字都没留，用户替我们查了一整天。
+ * 之后各处补了 `console.error` —— 但那是**实时日志**：没人天天翻 dashboard，
+ * 事后也看不出趋势。这张表补的是「这一小时哪个接口在报错、报了哪种、多少次」。
+ *
+ * ## 为什么不是每次错误写一行
+ *
+ * D1 写入按行计费。错误风暴恰恰是最需要记录的时候，也最容易把额度打爆
+ * （全站 500 → 每个请求都报错 → 一次事故烧掉整个月的写额度）。
+ * 所以写入前有一道**进程内闸**：同一 tag 每分钟最多写一次，之后靠 count+1 累加。
+ * 写入量上限 = 错误种类数 × 60/小时。
+ *
+ * 闸在三处会失效（isolate 重启、跨节点、冷启动），失效的后果是**多写几行**
+ * 而不是漏记 —— 这个方向是对的。
+ * ------------------------------------------------------------------ */
+
+/** tag → 上次写入的时刻。isolate 级，重启即清空。 */
+const ERR_SEEN = new Map();
+/** 同一个 tag 最快多久写一次。60 秒：够把风暴压平，又不至于漏掉一整段故障。 */
+const ERR_MIN_GAP_MS = 60_000;
+/** 最多记多少种 tag，防止某类未知异常刷出无数种。 */
+const ERR_MAX_TAGS = 40;
+
+/**
+ * 记一次错误。
+ *
+ * `console.error` 照旧留一份（dashboard 一眼能看到），落库那份是给趋势用的。
+ * 记账本身失败**绝不能再抛** —— 否则一个错误变成两个。
+ */
+function recordError(env, ctx, tag, err, path) {
+  const msg = String(err && err.message ? err.message : err ?? '').slice(0, 200);
+  console.error(tag, msg);
+  try {
+    const db = env?.DB;
+    if (!db || ERR_SEEN.size > ERR_MAX_TAGS) return;
+    const now = Date.now();
+    if (now - (ERR_SEEN.get(tag) ?? 0) < ERR_MIN_GAP_MS) return;
+    ERR_SEEN.set(tag, now);
+    const iso = new Date().toISOString();
+    const p = db.prepare(
+      `INSERT INTO errors (day, hour, path, tag, count, last_msg, last_at)
+       VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6)
+       ON CONFLICT(day, hour, path, tag) DO UPDATE SET
+         count = errors.count + 1,
+         last_msg = excluded.last_msg,
+         last_at = excluded.last_at`,
+    ).bind(iso.slice(0, 10), iso.slice(0, 13), path || '', tag, msg, iso).run();
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(p.catch(() => {}));
+    else p.catch(() => {});
+  } catch {
+    /* 记账失败静默 —— 它不该影响任何正常路径。 */
+  }
+}
+
 const newId = () => [...crypto.getRandomValues(new Uint8Array(8))]
   .map((b) => b.toString(16).padStart(2, '0')).join('');
 
@@ -618,7 +674,7 @@ async function profileRoute(request, env, url, method) {
      * 只有名片这两条没有 —— 于是 11-12 那天全站 D1 500，客户端只拿到一句
      * 「服务器回了 500」，而 Worker 侧一个字都没留，查了一整天。
      */
-    console.error('[sight profile]', e && e.message ? e.message : e);
+    recordError(env, null, '[sight profile]', e, '/sight/profile');
     return reply(500, { ok: false, error: 'server error' });
   }
 }
@@ -774,7 +830,7 @@ async function cardRoute(request, env, url, method) {
     return reply(200, { ok: true });
   } catch (e) {
     /* 和名片同一条（2026-11-14 补）：留卡失败也得留下是哪种失败。 */
-    console.error('[sight card]', e && e.message ? e.message : e);
+    recordError(env, null, '[sight card]', e, '/sight/card');
     return reply(500, { ok: false, error: 'server error' });
   }
 }
@@ -941,7 +997,7 @@ async function inviteRoute(request, env, url, method) {
 
     return reply(405, { ok: false, error: 'method not allowed' });
   } catch (e) {
-    console.error('[sight invite]', e && e.message ? e.message : e);
+    recordError(env, null, '[sight invite]', e, '/sight/invite');
     return reply(500, { ok: false, error: 'server error' });
   }
 }
@@ -1004,7 +1060,7 @@ async function footprintRoute(request, env, url, method) {
       ).bind(uid, city, now).run();
       return reply(200, { ok: true });
     } catch (e) {
-      console.error('[footprint]', e && e.message ? e.message : e);
+      recordError(env, null, '[footprint]', e, '/sight/footprints');
       return reply(500, { ok: false, error: 'server error' });
     }
   }
@@ -1027,7 +1083,7 @@ async function footprintRoute(request, env, url, method) {
       }));
       return reply(200, { ok: true, total: places.length, places });
     } catch (e) {
-      console.error('[footprints]', e && e.message ? e.message : e);
+      recordError(env, null, '[footprints]', e, '/sight/footprints');
       return reply(500, { ok: false, error: 'server error' });
     }
   }
@@ -1103,7 +1159,7 @@ async function signpostRoute(request, env, url, method) {
 
       return reply(200, { ok: true, id });
     } catch (e) {
-      console.error('[signpost]', e && e.message ? e.message : e);
+      recordError(env, null, '[signpost]', e, '/sight/signposts');
       return reply(500, { ok: false, error: 'server error' });
     }
   }
@@ -1135,7 +1191,7 @@ async function signpostRoute(request, env, url, method) {
           .filter((r) => r.pet && r.text),
       });
     } catch (e) {
-      console.error('[signposts]', e && e.message ? e.message : e);
+      recordError(env, null, '[signposts]', e, '/sight/signposts');
       return reply(500, { ok: false, error: 'server error' });
     }
   }
@@ -1215,7 +1271,7 @@ async function statusRoute(request, env, url, ctx) {
       })),
     });
   } catch (e) {
-    console.error('[sight status]', e && e.message ? e.message : e);
+    recordError(env, null, '[sight status]', e, '/sight/status');
     return reply(500, { ok: false, error: 'server error' });
   }
 }
@@ -1318,7 +1374,7 @@ async function acceptRoute(request, env, url, method) {
     // `size` = 含发起者一共几只。她会说「现在这条路上有三只了」。
     return respond({ size: joined + 2 });
   } catch (e) {
-    console.error('[sight accept]', e && e.message ? e.message : e);
+    recordError(env, null, '[sight accept]', e, '/sight/accept');
     return reply(500, { ok: false, error: 'server error' });
   }
 }
@@ -1831,7 +1887,7 @@ async function adminRoute(request, env, url, method) {
       })),
     });
   } catch (e) {
-    console.error('[sight admin]', e && e.message ? e.message : e);
+    recordError(env, null, '[sight admin]', e, '/sight/admin');
     return reply(500, { ok: false, error: 'server error' });
   }
 }
@@ -2116,7 +2172,7 @@ export default {
        * 不把内部错误回给调用方 —— 日志里留着就够了。
        * 尤其别把 D1 的报错原文带出去，里面可能有表结构。
        */
-      console.error('[sight]', e && e.message ? e.message : e);
+      recordError(env, null, '[sight]', e, '/sight');
       return reply(500, { ok: false, error: 'server error' });
     }
   },

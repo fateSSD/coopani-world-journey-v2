@@ -1245,3 +1245,54 @@ test('名片：过期就看不见了', async () => {
   const got = await (await worker.fetch(profReq('GET', null, `uid=${uidA}`), env)).json();
   assert.equal(got.others.length, 0, '过期的名片不该还被列出来');
 });
+
+/* ---------------- 错误计数（2026-11-14） ---------------- */
+
+test('DB 挂了时，错误记账不能把请求再搞挂一次', async () => {
+  /*
+   * 记账本身失败必须静默 —— 否则「一个错误」会变成「两个错误」，
+   * 而且第二个是在处理第一个的过程中抛的，堆栈会指错地方。
+   *
+   * 11-12 那次全站 500 没有任何落库线索，所以补了 errors 表；
+   * 但补法不能是「每处 catch 里同步写一行」—— 那会双向放大。
+   */
+  const brokenDb = {
+    prepare() { throw new Error('D1 quota exceeded'); },
+    query() { return []; },
+  };
+  const env = { DB: brokenDb };
+  const r = await worker.fetch(
+    new Request(`${BASE}/profile`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ uid: UID_A, pet: '大肥鱼', text: '测试', contact: '' }),
+    }),
+    env,
+  );
+  assert.equal(r.status, 500, '应该正常返回 500，不该把异常抛出去');
+});
+
+test('同类错误落一行，后到的累加 count 并更新 last_msg', async () => {
+  /*
+   * 错误风暴时每次请求都报错，每次都写一行的话，一次事故就烧掉整月写额度。
+   * 进程内闸（同 tag 一分钟一次）拦在前面，之后靠 upsert 累加。
+   *
+   * 单测造不出「两个不同 isolate」，所以这里只验 SQL 那一半：
+   * 同键重复写必须是 count+1，而不是多一行。
+   */
+  const env = { DB: makeDB() };
+  const iso = '2026-11-14T19:00:00.000Z';
+  const stmt = (n) => env.DB.prepare(
+    `INSERT INTO errors (day, hour, path, tag, count, last_msg, last_at)
+     VALUES (?1,?2,?3,?4,1,?5,?6)
+     ON CONFLICT(day, hour, path, tag) DO UPDATE SET
+       count = errors.count + 1, last_msg = excluded.last_msg, last_at = excluded.last_at`,
+  ).bind(iso.slice(0, 10), iso.slice(0, 13), '/sight/status', '[sight status]', `msg${n}`, iso);
+  stmt(1).run();
+  stmt(2).run();
+  stmt(3).run();
+  const rows = env.DB.query('SELECT count, last_msg FROM errors');
+  assert.equal(rows.length, 1, `应该只有一行：${JSON.stringify(rows)}`);
+  assert.equal(rows[0].count, 3, 'count 没累加');
+  assert.equal(rows[0].last_msg, 'msg3', 'last_msg 没更新成最新那条');
+});

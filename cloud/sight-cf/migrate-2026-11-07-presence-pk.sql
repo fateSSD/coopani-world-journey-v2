@@ -74,6 +74,8 @@ CREATE INDEX IF NOT EXISTS idx_presence_uid
   ON presence (uid, at DESC);
 CREATE INDEX IF NOT EXISTS idx_presence_at
   ON presence (at);
+CREATE INDEX IF NOT EXISTS idx_presence_at_uid
+  ON presence (at, uid);
 
 -- 5) 自检：行数应该 ≤ 旧表行数（去重只会变少），且每只每天 ≤ 4 行
 SELECT COUNT(*) AS rows_now FROM presence;
