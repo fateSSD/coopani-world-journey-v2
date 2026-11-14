@@ -137,6 +137,8 @@ const TEXT = {
     partiesTitle: '一起走过的那几趟',
     partiesEmpty: '还没有。约着走完一段，这里就会出现。',
     partiesNotReady: '碰面服务器没配，这几趟的卡取不到。',
+    profileUrlBad: '「碰面服务器」那一栏读不成网址：{}。去设置里改一下，那一栏改好就直接生效，不用重启。',
+    profileUrlFixed: '地址已自动整理：{}。',
     cardTheirs: '她留的',
     cardMine: '你留的',
     cardNote: '一句话',
@@ -303,6 +305,8 @@ const TEXT = {
     partiesTitle: 'Trips together',
     partiesEmpty: 'None yet. Finish a trip with someone and it shows up here.',
     partiesNotReady: 'No sight server configured, so the cards from these trips cannot be fetched.',
+    profileUrlBad: 'The sight server field is not a usable address: {}. Fix it in settings; it applies right away, no restart needed.',
+    profileUrlFixed: 'Address was tidied up: {}.',
     cardTheirs: 'Left by them',
     cardMine: 'Left by you',
     cardNote: 'A line',
@@ -426,6 +430,125 @@ function el(tag, cls, txt) {
   if (txt != null) node.textContent = String(txt);
   return node;
 }
+
+/**
+ * 「设置」页的文案（2026-11-14）。
+ *
+ * 单独一张表，不并进上面那个 `TEXT`：`TEXT` 是「她此刻」那张页的字典，
+ * 六十多个键已经很长了，再塞二十个生图字段进去，找东西会更难。
+ * 这一页只有一处用，就近放。
+ */
+const SET = {
+  zh: {
+    eyebrow: '生图设置',
+    title: '她拍的照片从哪儿出来',
+    intro: '选一边，只填那一边要的。另一边的东西不会丢，只是这一页不显示。',
+    cloud: '云端服务商',
+    local: '本地 ComfyUI',
+    cloudHint: '贴一把密钥就能用。豆包已把地址、模型、合规尺寸预设好，填个密钥就完事。',
+    localHint: '要先开着 ComfyUI，并选一份「Save (API Format)」导出的 workflow。',
+    preset: '服务商',
+    presets: { doubao: '豆包 Seedream', openai: 'OpenAI', custom: '自定义' },
+    presetHint: '下面三格留空就用这一档自带的值；手填的永远优先。',
+    api: '服务地址',
+    apiCloud: '填到 /v1 或 /api/v3 为止，别带后面的路径',
+    apiLocal: '默认 http://127.0.0.1:8188',
+    model: '模型名',
+    size: '出图尺寸',
+    sizeHint: '「宽x高」。留空＝服务商默认。豆包低于 2560×1440 会被自动放大。',
+    key: '密钥',
+    keySaved: '已存好',
+    keyInEnv: '已存好 · 在 .env 里',
+    keyNone: '还没填',
+    keyHint: '留空＝不改。填一次就会被收进 .env，下次回到这一页还是空 —— 那是搬走了，不是丢了。',
+    workflow: '工作流 JSON',
+    pick: '选文件',
+    pickFail: '没选成',
+    promptNode: '提示词节点 id',
+    negative: '负向提示词',
+    negativeNode: '负向节点 id',
+    optional: '可留空',
+    save: '保存',
+    saving: '保存中…',
+    saved: '已保存，下一张照片就用这个',
+    unchanged: '没有改动',
+    note: '现在连的是',
+    needApi: '缺服务地址，云端出不了图',
+    needWorkflow: '缺 workflow，本地出不了图',
+    other: '两边共用',
+    minimal: '极简提示词',
+    minimalHint: '画出来老是同一座建筑时打开：只发「城市 + 景点 + 时间」，不再补城市风貌那一段。',
+    style: '画面风格',
+    styleHint: '留空＝真实旅行照片（胶片、自然光）。接二次元底模时写「anime style, cel shading」；写 none＝不指定，交给底模。',
+    cast: '照片里出不出人',
+    castHint: '留空＝画面里没有人，拍的是她眼前的风景。想让她出现，写一段外貌描述，越具体越稳。',
+    watermark: '去掉「AI生成」水印',
+    watermarkHint: '服务商出图后盖上去的那一条，提示词压不掉。auto＝云端裁底边、本地不动；off＝一律不裁；crop＝一律裁掉底部 8%。',
+    watermarks: { auto: '自动', off: '不裁', crop: '都裁' },
+    timeout: '出图最多等几秒',
+    timeoutHint: '0＝默认（本地 180、云端 90）。超时只是还没画完，不是坏了。',
+    photoDir: '照片额外存一份到',
+    photoDirHint: '这是备份，不是搬家 —— 主份永远在日记目录的 media/ 下（月报里嵌的是那边）。只对之后拍的照片起作用。',
+    pickDir: '选目录',
+    more: '生图的全部设置都在这一页了 —— 「配置」页不再有生图条目。照片主份永远跟着日记目录走。',
+    loadFail: '读不出当前设置：',
+  },
+  en: {
+    eyebrow: 'Image settings',
+    title: 'Where her photos come from',
+    intro: 'Pick one side and fill in that side only. Nothing on the other side is lost, it is just hidden here.',
+    cloud: 'Cloud provider',
+    local: 'Local ComfyUI',
+    cloudHint: 'One API key is enough. Doubao already has its URL, model and compliant size preset.',
+    localHint: 'ComfyUI must be running, and you need a workflow exported with “Save (API Format)”.',
+    preset: 'Provider',
+    presets: { doubao: 'Doubao Seedream', openai: 'OpenAI', custom: 'Custom' },
+    presetHint: 'Leave the three fields below empty to use this preset; anything you type wins.',
+    api: 'Endpoint',
+    apiCloud: 'Up to /v1 or /api/v3 — no path after that',
+    apiLocal: 'Default http://127.0.0.1:8188',
+    model: 'Model',
+    size: 'Size',
+    sizeHint: '“WxH”. Empty = provider default.',
+    key: 'API key',
+    keySaved: 'Saved',
+    keyInEnv: 'Saved · in .env',
+    keyNone: 'Not set',
+    keyHint: 'Empty = leave it alone. Once saved it moves into .env and this box goes empty again.',
+    workflow: 'Workflow JSON',
+    pick: 'Choose file',
+    pickFail: 'Nothing chosen',
+    promptNode: 'Prompt node id',
+    negative: 'Negative prompt',
+    negativeNode: 'Negative node id',
+    optional: 'optional',
+    save: 'Save',
+    saving: 'Saving…',
+    saved: 'Saved — the next photo uses this',
+    unchanged: 'Nothing changed',
+    note: 'Currently hitting',
+    needApi: 'No endpoint — cloud cannot shoot',
+    needWorkflow: 'No workflow — local cannot shoot',
+    other: 'Shared by both',
+    minimal: 'Minimal prompt',
+    minimalHint: 'Turn on when every photo looks like the same building: sends only city + spot + time.',
+    style: 'Style',
+    styleHint: 'Empty = real travel photo (film, natural light). For anime base models write “anime style, cel shading”; “none” = leave it to the model.',
+    cast: 'Anyone in frame',
+    castHint: 'Empty = empty scenery. To include her, describe her appearance — the more specific the steadier.',
+    watermark: 'Remove the “AI generated” mark',
+    watermarkHint: 'added by the provider after generation; a prompt cannot remove it. auto = crop on cloud only; off = never; crop = always (bottom 8%).',
+    watermarks: { auto: 'Auto', off: 'Never', crop: 'Always' },
+    timeout: 'Timeout (seconds)',
+    timeoutHint: '0 = default (180 local, 90 cloud). A timeout means “not finished yet”, not “broken”.',
+    photoDir: 'Also copy photos to',
+    photoDirHint: 'This is a backup, not a move — the primary copy always lives in the diary folder’s media/. Applies to new photos only.',
+    pickDir: 'Choose folder',
+    more: 'Every image setting now lives on this page — the Config page no longer has image entries.',
+    loadFail: 'Cannot read current settings: ',
+  },
+};
+
 
 /**
  * 把后台的报错翻成人话（2026-11-11）。
@@ -1197,8 +1320,15 @@ export default {
             const tip = el('span', 'jr-dir-tip', T.dirTip);
             save.addEventListener('click', () => {
               save.disabled = true;
-              // 部分提交：只写这一个字段，这一组里别的设置不动。
-              ctx.setConfig('journey.services', { 'worlds.journey.photoDir': input.value.trim() })
+              /*
+               * 部分提交：只写这一个字段，别的生图设置不动。
+               *
+               * 原来写的是 `ctx.setConfig('journey.services', { photoDir })` ——
+               * 那个组的 schema 里**从来没有 photoDir**，所以这条路一直是 400
+               * （「配置组 journey.services 没有声明 worlds.journey.photoDir」），
+               * 只是没人点过这一格。生图组删掉之后连组都没了，改走同一条后端通道。
+               */
+              ctx.invoke('saveImageSettings', [{ photoDir: input.value.trim() }])
                 .then(() => showDir(dir, input.value.trim()))
                 .catch((e) => {
                   save.disabled = false;
@@ -1623,7 +1753,17 @@ export default {
         try {
           const pr = await ctx.invoke('profile');
           if (pr && pr.mine) profTa.value = pr.mine.text || '';
-          if (pr && !pr.ready) profTip.textContent = T.partiesNotReady;
+          /*
+           * 2026-11-13：`ready:false` 分两种 —— 没填，和填了但读不成网址。
+           * 原来一律说「没配」，填了地址的人会照着这句去「配」，配一百遍也还是那一格字。
+           */
+          if (pr && !pr.ready) {
+            profTip.textContent = pr.urlIssue
+              ? T.profileUrlBad.replace('{}', pr.urlIssue)
+              : T.partiesNotReady;
+          } else if (pr && pr.urlFixed) {
+            profTip.textContent = T.profileUrlFixed.replace('{}', pr.urlFixed);
+          }
           drawProfiles((pr && pr.others) || []);
         } catch (e) {
           profTip.textContent = T.err;
@@ -1726,6 +1866,421 @@ export default {
         } catch (e) {
           partiesBox.replaceChildren(el('p', 'jr-empty', T.err));
         }
+      },
+    },
+
+    /**
+     * 「设置」页：生图走云端还是本地（2026-11-14）。
+     *
+     * ## 为什么要一页自己的 UI
+     *
+     * 宿主的设置面板按 schema 平铺渲染，`ConfigProperty` 里**没有条件显示** ——
+     * 十六个键全摊在一屏，云端和本地的字段混着排，用户只能靠标题里的
+     * 「［云端］」「［本地］」去认。这一页要做的就是把它拆成两半：
+     * 点哪边，只显示哪边的字段。
+     *
+     * ## 三个设计决定
+     *
+     * 1. **改动先落草稿，点保存才提交。** 每敲一个字就写一次配置，会把保存日志刷满；
+     *    而且半截的地址（`https://ark.cn-bei`）会在这几十毫秒里成为生效值。
+     * 2. **密钥只写不回显。** 输入框永远空着，placeholder 说「已存好 / 还没填」。
+     *    这是唯一一种既能改、又不把密钥抄进 DOM 的写法。
+     * 3. **服务地址按后端各存一份。** 云端和本地共用 `imageApi` 这一个键，
+     *    但值是两回事（`https://ark…/api/v3` 和 `http://127.0.0.1:8188`）。
+     *    切成同一个草稿的话，切过去再切回来，地址就被另一边的冲掉了 ——
+     *    而用户点这个按钮的期待是「换一套」，不是「清空」。
+     */
+    settings: {
+      async mount(ctx) {
+        const S = SET[String(ctx.language || 'zh').startsWith('zh') ? 'zh' : 'en'];
+        const T = text(ctx.language);
+        const app = el('div', 'jr-app jr-set');
+        ctx.root.append(app);
+
+        let data = null;
+        const draft = {
+          protocol: 'openai',
+          preset: 'custom',
+          api: { openai: '', comfyui: '' },
+          model: '',
+          size: '',
+          workflow: '',
+          promptNode: '',
+          negative: '',
+          negativeNode: '',
+          key: '',
+          // 「两边共用」那一区。原来住在设置页的「生图」组里，组删了就搬到这儿。
+          minimal: false,
+          style: '',
+          cast: '',
+          watermark: 'auto',
+          timeoutSec: 0,
+          photoDir: '',
+        };
+
+        const seg = el('div', 'jr-set-seg');
+        const bodyBox = el('div', 'jr-set-body');
+        const otherBox = el('div', 'jr-set-other');
+        const noteBox = el('p', 'jr-set-note');
+        const status = el('span', 'jr-set-status');
+        const saveBtn = el('button', 'jr-btn jr-btn-primary', S.save);
+        saveBtn.type = 'button';
+        // 先锁上，等第一轮读数回来再开 —— 理由见 `load` 的 catch。
+        saveBtn.disabled = true;
+        const foot = el('div', 'jr-set-foot');
+
+        app.append(el('p', 'jr-eyebrow', S.eyebrow));
+        app.append(el('h1', 'jr-set-h1', S.title));
+        app.append(el('p', 'jr-set-intro', S.intro));
+        app.append(seg, bodyBox, otherBox, noteBox, foot);
+        app.append(el('p', 'jr-set-more', S.more));
+        foot.append(saveBtn, status);
+
+        /** 预设表按当前草稿里选的那一档查，查不到就当没有。 */
+        const presetNow = () => {
+          const all = data && data.presets;
+          return (all && all[draft.preset]) || null;
+        };
+
+        /** 一行「标签 + 输入框 + 一行小字」。 */
+        const field = (label, hint, value, oninput, placeholder) => {
+          const row = el('div', 'jr-set-row');
+          row.append(el('span', 'jr-set-k', label));
+          const input = el('input', 'jr-set-v');
+          input.type = 'text';
+          input.spellcheck = false;
+          input.value = value || '';
+          if (placeholder) input.placeholder = placeholder;
+          input.addEventListener('input', () => oninput(input.value), { signal: ctx.signal });
+          row.append(input);
+          if (hint) row.append(el('span', 'jr-set-hint', hint));
+          return row;
+        };
+
+        const segBtn = (id, label) => {
+          const b = el('button', 'jr-set-seg-btn', label);
+          b.type = 'button';
+          b.addEventListener('click', () => {
+            draft.protocol = id;
+            drawSeg();
+            drawBody();
+          }, { signal: ctx.signal });
+          return b;
+        };
+        const cloudBtn = segBtn('openai', S.cloud);
+        const localBtn = segBtn('comfyui', S.local);
+        seg.append(cloudBtn, localBtn);
+
+        const drawSeg = () => {
+          cloudBtn.classList.toggle('on', draft.protocol === 'openai');
+          localBtn.classList.toggle('on', draft.protocol === 'comfyui');
+        };
+
+        const presetRow = () => {
+          const row = el('div', 'jr-set-row');
+          row.append(el('span', 'jr-set-k', S.preset));
+          const box = el('div', 'jr-set-chips');
+          for (const id of ['doubao', 'openai', 'custom']) {
+            const chip = el('button', 'jr-set-chip', S.presets[id]);
+            chip.type = 'button';
+            if (draft.preset === id) chip.classList.add('on');
+            chip.addEventListener('click', () => {
+              draft.preset = id;
+              drawBody();   // placeholder 要跟着预设换
+            }, { signal: ctx.signal });
+            box.append(chip);
+          }
+          row.append(box);
+          row.append(el('span', 'jr-set-hint', S.presetHint));
+          return row;
+        };
+
+        const keyRow = () => {
+          const row = el('div', 'jr-set-row');
+          row.append(el('span', 'jr-set-k', S.key));
+          const box = el('div', 'jr-set-keybox');
+          const input = el('input', 'jr-set-v');
+          input.type = 'password';
+          input.autocomplete = 'off';
+          input.spellcheck = false;
+          input.placeholder = data && data.hasKey
+            ? (data.keyInEnv ? S.keyInEnv : S.keySaved)
+            : S.keyNone;
+          input.addEventListener('input', () => { draft.key = input.value; }, { signal: ctx.signal });
+          box.append(input);
+          row.append(box);
+          row.append(el('span', 'jr-set-hint', S.keyHint));
+          return row;
+        };
+
+        const workflowRow = () => {
+          const row = el('div', 'jr-set-row');
+          row.append(el('span', 'jr-set-k', S.workflow));
+          const box = el('div', 'jr-set-keybox');
+          const input = el('input', 'jr-set-v');
+          input.type = 'text';
+          input.spellcheck = false;
+          input.value = draft.workflow || '';
+          input.placeholder = 'pet-qwen.json';
+          input.addEventListener('input', () => { draft.workflow = input.value; }, { signal: ctx.signal });
+          const pick = el('button', 'jr-btn', S.pick);
+          pick.type = 'button';
+          pick.addEventListener('click', () => {
+            /*
+             * 选完直接把路径填回去 —— 面板里存的是**路径**，不是 JSON 内容，
+             * 和设置页那一项（`x-path`）保持同一个语义。`photo.ts` 那边两种都认。
+             */
+            ctx.pickPath({ kind: 'file', extensions: ['.json'] }).then((picked) => {
+              if (!picked) return;
+              draft.workflow = picked;
+              input.value = picked;
+            }).catch((e) => {
+              status.textContent = `${S.pickFail}（${String((e && e.message) || e)}）`;
+            });
+          }, { signal: ctx.signal });
+          box.append(input, pick);
+          row.append(box);
+          return row;
+        };
+
+        const drawBody = () => {
+          bodyBox.replaceChildren();
+          if (!data) return;
+          const pv = presetNow();
+          const cloud = draft.protocol === 'openai';
+          bodyBox.append(el('p', 'jr-set-side', cloud ? S.cloudHint : S.localHint));
+
+          if (cloud) {
+            bodyBox.append(presetRow());
+            bodyBox.append(field(
+              S.api, S.apiCloud, draft.api.openai,
+              (v) => { draft.api.openai = v; }, (pv && pv.api) || '',
+            ));
+            bodyBox.append(field(
+              S.model, '', draft.model,
+              (v) => { draft.model = v; }, (pv && pv.model) || '',
+            ));
+            bodyBox.append(field(
+              S.size, S.sizeHint, draft.size,
+              (v) => { draft.size = v; }, (pv && pv.size) || '',
+            ));
+            bodyBox.append(keyRow());
+          } else {
+            bodyBox.append(field(
+              S.api, S.apiLocal, draft.api.comfyui,
+              (v) => { draft.api.comfyui = v; }, 'http://127.0.0.1:8188',
+            ));
+            bodyBox.append(workflowRow());
+            bodyBox.append(field(S.promptNode, S.optional, draft.promptNode, (v) => { draft.promptNode = v; }, '6'));
+            bodyBox.append(field(S.negative, S.optional, draft.negative, (v) => { draft.negative = v; }, ''));
+            bodyBox.append(field(S.negativeNode, S.optional, draft.negativeNode, (v) => { draft.negativeNode = v; }, ''));
+          }
+        };
+
+        const drawNote = () => {
+          noteBox.replaceChildren();
+          if (!data) return;
+          noteBox.append(el('b', '', `${S.note} `));
+          noteBox.append(el('span', '', data.note || '—'));
+          if (data.sizeNote) {
+            noteBox.append(el('br'));
+            noteBox.append(el('span', 'jr-set-warn', data.sizeNote));
+          }
+        };
+
+        /** 一行「标签 + 复选框」。 */
+        const checkRow = (label, hint, checked, onchange) => {
+          const row = el('div', 'jr-set-row');
+          row.append(el('span', 'jr-set-k', label));
+          const box = el('div', 'jr-set-keybox');
+          const input = el('input', 'jr-set-check');
+          input.type = 'checkbox';
+          input.checked = Boolean(checked);
+          input.addEventListener('change', () => onchange(input.checked), { signal: ctx.signal });
+          box.append(input);
+          row.append(box);
+          row.append(el('span', 'jr-set-hint', hint));
+          return row;
+        };
+
+        /** 一行「标签 + 几个胶囊」。选项少于一屏时比下拉好：一眼全看见。 */
+        const chipRow = (label, hint, options, current, onpick) => {
+          const row = el('div', 'jr-set-row');
+          row.append(el('span', 'jr-set-k', label));
+          const box = el('div', 'jr-set-chips');
+          for (const opt of options) {
+            const chip = el('button', 'jr-set-chip', opt.label);
+            chip.type = 'button';
+            if (current === opt.id) chip.classList.add('on');
+            chip.addEventListener('click', () => onpick(opt.id), { signal: ctx.signal });
+            box.append(chip);
+          }
+          row.append(box);
+          row.append(el('span', 'jr-set-hint', hint));
+          return row;
+        };
+
+        /**
+         * 「两边共用」那一区。
+         *
+         * 这六项原来住在设置页的「生图」组里，组跟着删掉了 —— 不搬进来的话，
+         * 「配置」页少一屏的代价不是少一屏，是**这六项从此没有入口**。
+         * 它们和协议无关（云端本地都吃），所以不随上面的切换重绘。
+         */
+        const drawOther = () => {
+          otherBox.replaceChildren();
+          if (!data) return;
+          otherBox.append(el('h2', 'jr-set-h2', S.other));
+          otherBox.append(checkRow(S.minimal, S.minimalHint, draft.minimal, (v) => { draft.minimal = v; }));
+          otherBox.append(field(S.style, S.styleHint, draft.style, (v) => { draft.style = v; }, ''));
+          otherBox.append(field(S.cast, S.castHint, draft.cast, (v) => { draft.cast = v; }, ''));
+          otherBox.append(chipRow(
+            S.watermark, S.watermarkHint,
+            [
+              { id: 'auto', label: S.watermarks.auto },
+              { id: 'off', label: S.watermarks.off },
+              { id: 'crop', label: S.watermarks.crop },
+            ],
+            draft.watermark,
+            (id) => { draft.watermark = id; drawOther(); },
+          ));
+          otherBox.append(field(
+            S.timeout, S.timeoutHint, String(draft.timeoutSec || ''),
+            (v) => { draft.timeoutSec = Math.max(0, Math.round(Number(v) || 0)); }, '0',
+          ));
+
+          const dirRow = el('div', 'jr-set-row');
+          dirRow.append(el('span', 'jr-set-k', S.photoDir));
+          const dirBox = el('div', 'jr-set-keybox');
+          const dirInput = el('input', 'jr-set-v');
+          dirInput.type = 'text';
+          dirInput.spellcheck = false;
+          dirInput.value = draft.photoDir || '';
+          dirInput.addEventListener('input', () => { draft.photoDir = dirInput.value; }, { signal: ctx.signal });
+          const pickDir = el('button', 'jr-btn', S.pickDir);
+          pickDir.type = 'button';
+          pickDir.addEventListener('click', () => {
+            ctx.pickPath({ kind: 'directory' }).then((picked) => {
+              if (!picked) return;
+              draft.photoDir = picked;
+              dirInput.value = picked;
+            }).catch((e) => {
+              status.textContent = `${S.pickFail}（${String((e && e.message) || e)}）`;
+            });
+          }, { signal: ctx.signal });
+          dirBox.append(dirInput, pickDir);
+          dirRow.append(dirBox);
+          dirRow.append(el('span', 'jr-set-hint', S.photoDirHint));
+          otherBox.append(dirRow);
+        };
+
+        /** 把一份后端快照铺回草稿和界面。首次读取与保存后的刷新共用同一段。 */
+        const applySnapshot = (snap) => {
+          data = snap;
+          saveBtn.disabled = false;
+          draft.protocol = data.protocol === 'comfyui' ? 'comfyui' : 'openai';
+          draft.preset = data.preset || 'custom';
+          /*
+           * 已保存的地址只归「它像的那一边」。
+           *
+           * `imageApi` 两条路共用一个键，但值是两回事。按内容归类，切过去再切回来
+           * 地址还在；不归类的话，切一次就只剩一边有值 —— 而用户点这个按钮的
+           * 期待是「换一套」，不是「清空」。
+           */
+          const looksLocal = /127\.0\.0\.1|localhost|:8188|192\.168\./i.test(data.api || '');
+          draft.api = { openai: '', comfyui: '' };
+          draft.api[looksLocal ? 'comfyui' : 'openai'] = data.api || '';
+          draft.model = data.model || '';
+          draft.size = data.size || '';
+          draft.workflow = data.workflow || '';
+          draft.promptNode = data.promptNode || '';
+          draft.negative = data.negative || '';
+          draft.negativeNode = data.negativeNode || '';
+          draft.minimal = Boolean(data.minimal);
+          draft.style = data.style || '';
+          draft.cast = data.cast || '';
+          draft.watermark = data.watermark || 'auto';
+          draft.timeoutSec = Number(data.timeoutSec) || 0;
+          draft.photoDir = data.photoDir || '';
+          draft.key = '';
+          drawSeg();
+          drawBody();
+          drawOther();
+          drawNote();
+        };
+
+        const load = async () => {
+          try {
+            applySnapshot(await ctx.invoke('imageSettings'));
+          } catch (e) {
+            /*
+             * **读不到当前值就不许写。** 这时草稿全是初始值（地址空、模型空），
+             * 保存一次等于把用户配好的东西全抹掉 —— 而这恰恰是他最需要
+             * 原样保留的时刻（扩展没起来 / Core 还是旧版本）。
+             */
+            saveBtn.disabled = true;
+            bodyBox.replaceChildren(el('p', 'jr-empty', `${S.loadFail}${why(T, e)}`));
+          }
+        };
+
+        saveBtn.addEventListener('click', () => {
+          const cloud = draft.protocol === 'openai';
+          const api = (draft.api[draft.protocol] || '').trim();
+          /*
+           * **只提交当前这一边的键。**
+           *
+           * 全提交过一次，代价很实在：在本地页点保存，`imageModel` 跟着提交了空串，
+           * 把云端填好的模型名清掉了 —— 而那人根本没碰过那一格。
+           * 界面不显示的项，就不该被这次保存碰到。
+           */
+          const values = { imageProtocol: draft.protocol };
+          if (cloud) {
+            values.imagePreset = draft.preset;
+            values.imageApi = api;
+            values.imageModel = draft.model.trim();
+            values.imageSize = draft.size.trim();
+            /*
+             * 密钥留空＝不动，这一条必须在 `values` 之外判断 ——
+             * 提交空串会把它清掉，而「我没想改密钥」是最常见的一次保存。
+             */
+            if (draft.key.trim()) values.imageKey = draft.key.trim();
+          } else {
+            values.imageApi = api;
+            values.imageWorkflow = draft.workflow.trim();
+            values.imagePromptNode = draft.promptNode.trim();
+            values.comfyNegative = draft.negative.trim();
+            values.comfyNegativeNode = draft.negativeNode.trim();
+          }
+          /*
+           * 「两边共用」那六项每次都提交 —— 界面上一直显示，改动跟协议无关，
+           * 不存在「这一边不该碰那一边」的问题。
+           */
+          values.imageMinimal = draft.minimal;
+          values.imageStyle = draft.style.trim();
+          values.imageCast = draft.cast.trim();
+          values.imageWatermark = draft.watermark;
+          values.imageTimeoutSec = draft.timeoutSec;
+          values.photoDir = draft.photoDir.trim();
+
+          saveBtn.disabled = true;
+          status.textContent = S.saving;
+          /*
+           * 写走 `invoke`，不走 `ctx.setConfig`。
+           *
+           * 生图那一组已经从「配置」页删掉了，而宿主 `/api/config` 是**按组寻址**的
+           * —— 组不在，连提交都找不到门。后端用 `persist` 落盘，同样会改 `cfg` 活对象，
+           * 所以下一张照片立刻按新设置走；而且它直接回一份最新快照，省一次往返。
+           */
+          ctx.invoke('saveImageSettings', [values]).then((fresh) => {
+            status.textContent = S.saved;
+            applySnapshot(fresh);
+          }).catch((e) => {
+            saveBtn.disabled = false;
+            status.textContent = why(T, e);
+          });
+        }, { signal: ctx.signal });
+
+        await load();
       },
     },
   },

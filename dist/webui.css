@@ -890,3 +890,218 @@
   margin-top: 18px;
   max-width: 68ch;
 }
+
+/* ---------------- 设置页：生图的云端 / 本地（2026-11-14） ---------------- */
+
+/*
+ * 为什么这页的控件是手搓的、不复用上面那套卡片
+ *
+ * 上面那套是给「读」用的（时间、天气、照片），字号和行距都偏松。
+ * 这一页是给「填」用的：一行一项、标签窄、输入框撑满，眼睛要能竖着往下扫，
+ * 而不是横着读句子。所以标签固定 96px，值占剩下的全部。
+ */
+.jr-set-h1 {
+  margin: 2px 0 6px;
+  font-size: 19px;
+  letter-spacing: .01em;
+}
+.jr-set-intro {
+  margin: 0 0 18px;
+  color: var(--jr-soft);
+  font-size: 12.5px;
+  line-height: 1.7;
+  max-width: 62ch;
+}
+
+/* 两个按钮一格。选中那个用赤陶描边 —— 和「她此刻」的强调色一致，不引入新颜色。 */
+.jr-set-seg {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.jr-set-seg-btn {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1px solid var(--jr-line);
+  border-radius: 9px;
+  background: var(--jr-card);
+  color: var(--jr-soft);
+  font-size: 13px;
+  font-weight: 600;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.jr-set-seg-btn:hover {
+  border-color: var(--jr-accent);
+  color: var(--jr-accent);
+}
+.jr-set-seg-btn.on {
+  border-color: var(--jr-accent);
+  background: var(--jr-accent-soft);
+  color: var(--jr-accent);
+  box-shadow: 0 1px 4px rgba(120, 80, 40, .08);
+}
+
+.jr-set-side {
+  margin: 0 0 10px;
+  color: var(--jr-soft);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+/* 一行：标签 / 输入 / 小字。第 2 列留给值和说明。 */
+.jr-set-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 4px 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px dashed var(--jr-line);
+}
+.jr-set-k {
+  color: var(--jr-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.jr-set-v {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--jr-line);
+  border-radius: 8px;
+  background: var(--jr-card);
+  color: var(--jr-ink);
+  font: inherit;
+  font-size: 13px;
+}
+.jr-set-v::placeholder {
+  color: var(--jr-soft);
+  opacity: .72;
+}
+.jr-set-v:focus {
+  outline: none;
+  border-color: var(--jr-accent);
+  box-shadow: 0 0 0 3px var(--jr-accent-soft);
+}
+.jr-set-hint {
+  grid-column: 2;
+  margin-top: -2px;
+  color: var(--jr-soft);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.jr-set-keybox {
+  grid-column: 2;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.jr-set-keybox .jr-set-v {
+  flex: 1;
+  min-width: 0;
+}
+.jr-set-keybox .jr-btn {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 预设三个小胶囊。比下拉少一次点击，而且三个选项一眼全看见。 */
+.jr-set-chips {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.jr-set-chip {
+  padding: 5px 11px;
+  border: 1px solid var(--jr-line);
+  border-radius: 999px;
+  background: var(--jr-card);
+  color: var(--jr-soft);
+  font-size: 12px;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.jr-set-chip:hover {
+  border-color: var(--jr-accent);
+  color: var(--jr-accent);
+}
+.jr-set-chip.on {
+  border-color: var(--jr-accent);
+  background: var(--jr-accent-soft);
+  color: var(--jr-accent);
+  font-weight: 600;
+}
+
+/* 「现在连的是」—— 这一行是这一页唯一的反馈，别做得太轻。 */
+.jr-set-note {
+  margin: 16px 0 0;
+  padding: 9px 12px;
+  border-left: 2px solid var(--jr-accent);
+  background: var(--jr-accent-soft);
+  border-radius: 0 8px 8px 0;
+  color: var(--jr-ink);
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+.jr-set-note b {
+  color: var(--jr-accent);
+  font-weight: 600;
+}
+.jr-set-warn {
+  color: var(--jr-accent);
+}
+
+.jr-set-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+.jr-set-status {
+  color: var(--jr-soft);
+  font-size: 12px;
+}
+.jr-set-more {
+  margin: 20px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--jr-line);
+  color: var(--jr-soft);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
+/* 窄屏：标签跑到上面一行去，别再挤成 96px。 */
+@media (max-width: 560px) {
+  .jr-set-row {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+  .jr-set-hint,
+  .jr-set-keybox,
+  .jr-set-chips {
+    grid-column: 1;
+  }
+  .jr-set-h1 {
+    font-size: 17px;
+  }
+}
+
+/* 「两边共用」那一区（2026-11-14）。跟着设置页一起上线，和上面同一套变量。 */
+.jr-set-other {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--jr-line);
+}
+.jr-set-h2 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--jr-accent);
+  letter-spacing: .06em;
+}
+.jr-set-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--jr-accent);
+  cursor: pointer;
+}

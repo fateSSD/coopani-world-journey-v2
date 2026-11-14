@@ -21,6 +21,7 @@ import type {
 } from 'cortico/core/types.ts';
 import { JOURNEY_ID, journeyConfigGroups, type JourneyConfigSection } from './config.ts';
 import { cityByName, cityById, CITIES, terrainOf, type City } from './geo/cities.ts';
+import { spotKindLine } from './geo/spot-profile.ts';
 import { distanceKm } from './geo/distance.ts';
 import { modeById, hoursFor, type ModeId, type TravelMode, type SeatGrade } from './geo/modes.ts';
 import { localMoment, humanHours, localHour, shiftDateKey, tzOffsetLabel, utcFromLocal } from './clock.ts';
@@ -34,7 +35,7 @@ import { join, dirname, resolve } from 'node:path';
 import { planDay, fmtHour, pickFood, CAR_TIERS, type DayPlan, type BeatKind } from './plan/dayplan.ts';
 import { banterWith, bondWith, partWith, stayWith, travelWith } from './mate-talk.ts';
 import type { Pilgrim } from './geo/pilgrim.ts';
-import { readPetVocab, actionsPrompt } from './pet-vocab.ts';
+import { actionsPrompt } from './pet-vocab.ts';
 import { VersionCheck } from './version-check.ts';
 import { AMAP_KEY_NAME, IMAGE_KEY_NAME, adoptKey, readKey, type KeyPorts } from './secrets.ts';
 import {
@@ -51,7 +52,7 @@ import {
 import {
   slotOf, findNeighbors, neighborLine, knownNeighborLine, reportPresence, fetchStatus, paceGap,
   putCard, fetchCards, EMPTY_BOARD,
-  putProfile, fetchProfiles, EMPTY_PROFILE_BOARD,
+  putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, explainNet,
   sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine,
   type MeetOptions,
 } from './meet.ts';
@@ -77,6 +78,7 @@ import {
 } from './monthly.ts';
 import { shootPhoto, photoPrompt, photoTitle, spotFromBeat, skyOf, nightNegative, shotIsNight, imagePixelSize, type SkyView, type PhotoSubject } from './photo.ts';
 import { shootComfy, parseSize } from './comfy.ts';
+import { resolveImageBackend, presetDefaults } from './image-backend.ts';
 import { cropBottom, WATERMARK_CROP_RATIO } from './png-crop.ts';
 import { PhotoBook, type PhotoRecord } from './photo-book.ts';
 import { PartyLog } from './party-log.ts';
@@ -194,6 +196,15 @@ const TICK_MIN_MS = 3_000;
  * —— 200 只鱼约 1.4 万次/天，D1 免费额度 10 万行/天，够。
  */
 const HEARTBEAT_MS = 20 * 60_000;
+/**
+ * 「他离开了多久」的落盘节流（2026-11-13）。
+ *
+ * 基准 `lastSeenAt` 每轮巡检都要刷新，但**不必每轮都写盘** —— `persist()`
+ * 一次写 state 和旅行记忆两个文件，而巡检最快 3 秒一轮。
+ *
+ * 5 分钟是折中：最坏情况重启后少算 5 分钟，阈值是 6 小时，误差可以忽略。
+ */
+const SEEN_SAVE_MS = 5 * 60_000;
 /**
  * 上报失败后的重试节奏（2026-11-10）。
  *
@@ -539,6 +550,16 @@ const TOOL_DECLS = [
             + '"a calico cat crouching under a streetlight, looking up" / "empty platform, one bench, half a bottle of water". '
             + 'This is the content of the shot, not the framing (that is `focus`). '
             + 'Only describe what is really here right now: the place she is at, this season, this weather. '
+            /*
+             * 2026-11-14：她的画面要按「这是什么性质的地方」写，不能按城市名猜。
+             * 敦煌博物馆被画进沙丘，就是因为她手上只有地名、没有「这是个室内展馆」这条事实。
+             * 括号由 `spotKindLine` 给（`nowSummary` 的「此刻在X」那一行）。
+             */
+            + 'The spot in `journey_now` comes with a parenthetical - "(indoor museum, downtown)", "(cliff caves, out in the wild)" - '
+            + 'that is what KIND of place it is. Write the frame to match that kind: a hall with display cases for a museum, '
+            + 'a cliff face for caves, a street of shopfronts for a downtown block. '
+            + 'If the parenthetical is missing, the program could not tell - then describe only what she can actually see, '
+            + 'and do not infer the surroundings from the city name.'
             + 'Never add flowers, snow, festivals or crowds that this place and season do not have. '
             + 'If nothing is worth describing, leave it out - the program already describes the place and light.',
         },
@@ -1229,6 +1250,14 @@ export class JourneyWorld implements World {
    * 「今天还没拍」，就会同一张照片付两次钱。
    */
   private shooting = false;
+  /** 「尺寸被抬到合规值」这类说明只说一遍。 */
+  private imageSizeNoted = false;
+  /**
+   * 推过的 `senderKey`。**同一个 key 只许推一次**，见 `push()` 上的说明。
+   *
+   * 只放内存：重启后约定已经结清，不会重新走到「该散伙」那一步。
+   */
+  private pushedKeys = new Set<string>();
   /** 上一次生图的结果，给指示灯用。 */
   private photoOutcome: 'never' | 'ok' | 'fail' = 'never';
   /**
@@ -1255,6 +1284,18 @@ export class JourneyWorld implements World {
    * 是因为 `advanceBeats` 从 `stayTick` 里调，那条链上的签名已经很深了。
    */
   private awayMs = 0;
+  /** 上一次把 `lastSeenAt` 落进磁盘的真实毫秒。只用于节流，本身不落盘。 */
+  private lastSeenSavedMs = 0;
+  /**
+   * 「碰面服务器」那一栏读不出来时，原因留在这儿（2026-11-13）。
+   *
+   * `meetOptions()` 返回 null 有两种情况：没填，和填了但读不成网址。
+   * 这两种对用户的修法完全不同 —— 前者去填，后者去改 —— 所以不能都报「没配」。
+   * 空串 = 没填或没问题。
+   */
+  private meetUrlError = '';
+  /** 归一化时动过什么（补了 https:// 之类）。原样可用时为空。 */
+  private meetUrlFixed = '';
   /**
    * 这次加载是什么时候。
    *
@@ -1738,9 +1779,24 @@ export class JourneyWorld implements World {
      * 「Cannot read properties of undefined」。而用户的 config.json 是可能缺项的
      * （老版本升级上来、手改过），缺一项不该等于扩展不能工作。
      */
-    const url = String(this.cfg.meetUrl ?? '').trim();
-    if (!url) return null;
-    return { url, uid: this.meetUid(), pet: this.opts.botName };
+    /*
+     * 2026-11-13：那一栏不再原样拿去拼 URL。
+     *
+     * 少一个 `https://` 时 `fetch` 抛 `Invalid URL`，原来被压成「没连上碰面服务器」，
+     * 用户和模型都只能推「地址没填对」—— 而线上服务实测是好的。
+     * 现在先归一化（补协议、清零宽、剪掉多余路径），修不了的把原因留给面板和工具回执。
+     */
+    const raw = String(this.cfg.meetUrl ?? '');
+    if (!raw.trim()) {
+      this.meetUrlError = '';
+      this.meetUrlFixed = '';
+      return null;
+    }
+    const fix = normalizeMeetUrl(raw);
+    this.meetUrlError = fix.error;
+    this.meetUrlFixed = fix.fixed;
+    if (fix.error) return null;
+    return { url: fix.base, uid: this.meetUid(), pet: this.opts.botName };
   }
 
   /**
@@ -2200,19 +2256,23 @@ export class JourneyWorld implements World {
     try {
       this.ensureClock();
       /*
-       * **他离开了多久**（2026-11-11）。
+       * **他离开了多久** —— 基准是**上一次巡检**（2026-11-13 改）。
        *
-       * 这里只算，**不写回** `lastTickAt` —— 写回放在「真的推出去一条事件之后」。
+       * 原来拿 `lastTickAt`（「上一次她真的说过话」）当基准，而它只在触发这条提示时
+       * 才写回，平时说话不写 —— 于是 `现在 − lastTickAt` 量的是**距上次触发多久**，
+       * 不是他离开多久。表现就是每 6 小时准点报一次「你回来了」，人一直在电脑前。
+       * 读者在 Discussion #586 报的正是这个，日志里四次触发间隔 6h00m03s–6h00m56s。
        *
-       * 为什么：开机那一刻未必有到期的节点（比如凌晨三点她还在睡）。
-       * 如果在这儿就写回，这一轮没推东西，下一轮 `awayMs` 已经变回 0，
-       * 「你不在的这 14 小时」就永远说不出来了。
+       * 现在用 `lastSeenAt`：**这一轮巡检跑过就记一笔**，所以 Core 在跑时差值永远是
+       * 几分钟；只有进程真的停摆（关掉应用、合盖休眠、被挂起）才会变大。
+       * 停摆是我们唯一能诚实观测到的东西 —— 见 `state.ts` 里那段说明。
        *
-       * 所以 `lastTickAt` 的语义是**「上一次她真的说过话」**，不是「上一次心跳」。
+       * 顺序要紧：**先按旧值算差值，再把这一轮记进去**，反了就永远是 0。
        */
       const realNowMs = this.realNow().getTime();
-      const lastTick = this.st.lastTickAt ? Date.parse(this.st.lastTickAt) : Number.NaN;
-      this.awayMs = Number.isFinite(lastTick) ? Math.max(0, realNowMs - lastTick) : 0;
+      const seenAt = this.st.lastSeenAt ? Date.parse(this.st.lastSeenAt) : Number.NaN;
+      this.awayMs = Number.isFinite(seenAt) ? Math.max(0, realNowMs - seenAt) : 0;
+      this.markSeen(realNowMs);
       const now = this.worldNow();
       /*
        * 车费结算放在**三个 phase 分支之前**。
@@ -2246,7 +2306,8 @@ export class JourneyWorld implements World {
        * 推一条独立事件，不堆十条。旧版本那种「一起涌出来」是队列积压的副作用，
        * 不是设计；`world.ts` 开头写着为什么后来改掉了。
        *
-       * 推完立刻清掉 `awayMs` 并写回 `lastTickAt` —— 一段离开只说一次。
+       * 推完清掉 `awayMs` —— 一段离开只说一次。
+       * `lastSeenAt` 不用在这儿动：上面 `markSeen()` 已经把它推到当前时刻了。
        */
       if (this.awayMs >= 6 * 3_600_000) {
         const note = this.awayNote();
@@ -2255,18 +2316,19 @@ export class JourneyWorld implements World {
           this.log?.info(`他离开了 ${hours} 小时，说一句这段时间的事。`);
           await this.push('journey.beat', `away-${hours}-${now.toISOString().slice(0, 13)}`, note, 'flush');
         }
-        this.st = { ...this.st, lastTickAt: this.realNow().toISOString() };
+        /*
+         * 一段离开只说一次。`lastSeenAt` 在上面已经推到当前时刻了，
+         * 这里只清内存值 —— 否则同一轮里后面再读一次 `awayMs` 还会当成离线。
+         */
         this.awayMs = 0;
-        this.persist();
       }
       /*
-       * 下面这两个分支之外的路径也要记「她刚说过话」——
-       * 否则一次短暂停摆之后，`lastTickAt` 会一直停在几小时前，
-       * 下次真离线时算出双倍时长。
+       * 这里原来还有一段「`lastTickAt` 为空时补一个」——2026-11-13 删掉了。
+       * 它的注释写着「下面这两个分支之外的路径也要记『她刚说过话』」，
+       * 但代码只做了「从来没有时初始化」，从来没在她说真话时更新过 ——
+       * 说明与实现不一致，正是那个「每 6 小时准点报一次」的直接来源。
+       * 现在 `markSeen()` 每轮巡检都记，这一整块没有存在必要了。
        */
-      if (!this.st.lastTickAt) {
-        this.st = { ...this.st, lastTickAt: this.realNow().toISOString() };
-      }
 
       /*
        * 池子总数：每次巡检都问一句（内部有 20 分钟缓存，绝大多数时候立刻返回）。
@@ -3709,6 +3771,22 @@ export class JourneyWorld implements World {
   }
 
   /**
+   * 记下「这一轮巡检真的跑过了」（2026-11-13）。
+   *
+   * 这是 `awayMs` 的新基准：Core 在跑就每轮刷新，停摆了才会变旧。
+   * 落盘节流见 `SEEN_SAVE_MS` 的说明。
+   *
+   * **必须放在算完 `awayMs` 之后调用。** 顺序反了差值恒为 0，
+   * 「他离开了 14 小时」就永远说不出来 —— 测试里有一条专门钉这个顺序。
+   */
+  private markSeen(realNowMs: number): void {
+    if (realNowMs - this.lastSeenSavedMs < SEEN_SAVE_MS) return;
+    this.lastSeenSavedMs = realNowMs;
+    this.st = { ...this.st, lastSeenAt: new Date(realNowMs).toISOString() };
+    this.persist();
+  }
+
+  /**
    * 把该说的那一个节点说出来。
    *
    * 关键在「漏掉几轮怎么办」：Core 关了一夜，醒来时可能已经有三个节点过期。
@@ -3841,14 +3919,25 @@ export class JourneyWorld implements World {
    * 漏一处就是「界面说配好了，拍照说没配」。
    */
   private photoConfigProblem(): string | null {
-    if (!(this.cfg.imageApi ?? '').trim()) return '还没配生图接口';
+    /*
+     * 2026-11-14 改成看**解析后**的后端，不再直接看 `imageApi`。
+     *
+     * 之前第一句是「`imageApi` 为空 = 还没配」。加了服务商预设之后这条会误报：
+     * 用户选「豆包」、只贴一把密钥时，地址来自预设、`imageApi` 仍是空的，
+     * 而面板会亮红灯说「还没配生图接口」—— 明明能拍。
+     */
+    const backend = resolveImageBackend(this.cfg);
+    if (!backend.api) return '还没配生图接口（云端要挑一个服务商，或手填地址）';
     /*
      * `?? ''`：这三个字段是 2026-11-04 才加的。老配置文件里没有它们，
      * 万一框架没做默认值合并，`.trim()` 会在 undefined 上直接抛 ——
      * 而抛在拍照路径里的表现是「点了没反应」。
      */
-    if (photoProtocolOf(this.cfg.imageProtocol) === 'comfyui' && !(this.cfg.imageWorkflow ?? '').trim()) {
+    if (backend.protocol === 'comfyui' && !(this.cfg.imageWorkflow ?? '').trim()) {
       return '生图接口选的是 ComfyUI，但还没粘 workflow —— 在 ComfyUI 里用「Save (API Format)」导出，整份贴进设置';
+    }
+    if (backend.protocol === 'openai' && !backend.model) {
+      return '云端生图还差模型名 —— 上面挑一个服务商，或手填模型 ID';
     }
     return null;
   }
@@ -4164,9 +4253,23 @@ export class JourneyWorld implements World {
         ...(city.tz ? { tz: city.tz } : {}),
       });
 
-      const shot = photoProtocolOf(this.cfg.imageProtocol) === 'comfyui'
+      /*
+       * 后端在这里解析一次（2026-11-14）。
+       *
+       * 规则：`imageProtocol` 决定云端还是本地；云端再按 `imagePreset` 补地址/模型/尺寸，
+       * **手填的值优先**。尺寸还会按模型的最低像素抬一次 —— 豆包那条门槛
+       * （2560×1440 起）比我们的默认尺寸高一倍多，不抬就是必失败。
+       *
+       * `sizeNote` 只在第一次说一遍：它每次都成立，刷屏没有信息量。
+       */
+      const backend = resolveImageBackend(this.cfg);
+      if (backend.sizeNote && !this.imageSizeNoted) {
+        this.imageSizeNoted = true;
+        this.log?.info(backend.sizeNote);
+      }
+      const shot = backend.protocol === 'comfyui'
         ? await shootComfy({
-            api: this.cfg.imageApi,
+            api: backend.api,
             key: this.imageKey(),
             workflow: this.cfg.imageWorkflow ?? '',
             promptNode: this.cfg.imagePromptNode ?? '',
@@ -4183,7 +4286,7 @@ export class JourneyWorld implements World {
             negativeNode: this.cfg.comfyNegativeNode ?? '',
             ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
             // 留空 = 用 workflow 里原来的尺寸
-            size: this.cfg.imageSize ?? '',
+            size: backend.size,
             /* 只在夜里补：负向追加 + 提高 cfg。白天这两个都不传，等于老行为。 */
             /*
              * 负向按**天气**决定要不要禁星，不是按钟点：
@@ -4214,13 +4317,13 @@ export class JourneyWorld implements World {
             ...(nightShot ? { cfg: NIGHT_CFG } : {}),
           })
         : await shootPhoto({
-            api: this.cfg.imageApi,
+            api: backend.api,
             key: this.imageKey(),
-            model: this.cfg.imageModel,
+            model: backend.model,
             prompt,
             ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
             // 留空 = photo.ts 里的 PHOTO_SIZE（1024x1024）
-            size: this.cfg.imageSize ?? '',
+            size: backend.size,
           });
       /*
        * 水印：只可能在云端那条路上出现。
@@ -4690,6 +4793,24 @@ export class JourneyWorld implements World {
   /**
    * 推一条事件。`blobs` 是随事件走的附件（照片），字节由宿主落进 `data/media/`，
    * 事件里只留 `log:` 句柄 —— 返回的信封里能拿到句柄。
+   *
+   * ## 同一个 senderKey 只推一次（2026-11-14）
+   *
+   * 起因是 144 天 money 长跑挂了一条不变量：
+   * `part-0000000000000007-2027-01-21T06:55:00.000Z` 推了两次。
+   *
+   * 根因在「约定到期该散伙」那条路：天数满了 → 推一句「各走各的」→ 进 `moveOn`，
+   * 而 `moveOn` 买不起票会**原地返回、不清约定**（设计如此，明天接着试）。
+   * 于是下一个 tick 又落进同一分支，同一句话再推一遍。
+   *
+   * **重放的代价比少说一句大得多**：她会把这个源判定成「会重放旧事件的东西」，
+   * 然后开始忽略它 —— 一次重复，等于后面所有事件的可信度打折。
+   *
+   * 为什么放在 `push` 这一层而不是那条分支里：key 的语义本来就是「这件事的身份」，
+   * 同一个 key 推两次在任何分支上都是 bug，不是那一处的特殊情况。
+   *
+   * 内存集合够用：重启后 `pledge` 已经落盘结清，不会重新走到那里。
+   * 真需要跨重启去重时再落盘 —— 现在加上只会让 state 多一份要维护的东西。
    */
   private async push(
     type: string,
@@ -4700,6 +4821,11 @@ export class JourneyWorld implements World {
   ): Promise<EventEnvelope | null> {
     const host = this.host;
     if (!host) return null;
+    if (this.pushedKeys.has(senderKey)) {
+      this.log?.info(`跳过重复事件：${type} ${senderKey}`);
+      return null;
+    }
+    this.pushedKeys.add(senderKey);
     return await host.pushEvent({
       type,
       source: this.id,
@@ -5363,9 +5489,15 @@ export class JourneyWorld implements World {
             dateKey: pick.dateKey,
             monthKey: month,
           });
-          const shot = photoProtocolOf(this.cfg.imageProtocol) === 'comfyui'
+          /*
+           * 海报这一张同样走后端解析（2026-11-14），但尺寸用海报自己的 1024x1536 ——
+           * 它不该被「出图尺寸」那一栏改掉。豆包那条路会把它按比例抬到合规像素，
+           * 否则海报就成了唯一一张必失败的图。
+           */
+          const posterBackend = resolveImageBackend(this.cfg, POSTER_SIZE);
+          const shot = posterBackend.protocol === 'comfyui'
             ? await shootComfy({
-                api: this.cfg.imageApi,
+                api: posterBackend.api,
                 key: this.imageKey(),
                 workflow: this.cfg.imageWorkflow ?? '',
                 promptNode: this.cfg.imagePromptNode ?? '',
@@ -5373,15 +5505,15 @@ export class JourneyWorld implements World {
                 negative: this.cfg.comfyNegative ?? '',
                 negativeNode: this.cfg.comfyNegativeNode ?? '',
                 ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
-                size: POSTER_SIZE,
+                size: posterBackend.size,
               })
             : await shootPhoto({
-                api: this.cfg.imageApi,
+                api: posterBackend.api,
                 key: this.imageKey(),
-                model: this.cfg.imageModel,
+                model: posterBackend.model,
                 prompt,
                 ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
-                size: POSTER_SIZE,
+                size: posterBackend.size,
               });
           const bytes = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol)
             && shot.mime === 'image/png'
@@ -8204,9 +8336,14 @@ export class JourneyWorld implements World {
        *
        * 2026-11-01 Mr.Q 说「14:30 逛伏羲庙是个时间段，不是到了那一秒就参观完了」——
        * 原来这里只有「下一个点」，她 15:30 被问「你在干嘛」只能答「等晚饭」。
+       *
+       * 后面那个括号是她写照片画面时的依据（2026-11-14）：光有地名，
+       * 模型对「敦煌博物馆」这种小馆没有先验，只能按城市风貌猜 —— 猜出来就是沙漠。
+       * 给她「室内展馆，在市区」这七个字，她自己在 `describe` 里就会写室内。
+       * **只给事实，不写「拍照时该按这个」** —— 那是工具描述的事，混进来就成了命令。
        */
       nowAt
-        ? `此刻在${nowAt.spot ?? '外面逛'}，算着待到 ${fmtHour(nowAt.until ?? 0)}。`
+        ? `此刻在${nowAt.spot ?? '外面逛'}${spotKindLine(nowAt.spot)}，算着待到 ${fmtHour(nowAt.until ?? 0)}。`
         : '',
       /*
        * **正在路上**。这一条要给出「还要几分钟」—— 只说「在路上」，
@@ -8490,19 +8627,6 @@ export class JourneyWorld implements World {
 
   /* ---------------- 提示词 ---------------- */
 
-  /**
-   * 当前立绘的词表。
-   *
-   * **不缓存。** 一个几百 KB 的 JSON，读一次不到一毫秒，而调用它的地方
-   * （前缀重建、设置页、stats）一天也就几十次。缓存换来的那点时间，
-   * 抵不过「用户换了立绘、缓存还在」这种错 —— 而那表现为她的动作一个个失效。
-   */
-  private petVocab(): ReturnType<typeof readPetVocab> {
-    const value = readPetVocab(this.opts.dataDir);
-    if (value.source === 'fallback') this.log?.warn(`动作词表用了兜底：${value.note}`);
-    return value;
-  }
-
   envPromptVars(): Record<string, string> {
     const now = this.worldNow();
     const here = this.cityOrNull(this.st.hereId);
@@ -8540,13 +8664,15 @@ export class JourneyWorld implements World {
       'journey.homeFeel': climateOfCity(this.resolveHome().city),
       'journey.diary': this.diary.current.dir,
       /*
-       * 动作清单**现读**当前立绘的词表，不写死在提示词里。
+       * 只写「动作怎么用」，**不再列词表**（2026-11-14 按市集作者要求改）。
        *
-       * 写死的代价 2026-11-01 已经付过一次：提示词给的是英文 id，她说中文，
-       * 于是自己造了个「拍拍」，宿主静默丢掉 —— 只有脸变、人不动、不报错。
-       * 换立绘、宿主升级、词表增删，写死的那份都会立刻过期，而过期的表现一模一样。
+       * 老版本现读宿主安装目录里的 `figure.json` 来保证她写的名字都存在。那是读别人的
+       * 安装目录，和改宿主是同一类越界，宿主换一次布局就静默失效。
+       *
+       * 词表本来就在她的上下文里 —— 桌宠 World 的 `{{pet.vocab}}`。两份不一致时，
+       * 她自己那份才是对的。
        */
-      'journey.actions': actionsPrompt(this.petVocab()),
+      'journey.actions': actionsPrompt(),
     };
   }
 
@@ -8622,6 +8748,19 @@ export class JourneyWorld implements World {
          * 用户不问她就永远不知道。这一页只做一件事：把那本记忆翻给他看。
          */
         { id: 'mates', title: '路上遇见的人', description: '她记得的每一只鱼：走过几次、上次哪天、她写的印象。' },
+        /*
+         * 2026-11-14 Mr.Q：「能不能像鱼鱼出行那样，两个按钮一格，点云端就只显示云端那几项？」
+         *
+         * 宿主的设置面板按 schema 自动渲染，**没有条件显示**（`ConfigProperty`
+         * 里只有 enum / 范围 / 描述这些，没有 visibleWhen）。所以这件事只能在
+         * 自己的面板里做 —— 设置页保留全量字段当「高级」，这一页只做
+         * 「选一边、填那一边要的、保存」。
+         */
+        {
+          id: 'settings',
+          title: '生图设置',
+          description: '她拍的照片从哪儿出来：云端还是本地，点一边只填那一边。',
+        },
       ],
       invoke: (panel, method, args) => this.panelInvoke(panel, method, args),
       config: journeyConfigGroups(),
@@ -8691,10 +8830,14 @@ export class JourneyWorld implements World {
      *   正是最需要有人提醒的那一种，而它不会自己好
      * - 能拍 → 按上一次的结果
      */
-    const proto = photoProtocolOf(this.cfg.imageProtocol);
-    const protoName = proto === 'comfyui' ? 'ComfyUI' : '云端接口';
+    /*
+     * 判「配没配」一律用解析后的后端（2026-11-14）。
+     * 直接看 `imageApi` 会在选了服务商预设时误判：地址来自预设、那一栏仍是空的。
+     */
+    const lampBackend = resolveImageBackend(this.cfg);
+    const protoName = lampBackend.protocol === 'comfyui' ? 'ComfyUI' : '云端接口';
     const cfgProblem = this.photoConfigProblem();
-    const photo: WorldLamp = cfgProblem && !this.cfg.imageApi.trim()
+    const photo: WorldLamp = cfgProblem && !lampBackend.api
       ? { label: '照片', state: 'offline', hint: '没配生图接口，只写字不拍照' }
       : cfgProblem
         ? { label: '照片', state: 'error', hint: cfgProblem }
@@ -8720,6 +8863,150 @@ export class JourneyWorld implements World {
   /* ---------------- 面板 ---------------- */
 
   /**
+   * 设置面板要的那几格当前值。
+   *
+   * ## 密钥只回「有没有」，不回明文
+   *
+   * 面板是浏览器里的一页，回明文等于把它又抄一遍到 DOM 上。而改密钥这件事
+   * 本来就只需要「留空＝不动、填了＝覆盖」这一条语义 —— 看不见旧的也能操作。
+   *
+   * `keyInEnv` 要单独给一格：密钥一旦被 `adoptKeys` 搬进 `.env`，
+   * 配置里那格就是**空的**。前端只读 `imageKey` 会显示「还没填」，
+   * 而实际上早填过 —— 那是假信息，会让人重复填一遍。
+   *
+   * `preset*` 三项是预设自带的值，前端拿来做输入框的 placeholder：
+   * 用户不填也知道最终会用哪个地址、哪个模型 —— 不然「选了豆包」这五个字
+   * 对他没有任何解释力。
+   */
+  private imageSettingsSnapshot(): Record<string, unknown> {
+    const c = this.cfg;
+    const backend = resolveImageBackend(c);
+    const preset = (c.imagePreset ?? '').trim() || 'custom';
+    return {
+      protocol: /^comfy/i.test((c.imageProtocol ?? '').trim()) ? 'comfyui' : 'openai',
+      preset,
+      api: (c.imageApi ?? '').trim(),
+      model: (c.imageModel ?? '').trim(),
+      size: (c.imageSize ?? '').trim(),
+      workflow: (c.imageWorkflow ?? '').trim(),
+      promptNode: (c.imagePromptNode ?? '').trim(),
+      negative: (c.comfyNegative ?? '').trim(),
+      negativeNode: (c.comfyNegativeNode ?? '').trim(),
+      /*
+       * 下面这六项原来住在设置页的「生图」组里。组删掉之后，它们是
+       * **唯一没有入口的一批** —— 所以一起搬到面板的「两边共用」区。
+       * 不搬的话，删组就等于把它们从「难找」变成「改不了」。
+       */
+      minimal: Boolean(c.imageMinimal),
+      style: (c.imageStyle ?? '').trim(),
+      cast: (c.imageCast ?? '').trim(),
+      watermark: (c.imageWatermark ?? 'auto').trim() || 'auto',
+      timeoutSec: Number(c.imageTimeoutSec) || 0,
+      photoDir: (c.photoDir ?? '').trim(),
+      hasKey: Boolean(this.imageKey()),
+      keyInEnv: Boolean((this.opts.keys?.read?.(IMAGE_KEY_NAME) ?? '').trim()),
+      note: backend.note,
+      sizeNote: backend.sizeNote,
+      /*
+       * 三档预设各自会填什么，一次全给前端。
+       *
+       * 只给「当前这一档」不够：用户在面板里点了「OpenAI」但还没保存时，
+       * placeholder 需要立刻变成 OpenAI 的地址和模型 —— 那一刻后端保存的
+       * 仍然是上一档。前端拿全表自己查，比每次点一下都问一次后端便宜。
+       */
+      presets: {
+        doubao: presetDefaults('doubao'),
+        openai: presetDefaults('openai'),
+      },
+    };
+  }
+
+  /**
+   * 面板保存：写进 `cfg` 活对象，同时落盘到 `config.json`。
+   *
+   * ## 为什么不走 `POST /api/config`
+   *
+   * 那条路按**配置组**校验：组里没声明的键一律拒绝，找不到组直接 400。
+   * 生图这一组已经从设置页删掉了（Mr.Q 2026-11-14：「把配置里面有关生图的条目删除」），
+   * 组没了，`/api/config` 连寻址都找不到。
+   *
+   * 宿主另给了一条口子：`persist(patch)` —— 深合并进 `worlds.<id>`，
+   * 活对象与 `config.json` 同步，**不经过任何 schema**。正是这里要的。
+   *
+   * ## 为什么要白名单
+   *
+   * 这是**从浏览器打上来**的一次写操作。面板是本地页面，但它走 HTTP，
+   * 同机任何进程都能打这个口子。白名单保证它只能改生图那几项 ——
+   * 尤其是碰不到 `enabled`、`homeCity` 这种会改变她行为的东西。
+   */
+  private saveImageSettings(patch: unknown): Record<string, unknown> {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      throw new Error('保存的内容不是一组键值');
+    }
+
+    const allowed = new Set([
+      'imageProtocol', 'imagePreset', 'imageApi', 'imageModel', 'imageSize',
+      'imageWorkflow', 'imagePromptNode', 'comfyNegative', 'comfyNegativeNode', 'imageKey',
+      'imageMinimal', 'imageStyle', 'imageCast', 'imageWatermark', 'imageTimeoutSec', 'photoDir',
+    ]);
+    /*
+     * 三个类型分家。
+     *
+     * `imageMinimal` 是 **boolean**，`imageTimeoutSec` 是 **number** —— 一律
+     * `String()` 化会把 `false` 变成字符串 `'false'`，而它是**真值**，
+     * 于是「关掉极简提示词」会变成「打开」，且不报错。这种错比崩了难查得多。
+     */
+    const booleans = new Set(['imageMinimal']);
+    const numbers = new Set(['imageTimeoutSec']);
+
+    const clean: Record<string, string | boolean | number> = {};
+    for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
+      if (!allowed.has(key)) throw new Error(`生图设置里没有这一项：${key}`);
+      if (booleans.has(key)) { clean[key] = value === true || value === 'true'; continue; }
+      if (numbers.has(key)) {
+        const n = Math.max(0, Math.round(Number(value)));
+        clean[key] = Number.isFinite(n) ? n : 0;
+        continue;
+      }
+      clean[key] = String(value ?? '').trim();
+    }
+    if (Object.keys(clean).length === 0) throw new Error('没有要保存的内容');
+
+    /*
+     * 协议、预设、水印都是枚举。写进来一个认不出的值，表现不是报错，是
+     * **「一直拍不出来」** 或「图悄悄被裁掉」—— 这些值决定走哪条分支，
+     * 错了就静默走错。在这里挡掉，比让她在路上悄悄失败便宜得多。
+     */
+    const proto = clean.imageProtocol;
+    if (typeof proto === 'string' && proto !== 'openai' && proto !== 'comfyui') {
+      throw new Error(`生图后端只能是 openai 或 comfyui，收到的是「${proto}」`);
+    }
+    const preset = clean.imagePreset;
+    if (typeof preset === 'string' && !['custom', 'doubao', 'openai'].includes(preset)) {
+      throw new Error(`云端服务商只能是 custom / doubao / openai，收到的是「${preset}」`);
+    }
+    const mark = clean.imageWatermark;
+    if (typeof mark === 'string' && !['auto', 'off', 'crop'].includes(mark)) {
+      throw new Error(`水印只能是 auto / off / crop，收到的是「${mark}」`);
+    }
+
+    if (this.opts.persist) {
+      /*
+       * 宿主 `persist` 里的 `assignDeep` 改的就是 `cfg` 那一个对象
+       * （`context()` 里 `cfg: this.section(...)`），所以活对象和 config.json
+       * 会一起变 —— 不用、也不该再手写一遍 `Object.assign(this.cfg, …)`。
+       */
+      this.opts.persist(clean);
+    } else {
+      // 测试里没有宿主：只改内存。说出来，别让人以为存下来了。
+      this.log?.warn('没有持久化通道，生图设置只改了内存，重启就没了。');
+      Object.assign(this.cfg, clean);
+    }
+
+    return this.imageSettingsSnapshot();
+  }
+
+  /**
    * 面板的方法入口。
    *
    * 只有读、两个引导开关、一个「让她出发」和一个「把她的钟拉回我这边」。
@@ -8727,6 +9014,21 @@ export class JourneyWorld implements World {
    * 不该有人在设置页点一下就替她决定去哪。
    */
   private async panelInvoke(panel: string, method: string, args: unknown[]): Promise<unknown> {
+    /*
+     * **`saveImageSettings` 跨面板可用，不按 `panel` 分流。**
+     *
+     * 除了「生图设置」页，照片页底部也有一格「额外存一份到」（`photoDir`）。
+     * 它原来走 `ctx.setConfig('journey.services', { 'worlds.journey.photoDir': … })`
+     * —— 而 `photoDir` 从头到尾**没在那个组的 schema 里声明过**，所以那一路
+     * 一直是 400（回执原话：配置组 journey.services 没有声明 worlds.journey.photoDir），
+     * 只是没人点过。生图组删掉之后更是连组都没了。
+     * 统一收到这里，两个页签共用同一条白名单与同一套落盘逻辑。
+     */
+    if (method === 'saveImageSettings') return this.saveImageSettings(args[0]);
+    if (panel === 'settings') {
+      if (method === 'imageSettings') return this.imageSettingsSnapshot();
+      throw new Error(`生图设置没有这个方法：${method}`);
+    }
     if (panel === 'now') {
       if (method === 'snapshot') return this.uiSnapshot();
       if (method === 'dismissGuide') {
@@ -8909,7 +9211,19 @@ export class JourneyWorld implements World {
       if (method === 'profile') {
         const meet = this.meetOptions();
         const board = meet ? await fetchProfiles(meet) : EMPTY_PROFILE_BOARD;
-        return { ...board, ready: !!meet };
+        /*
+         * 2026-11-13：`ready:false` 有两种来路，必须分开说。
+         *
+         * 原来只有 `ready` 一个布尔，面板一律显示「碰面服务器没配」。
+         * 可用户明明填了 —— 只是把 `https://` 漏了。他照面板的提示去「配」，
+         * 配一百遍也还是那一格字，最后只能报「填不了」。
+         */
+        return {
+          ...board,
+          ready: !!meet,
+          urlIssue: this.meetUrlError,
+          urlFixed: this.meetUrlFixed,
+        };
       }
 
       /*
@@ -8919,7 +9233,11 @@ export class JourneyWorld implements World {
       if (method === 'saveProfile') {
         const text = String(args[0] ?? '').trim();
         const meet = this.meetOptions();
-        if (!meet) throw new Error('还没配碰面服务器 —— 名片存在服务器上，本机写不了');
+        if (!meet) {
+          throw new Error(this.meetUrlError
+            ? `碰面服务器那一栏读不成网址：${this.meetUrlError}。去设置里改一下，改完不用重启。`
+            : '还没配碰面服务器 —— 名片存在服务器上，本机写不了。填上地址（例如 https://cooppetsjourney.top）就能存。');
+        }
         const r = await putProfile(meet, text);
         /*
          * **失败要说清是哪一种**（2026-11-12）。原来一律「多半是没连上服务器」——
@@ -8958,7 +9276,8 @@ export class JourneyWorld implements World {
          */
         const cfgProblem = this.photoConfigProblem();
         if (cfgProblem) throw new Error(cfgProblem);
-        const api = this.cfg.imageApi.trim();
+        const shootBackend = resolveImageBackend(this.cfg);
+        const api = shootBackend.api;
         /*
          * 拍哪儿、几点、在不在路上 —— 那段判定在 `photoSceneNow()` 里，
          * 工具 `journey_photo` 走的也是它。
@@ -8997,18 +9316,19 @@ export class JourneyWorld implements World {
          * 所以这里额外给一句 `line`：**已经组织好的整句话**，前端直接显示。
          * 以后再加一条协议，前端不用跟着改。
          */
-        const proto = photoProtocolOf(this.cfg.imageProtocol);
+        const proto = shootBackend.protocol;
         const hasKey = Boolean(this.imageKey());
+        const modelShown = shootBackend.model || '（用默认）';
         const line = proto === 'comfyui'
           ? `ComfyUI ${this.safeApi(api)}，提示词节点 ${(this.cfg.imagePromptNode ?? '').trim() || '自动'}，当地 ${scene.hour} 点`
-          : `接口 ${this.safeApi(api)}，模型 ${this.cfg.imageModel.trim() || '（用默认）'}，密钥${hasKey ? '已填' : '没填'}，当地 ${scene.hour} 点`;
+          : `接口 ${this.safeApi(api)}，模型 ${modelShown}，密钥${hasKey ? '已填' : '没填'}，当地 ${scene.hour} 点`;
         return {
           ok: res.ok,
           reason: res.reason ?? null,
           diag: {
             protocol: proto,
             api: this.safeApi(api),
-            model: this.cfg.imageModel.trim() || '（用默认）',
+            model: modelShown,
             hasKey,
             localHour: scene.hour,
             line,
@@ -9580,6 +9900,28 @@ export const JOURNEY_DESCRIBE = {
         en: 'She agreed with someone nearby to go somewhere for a few days, or that plan fell through.',
       },
       trigger: 'flush' as const,
+    },
+    /*
+     * 2026-11-14 补登记。这个事件从 2026-11-12 就在推，但一直没进这张表 ——
+     * 而上面写着「`events` 必须与源码里 push 的类型一一对应」。
+     * 漏登记的后果不在运行，在诊断和市场卡片：面板里看不到它，
+     * 排查「她怎么突然不说话了」时也不会想起还有这一种。
+     */
+    {
+      type: 'journey.part',
+      description: {
+        zh: '跟同伴散伙：约好的天数满了，今天各走各的。',
+        en: 'She and her travel companion part ways: the agreed days are up.',
+      },
+      trigger: 'flush' as const,
+    },
+    {
+      type: 'journey.pledge',
+      description: {
+        zh: '原来的约定被推掉了：他叫她改去别处，跟人说好的那趟去不成。',
+        en: 'An earlier promise is dropped: the person redirected her, so the agreed trip cannot happen.',
+      },
+      trigger: 'debounce' as const,
     },
     {
       type: 'journey.work',

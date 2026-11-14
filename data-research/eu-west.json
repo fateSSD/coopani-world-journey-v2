@@ -1,0 +1,523 @@
+{
+  "cities": [
+    {
+      "id": "lyon",
+      "name": "里昂",
+      "country": "FR",
+      "lat": 45.7640,
+      "lon": 4.8357,
+      "tz": "Europe/Paris",
+      "air": true,
+      "rail": true,
+      "port": false,
+      "climate": "centralEurope",
+      "tags": ["两河", "老城", "壁画"],
+      "spots": [
+        "富维耶圣母院（Fourvière），白石灰岩砌在山顶，四角各立一座八角塔，檐口一圈雉堞",
+        "里昂老城（Vieux Lyon），文艺复兴的院子藏在楼与楼之间，traboules 的通道从一条街穿到另一条街",
+        "白莱果广场（Place Bellecour），红褐色的土地面，中间立着路易十四骑马像，广场上一棵树也没有",
+        "克鲁瓦鲁斯（Croix‑Rousse）的长坡街市，Boulevard de la Croix‑Rousse 中间一排棚顶摊位，卖花、蔬果和旧杂物",
+        "《里昂人》壁画（Mur des Lyonnais），索恩河畔一整面七层楼高的墙，画着窗、晾台和站在窗前的人",
+        "金头公园（Parc de la Tête d'Or），一大片湖面，湖边有长椅和一座免费的小动物园",
+        "富维耶缆车（Funiculaire），从老城的地铁站钻进隧道，两分钟升到山顶"
+      ],
+      "foods": [
+        "里昂式沙拉 salade lyonnaise",
+        "猪肉肠 brioche 裹着的 saucisson brioché",
+        "洋葱炖牛肚 tablier de sapeur",
+        "粉红果仁糖塔 tarte aux pralines"
+      ],
+      "night": "富维耶山顶的观景台，入夜后城区亮成一格一格，圣母院自己打着白灯",
+      "shows": [
+        "里昂国家歌剧院（Opéra de Lyon）：玻璃拱顶的老歌剧院，乐季里排歌剧和芭蕾，最便宜的站票十几欧",
+        "里昂礼堂（Auditorium de Lyon）：里昂国家管弦乐团的驻地，交响乐季从九月排到六月"
+      ],
+      "festivals": [
+        { "name": "灯光节（Fête des Lumières）", "months": [12], "what": "十二月八日前后，全城的窗台摆一排点着的蜡烛，墙上打投影，街上挤到走不动" },
+        { "name": "四维耶之夜（Nuits de Fourvière）", "months": [6, 7], "what": "古罗马剧场改的露天舞台，每晚有音乐会，散场时整条山坡都是往下走的人" }
+      ],
+      "lore": "罗马人的 Lugdunum，高卢行省首府；文艺复兴时丝绸商在楼与楼之间开出 traboules，下雨天不用淋着就能把布送到河边。",
+      "priceIdx": 2.4,
+      "vista": "石是米白和蜜色，屋顶是低矮的红瓦，索恩河灰绿，山坡上叠着橙红的楼，冬天树枝全秃"
+    },
+    {
+      "id": "marseille",
+      "name": "马赛",
+      "country": "FR",
+      "lat": 43.2965,
+      "lon": 5.3698,
+      "tz": "Europe/Paris",
+      "air": true,
+      "rail": true,
+      "port": true,
+      "climate": "mediterranean",
+      "tags": ["地中海", "港口", "峡湾"],
+      "spots": [
+        "守护圣母教堂（Notre-Dame de la Garde），白石灰岩的塔楼立在全城最高处，塔尖顶着一尊镀金的圣母",
+        "老港（Vieux-Port），方形的内港里泊满小船，岸边一排鱼贩的遮阳棚，正对着卡纳比耶尔大街的口子",
+        "卡朗格峡湾（Calanques），白石灰岩的窄湾嵌进海岸，水是透明的蓝绿，湾底铺着白色碎石",
+        "勒帕尼耶（Le Panier），上坡的窄巷，墙上涂满颜料，晾衣绳横在两栋楼之间",
+        "地中海文明博物馆（MuCEM），黑色混凝土的方盒子，一条细长的步行桥连到圣让堡的方形石塔",
+        "法罗宫（Palais du Pharo）的花园，一片朝海的斜坡草地，正对着老港的入口",
+        "从老港坐船去伊夫堡（Château d'If），二十分钟航程，岛上是四面环水的石砌方堡"
+      ],
+      "foods": [
+        "马赛鱼汤 bouillabaisse",
+        "鹰嘴豆饼 panisse",
+        "船形饼干 navettes，带橙花水味",
+        "蒜泥蛋黄酱 aïoli 配煮鱼"
+      ],
+      "night": "老港沿岸入夜后整圈亮灯，船桅上的小灯连成一片，山顶的教堂一直亮着",
+      "shows": [
+        "马赛歌剧院（Opéra de Marseille）：十九世纪的歌剧院，乐季里排歌剧和交响，最高一层不到二十欧"
+      ],
+      "festivals": [
+        { "name": "马赛爵士节（Jazz des Cinq Continents）", "months": [7], "what": "七月中，露天舞台搭在旧港边的园子里，散场的人沿着海岸往回走" },
+        { "name": "音乐节（Fête de la Musique）", "months": [6], "what": "六月二十一日傍晚，街角和店门口都有人摆音箱，全部免费" },
+        { "name": "圣诞集市", "months": [11, 12], "what": "老港沿岸摆满木棚，卖手工皂、陶瓷小人和烤栗子" }
+      ],
+      "lore": "公元前六百年希腊福西亚人建的 Massalia，法国最老的城市；老港就是当年的天然湾。",
+      "priceIdx": 2.3,
+      "vista": "石灰岩是灰白，墙刷赭黄和土红，窗装绿木百叶，屋顶浅红瓦，海是蓝绿，夏末山坡草黄"
+    },
+    {
+      "id": "nice",
+      "name": "尼斯",
+      "country": "FR",
+      "lat": 43.7102,
+      "lon": 7.2620,
+      "tz": "Europe/Paris",
+      "air": true,
+      "rail": true,
+      "port": true,
+      "climate": "mediterranean",
+      "tags": ["地中海", "海滨", "老城"],
+      "spots": [
+        "英国人漫步大道（Promenade des Anglais），沿海湾拉出一道弧线，一排蓝椅子对着卵石滩",
+        "城堡山（Colline du Château），坐电梯上到观景台，正对着天使湾那道弧",
+        "俄罗斯东正教圣尼古拉大教堂（Cathédrale Saint-Nicolas），灰白和粉色的洋葱头穹顶一座叠一座，最高的顶上立着十字架",
+        "萨莱亚大道市场（Cours Saleya），老城东侧的长条广场，上午是花和蔬果的棚子，周一整条换成旧货摊",
+        "夏加尔国家博物馆（Musée national Marc Chagall），展厅里挂着十七幅《圣经》题材的大画，窗外是橄榄树",
+        "博龙山（Mont Boron）的松林，能同时看到港口、天使湾和机场的跑道",
+        "林比亚港（Port Lympia）坐船出海，绕过城堡山，回头看整条海岸"
+      ],
+      "foods": [
+        "鹰嘴豆薄饼 socca，切成三角装纸里",
+        "尼斯沙拉 salade niçoise",
+        "洋葱凤尾鱼挞 pissaladière",
+        "油炸小 sardines 配柠檬"
+      ],
+      "night": "英国人漫步大道的那排路灯，入夜后沿海湾一弧一弧亮到机场",
+      "shows": [
+        "尼斯歌剧院（Opéra de Nice）：乐季里排歌剧和尼斯爱乐的交响，后排座位不贵"
+      ],
+      "festivals": [
+        { "name": "尼斯狂欢节", "months": [2], "what": "二月的两三个星期，花车沿马塞纳广场走，白天撒花，晚上点灯" },
+        { "name": "尼斯爵士节", "months": [7], "what": "七月在城东的竞技场花园，一晚连演三场，草地上坐满人" },
+        { "name": "圣诞集市", "months": [12], "what": "马塞纳广场搭起木棚和一块露天溜冰场，天黑得早，灯亮到半夜" }
+      ],
+      "lore": "希腊人叫它 Nikaia，纪念一场胜仗；十九世纪英国人冬天来这里过冬，那条海滨大道是侨民出钱修的。",
+      "priceIdx": 3.2,
+      "vista": "墙是赭黄、橙红和粉，百叶窗刷浅绿，屋顶浅红瓦，海是靛蓝，卵石滩灰白，天光很亮"
+    },
+    {
+      "id": "bordeaux",
+      "name": "波尔多",
+      "country": "FR",
+      "lat": 44.8378,
+      "lon": -0.5792,
+      "tz": "Europe/Paris",
+      "air": true,
+      "rail": true,
+      "port": false,
+      "climate": "westEurope",
+      "tags": ["葡萄酒", "河岸", "新古典"],
+      "spots": [
+        "交易所广场（Place de la Bourse），朝河的一整排立面是拱窗和石雕，前面铺着一层薄水的水镜",
+        "圣安德烈主教座堂（Cathédrale Saint-André），哥特中殿，北侧钟楼能爬到顶，塔尖是石头的尖锥",
+        "皮埃尔桥（Pont de Pierre），十七孔的石桥横过加龙河，有轨电车从桥面中间过",
+        "圣凯瑟琳街（Rue Sainte-Catherine），一条笔直的下坡步行街，石板被磨得发亮，两边是连锁店和旧书摊",
+        "沙尔特龙区（Chartrons），旧酒商的仓库改成店和画廊，砖墙上还留着褪色的商号",
+        "加龙河岸的草坡（Les Berges de la Garonne），一整条河岸的草地和长椅，对岸是右岸的矮房",
+        "坐火车去圣埃米利永（Saint-Émilion），半小时车程，村子整座建在石灰岩里，地下是凿出来的教堂"
+      ],
+      "foods": [
+        "可露丽 canelé，外壳焦硬",
+        "阿卡雄生蚝配柠檬",
+        "波尔多红酒配 entrecôte",
+        "鳗鱼炖韭葱 lamprey à la bordelaise"
+      ],
+      "night": "水镜广场入夜后整排立面打暖光，水面把两排一模一样的拱窗叠在一起",
+      "shows": [
+        "波尔多大剧院（Grand Théâtre）：1770 年代的新古典立面，十二根石柱顶着雕像，乐季里演歌剧和芭蕾"
+      ],
+      "festivals": [
+        { "name": "波尔多葡萄酒节（Fête le Vin）", "months": [6], "what": "偶数年六月，加龙河岸摆开一公里长的棚子，从交易所广场一直排到桥下" },
+        { "name": "圣诞集市", "months": [11, 12], "what": "交易所广场旁搭起木棚，热酒的白汽飘在石阶上" }
+      ],
+      "lore": "十八世纪靠葡萄酒和海外贸易发家，交易所广场那一排立面就是当年对着码头的门面。",
+      "priceIdx": 2.5,
+      "vista": "石是蜜色和浅灰，屋顶深灰板岩，水镜前那排立面有拱窗和铜绿屋顶，河水浑黄而宽"
+    },
+    {
+      "id": "strasbourg",
+      "name": "斯特拉斯堡",
+      "country": "FR",
+      "lat": 48.5734,
+      "lon": 7.7521,
+      "tz": "Europe/Paris",
+      "air": true,
+      "rail": true,
+      "port": false,
+      "climate": "centralEurope",
+      "tags": ["运河", "木筋墙", "欧洲机构"],
+      "spots": [
+        "斯特拉斯堡主教座堂，整座用粉红色砂岩砌，只有一座塔，塔尖是镂空的八角石雕",
+        "小法兰西（Petite France），运河在这里分岔，木筋墙的房子半悬在水上，屋顶陡得几乎立起来",
+        "欧洲议会（Parlement européen），玻璃和钢的弧形大楼，一圈圈办公室对着水面",
+        "大街（Grand'Rue），从教堂往小法兰西的一条长街，石板窄，两边是旧书店和挂铁皮的酒馆招牌",
+        "沃邦拦河坝（Barrage Vauban），石砌的拱廊横在伊尔河上，顶层是一条能走通的露台",
+        "橘园公园（Parc de l'Orangerie），湖上有小船，草地一直铺到欧洲理事会那排楼前",
+        "坐 Batorama 的玻璃顶船绕岛一圈，船从船闸里升降过去，能钻到拦河坝底下"
+      ],
+      "foods": [
+        "酸菜炖肉 choucroute garnie",
+        "火焰薄饼 tarte flambée",
+        "阿尔萨斯白葡萄酒 riesling",
+        "姜饼 pain d'épices"
+      ],
+      "night": "小法兰西的廊桥（Ponts Couverts）入夜后打灯，三座石塔的倒影落在伊尔河上",
+      "shows": [
+        "莱茵国家歌剧院（Opéra national du Rhin）：在旧城的一栋楼里，乐季里排歌剧和芭蕾，站票很便宜"
+      ],
+      "festivals": [
+        { "name": "圣诞集市（Christkindelsmärik）", "months": [11, 12], "what": "十一月末到十二月二十四，布吕什广场和教堂周围全是木棚，热酒的白汽浮在街上" },
+        { "name": "音乐节（Fête de la Musique）", "months": [6], "what": "六月二十一日晚上，街角和广场上到处有人演奏，一直闹到半夜" }
+      ],
+      "lore": "伊尔河在这里分成几股，城就建在岛上；中世纪是自由市，歌德在这里读过书，现在是欧洲委员会和欧洲议会所在地。",
+      "priceIdx": 2.4,
+      "vista": "砂岩是暗粉和砖红，木筋墙刷深棕与土黄，屋顶是灰紫的陡坡瓦，运河水面墨绿"
+    },
+    {
+      "id": "avignon",
+      "name": "阿维尼翁",
+      "country": "FR",
+      "lat": 43.9493,
+      "lon": 4.8055,
+      "tz": "Europe/Paris",
+      "air": false,
+      "rail": true,
+      "port": false,
+      "climate": "mediterranean",
+      "tags": ["教皇宫", "断桥", "戏剧节"],
+      "spots": [
+        "教皇宫（Palais des Papes），浅黄石灰岩砌的巨大方盒子，墙面上几乎只有窄缝一样的窗",
+        "圣贝内泽桥（Pont Saint-Bénézet），只剩四个桥墩和一小段桥面伸进罗讷河，尽头断在水上",
+        "小宫博物馆（Musée du Petit Palais），十四世纪主教的宅子，楼上展厅一排金底的宗教画",
+        "染工街（Rue des Teinturiers），沿一条引水渠的窄街，水车还在转，梧桐把半条街遮住",
+        "阿维尼翁主教座堂（Cathédrale Notre-Dame des Doms），罗马式的西立面，钟楼顶立着一尊镀金圣母",
+        "岩石公园（Jardin du Rocher des Doms），高处的园子，能俯看断桥、罗讷河和对岸的岛",
+        "坐免费渡船到巴尔特拉斯岛（Île de la Barthelasse），几分钟过河，岛上全是果园和土路"
+      ],
+      "foods": [
+        "普罗旺斯炖菜 daube avignonnaise",
+        "卡瓦永甜瓜 melon de Cavaillon",
+        "橄榄油烤面包 fougasse",
+        "阿维尼翁糖锭 papaline"
+      ],
+      "night": "教皇宫前的广场入夜后打暖白灯，石头被照成蜜色，广场上几乎没有人",
+      "shows": [
+        "阿维尼翁歌剧院（Opéra Grand Avignon）：十九世纪的小歌剧院，乐季里排歌剧和室内乐，票不贵"
+      ],
+      "festivals": [
+        { "name": "阿维尼翁戏剧节（Festival d'Avignon）", "months": [7], "what": "七月整整三周，教皇宫的石头院子里搭起露天舞台，墙上贴满海报，街上到处是发传单的演员" },
+        { "name": "圣诞集市", "months": [12], "what": "共和广场上围一圈木棚，卖陶瓷小人和糖渍水果，天黑得早" }
+      ],
+      "lore": "十四世纪教廷从罗马搬到这里，七位教皇住过，教皇宫是欧洲最大的哥特宫殿。",
+      "priceIdx": 2.6,
+      "vista": "石是浅黄和蜜色，百叶窗刷褪色的蓝和绿，屋顶浅红瓦，罗讷河灰绿，梧桐树皮斑驳"
+    },
+    {
+      "id": "edinburgh",
+      "name": "爱丁堡",
+      "country": "GB",
+      "lat": 55.9533,
+      "lon": -3.1883,
+      "tz": "Europe/London",
+      "air": true,
+      "rail": true,
+      "port": false,
+      "climate": "westEurope",
+      "tags": ["城堡", "老城", "火山岩"],
+      "spots": [
+        "爱丁堡城堡，玄武岩崖顶上，灰色的粗石墙一层层退进去，墙头架着一排炮",
+        "皇家一英里（Royal Mile），从城堡一路下坡到荷里路德宫，两边是石砌联排楼和一条条窄 closes",
+        "亚瑟王座（Arthur's Seat），草坡上一层层的岩脊，顶上能看见整座城和福斯湾",
+        "维多利亚街（Victoria Street），一条弧形的下坡街，店面上方是刷成红蓝绿的招牌，二楼伸着遮雨棚",
+        "苏格兰国家博物馆，维多利亚式的大厅里悬着鲸骨和一架飞机，展厅里有克隆羊多莉的标本",
+        "迪恩村（Dean Village），利斯水边的一小片石屋，磨坊的老桥横在窄谷上",
+        "玛丽金小巷（The Real Mary King's Close）的地下导览，跟着人钻进旧城底下的拱窖"
+      ],
+      "foods": [
+        "羊肚杂碎 haggis 配芜菁泥",
+        "苏格兰蛋 scotch egg",
+        "奶油鱼汤 cullen skink",
+        "黄油酥饼 shortbread"
+      ],
+      "night": "皇家一英里的夜间鬼故事团，天黑后举着灯笼往旧城的地下通道里走",
+      "shows": [
+        "节日剧院（Festival Theatre）：歌剧和芭蕾的巡演场，二楼后排比伦敦同级别的便宜一半",
+        "厄舍音乐厅（Usher Hall）：苏格兰室内乐团的驻地，乐季里有交响和独奏，最便宜的票十几镑"
+      ],
+      "festivals": [
+        { "name": "爱丁堡边缘艺术节", "months": [8], "what": "八月整月，皇家一英里挤满发传单的人，街角随时有人开演，票从免费到几十镑都有" },
+        { "name": "除夕（Hogmanay）", "months": [12], "what": "十二月三十一日夜里，王子街封路，整条街的人挤在一起等零点" },
+        { "name": "圣诞集市", "months": [11, 12], "what": "王子街花园里搭起木棚和摩天轮，四点就全亮灯" }
+      ],
+      "lore": "城堡建在死火山的岩颈上，老城沿着山脊往下挤；十八世纪又在山谷对面按格子建了新城。",
+      "priceIdx": 3.3,
+      "vista": "石是烟灰和蜜黄两种砂岩，屋顶灰板岩，坡地草色暗绿，天压得低，云是铅灰的"
+    },
+    {
+      "id": "bath",
+      "name": "巴斯",
+      "country": "GB",
+      "lat": 51.3811,
+      "lon": -2.3590,
+      "tz": "Europe/London",
+      "air": false,
+      "rail": true,
+      "port": false,
+      "climate": "westEurope",
+      "tags": ["温泉", "乔治式", "蜜色石"],
+      "spots": [
+        "罗马浴场（Roman Baths），蜜色石栏围着一池发绿的温泉水，池边站着一圈无头的罗马雕像",
+        "皇家新月（Royal Crescent），三十栋连排的弧形宅子，前面是一片向下斜的草坪",
+        "巴斯修道院（Bath Abbey），西面两扇大窗的窗棂上雕着一架一架往上爬的天使",
+        "市政厅市场（Guildhall Market），铸铁柱撑起的室内市场，摊子上是旧银器、旧书和手工皂",
+        "圆形广场（The Circus），三圈同心的宅子围成一个圆，立面上刻着橡树叶和蛇",
+        "帕雷德花园（Parade Gardens），埃文河边下沉的一块草地，摆着一排条纹躺椅",
+        "Thermae Bath Spa 的露天屋顶池，泡在热水里能看到修道院的塔和全城的屋顶"
+      ],
+      "foods": [
+        "巴斯圆面包 Bath bun",
+        "莎莉伦蛋糕 Sally Lunn bun",
+        "切达奶酪配酸辣酱",
+        "下午茶的凝脂奶油司康"
+      ],
+      "night": null,
+      "shows": [
+        "巴斯皇家剧院（Theatre Royal Bath）：巡演的话剧和音乐剧，楼座比伦敦西区便宜不少"
+      ],
+      "festivals": [
+        { "name": "简·奥斯汀节", "months": [9], "what": "九月中，街上很多人穿摄政时期的裙子和礼帽，修道院前有人当街读《劝导》" },
+        { "name": "巴斯节（Bath Festival）", "months": [5], "what": "五月底十来天，市中心搭起白色帐篷，作家和乐手连轴上台" },
+        { "name": "圣诞集市", "months": [11, 12], "what": "修道院前的广场排满木棚，天一黑灯串全亮" }
+      ],
+      "lore": "罗马人在温泉边建了 Aquae Sulis；十八世纪伍德父子把整座城重建成一片蜜色的石头。",
+      "priceIdx": 3.0,
+      "vista": "石全是蜜黄色的巴斯石，立面是扁壁柱和弧窗，屋顶灰板岩，草坡暗绿，天空灰白"
+    },
+    {
+      "id": "york",
+      "name": "约克",
+      "country": "GB",
+      "lat": 53.9600,
+      "lon": -1.0873,
+      "tz": "Europe/London",
+      "air": false,
+      "rail": true,
+      "port": false,
+      "climate": "westEurope",
+      "tags": ["城墙", "中世纪", "维京"],
+      "spots": [
+        "约克大教堂（York Minster），灰白石灰岩，两座西塔，中殿东端是整面彩绘玻璃",
+        "肉铺街（The Shambles），木筋墙的房子向街心倾，二层的窗几乎要碰到对面",
+        "约克城墙，红砖和石灰岩的城垛绕成一圈，能沿着墙顶走三公里多",
+        "约克市场（Shambles Market），帕勒门特街旁的一片露天摊位，棚子是红白条纹的，卖旧书、布匹和粗陶",
+        "克利福德塔（Clifford's Tower），立在土丘上的四叶形石塔，墙顶能绕一圈",
+        "博物馆花园（Museum Gardens），乌斯河边的草地，长椅上能看见对岸的塔",
+        "坐船游乌斯河，从桥下穿过，两岸是城墙和垂到水面的柳树"
+      ],
+      "foods": [
+        "约克郡布丁配烤牛肉",
+        "Terry's 巧克力橙",
+        "胖子圆面包 fat rascal",
+        "约克火腿配酸黄瓜"
+      ],
+      "night": "约克的夜间鬼故事团，天黑后在教堂门口集合，举着灯走老城的窄巷",
+      "shows": [
+        "约克皇家剧院（York Theatre Royal）：巡演话剧和圣诞童话剧，圣诞档的票要早订"
+      ],
+      "festivals": [
+        { "name": "圣尼古拉圣诞集市", "months": [11, 12], "what": "议会街和教堂广场上排满木棚，热红酒的锅冒着白汽" },
+        { "name": "维京节（Jorvik Viking Festival）", "months": [2], "what": "二月有一周，街上有人穿锁子甲戴头盔，广场上比试" },
+        { "name": "约克赛马会（Ebor Festival）", "months": [8], "what": "八月四天，去马场的路上全是戴帽子的女人和穿西装的男人" }
+      ],
+      "lore": "罗马人叫它 Eboracum，维京人叫它 Jorvik，约克这个名字是从维京话里留下来的。",
+      "priceIdx": 2.9,
+      "vista": "石是灰白和蜜黄，木筋墙刷深棕，屋顶是红瓦和灰板岩，乌斯河浑浊，冬天草仍是绿的"
+    },
+    {
+      "id": "manchester",
+      "name": "曼彻斯特",
+      "country": "GB",
+      "lat": 53.4808,
+      "lon": -2.2426,
+      "tz": "Europe/London",
+      "air": true,
+      "rail": true,
+      "port": false,
+      "climate": "westEurope",
+      "tags": ["工业", "运河", "现场音乐"],
+      "spots": [
+        "约翰·赖兰兹图书馆（John Rylands Library），维多利亚哥特式的石拱和尖顶，阅览室是一条长拱廊",
+        "科学与工业博物馆（MOSI），设在利物浦路老车站的铸铁雨棚下，蒸汽机和纺织机一排排摆开",
+        "曼彻斯特大教堂，垂直哥特的石墙，唱诗班的木椅下面雕着一排小天使",
+        "北角的托马斯街（Thomas Street），砖墙上全是大片涂鸦，二楼是唱片店和纹身店",
+        "卡斯尔菲尔德（Castlefield），运河边的旧仓库和罗马堡垒的地基，窄船停在桥洞下",
+        "希顿公园（Heaton Park），有轨电车直达，大片草地和一座十八世纪的白石宅子",
+        "坐 Metrolink 到索尔福德码头，看运河、吊桥和媒体城的玻璃楼"
+      ],
+      "foods": [
+        "埃克尔斯蛋糕 Eccles cake",
+        "曼彻斯特挞 Manchester tart",
+        "拉什姆的咖喱",
+        "周日烤肉配约克郡布丁"
+      ],
+      "night": "北角 Oldham Street 一带的酒吧入夜后开门，砖墙上贴着当晚演出的手写海报",
+      "shows": [
+        "皇家交易所剧院（Royal Exchange Theatre）：剧场悬在旧棉花交易所大厅正中，是个玻璃圆舱，常演新剧",
+        "布里奇沃特音乐厅（Bridgewater Hall）：哈雷管弦乐团的驻地，乐季里几乎每周有交响"
+      ],
+      "festivals": [
+        { "name": "曼彻斯特国际艺术节（MIF）", "months": [7], "what": "奇数年七月，剧院和旧仓库改成场地，街上到处是首演的海报" },
+        { "name": "曼彻斯特骄傲（Pride）", "months": [8], "what": "八月底的周末，运河街封路，彩旗从这头挂到那头" },
+        { "name": "圣诞集市", "months": [11, 12], "what": "阿尔伯特广场围一圈木棚，卖热酒和香肠" }
+      ],
+      "lore": "十九世纪靠棉纺织发家，号称棉都；恩格斯在这里写过《英国工人阶级状况》。",
+      "priceIdx": 2.8,
+      "vista": "砖是暗红和煤黑，仓库的铸铁窗框细长，运河水面浑浊发绿，天低云厚，雨把砖泡得更深"
+    },
+    {
+      "id": "oxford",
+      "name": "牛津",
+      "country": "GB",
+      "lat": 51.7520,
+      "lon": -1.2577,
+      "tz": "Europe/London",
+      "air": false,
+      "rail": true,
+      "port": false,
+      "climate": "westEurope",
+      "tags": ["学院", "方院", "河流"],
+      "spots": [
+        "基督堂学院（Christ Church），都铎式的方院和汤姆塔，食堂的楼梯是石拱顶",
+        "博德利图书馆（Bodleian），圆形的拉德克利夫相机是穹顶的阅览室，四周一圈石柱",
+        "莫德林学院（Magdalen College），方院外面是沿河的一圈步道，草甸里养着一群鹿",
+        "有盖市场（Covered Market），铸铁柱和玻璃顶下，摊子上是旧书、布料和鲜花",
+        "谢尔登剧院（Sheldonian Theatre），半圆形的罗马式屋顶，檐口上站着一圈石雕的头像",
+        "基督教堂草甸（Christ Church Meadow），两条河汇合的草地，牛在里面吃草，步道沿河",
+        "在切威尔河上撑篙（punting），从莫德林桥下往上撑，船底擦着水草"
+      ],
+      "foods": [
+        "牛津马末酱 Oxford marmalade",
+        "班伯里蛋糕 Banbury cake",
+        "学院高桌的烤羊腿",
+        "凝脂奶油司康"
+      ],
+      "night": "Turf Tavern 在窄巷尽头，晚上有炉火和低矮的木梁，房间小得要侧身过人",
+      "shows": [
+        "牛津剧院（New Theatre Oxford）：巡演的音乐剧和单口喜剧，票价随卡司浮动"
+      ],
+      "festivals": [
+        { "name": "五月晨祷（May Morning）", "months": [5], "what": "五月一日清晨六点，莫德林塔顶的唱诗班唱拉丁文圣歌，街上的人仰头听" },
+        { "name": "圣诞集市", "months": [11, 12], "what": "宽街上排满木棚，灯串从摊位拉到对面的楼" }
+      ],
+      "lore": "十二世纪起学生和教师聚在这里，学院一座座围成方院；城和大学各有各的规矩，一直分着管。",
+      "priceIdx": 3.4,
+      "vista": "石是蜜黄和浅灰的石灰岩，方院围着一块草地，屋顶是灰板岩，河面窄而清，天空灰白"
+    },
+    {
+      "id": "dublin",
+      "name": "都柏林",
+      "country": "IE",
+      "lat": 53.3498,
+      "lon": -6.2603,
+      "tz": "Europe/London",
+      "air": true,
+      "rail": true,
+      "port": true,
+      "climate": "westEurope",
+      "tags": ["乔治式", "文学", "酒馆"],
+      "spots": [
+        "三一学院旧图书馆的长厅（Long Room），65 米长的桶形木拱顶，尽头摆着一把中世纪的竖琴",
+        "圣帕特里克大教堂（St Patrick's），灰石砌的哥特教堂，尖塔后面是一整片墓碑",
+        "爱尔兰国家博物馆考古馆，长廊里摆着铁器时代的金器和从泥炭沼里挖出来的人",
+        "格拉夫顿街（Grafton Street），步行街中间铺着红砖，街头艺人每隔几米一个",
+        "凯勒梅堡监狱（Kilmainham Gaol），空荡的石砌牢房和西翼的铁楼梯，要提前在网上订票",
+        "圣斯蒂芬绿地（St Stephen's Green），市中心的公园，湖、花坛和一排长椅",
+        "凤凰公园（Phoenix Park）租自行车，十五公里的围墙里，草地上有成群的黇鹿"
+      ],
+      "foods": [
+        "爱尔兰炖羊肉 Irish stew",
+        "苏打面包 soda bread",
+        "都柏林炖锅 coddle",
+        "黑啤配生蚝"
+      ],
+      "night": "圣殿酒吧区（Temple Bar）的酒吧晚上有传统乐队，门开着，小提琴声直接漏到石板街上",
+      "shows": [
+        "阿比剧院（Abbey Theatre）：爱尔兰国家剧院，常演辛格和奥凯西的戏，楼上座位便宜",
+        "国家音乐厅（National Concert Hall）：爱尔兰国家交响乐团的驻地，常有低价场"
+      ],
+      "festivals": [
+        { "name": "圣帕特里克节", "months": [3], "what": "三月十七日，整座城都是绿色，游行从帕内尔广场一路走到圣帕特里克" },
+        { "name": "布鲁姆日（Bloomsday）", "months": [6], "what": "六月十六日，有人穿爱德华时代的衣服，在街上念《尤利西斯》" },
+        { "name": "都柏林戏剧节", "months": [9, 10], "what": "九月末到十月初，几座剧院连着排新戏，街上到处是拿节目单的人" }
+      ],
+      "lore": "名字来自爱尔兰语 Dubh Linn，黑色的水潭，指利菲河与波德尔河交汇处的那片深水。",
+      "priceIdx": 2.8,
+      "vista": "砖是深红和煤黑，乔治式的门刷成明黄、宝蓝和正红，窗是白框的竖长格，天灰，草全年绿"
+    },
+    {
+      "id": "galway",
+      "name": "戈尔韦",
+      "country": "IE",
+      "lat": 53.2707,
+      "lon": -9.0568,
+      "tz": "Europe/London",
+      "air": false,
+      "rail": true,
+      "port": false,
+      "climate": "westEurope",
+      "tags": ["彩色店面", "海湾", "音乐"],
+      "spots": [
+        "西班牙拱门（Spanish Arch），灰石的双拱立在科尔夫河边，旁边接着半截旧城墙",
+        "拉丁区的高街（High Street），窄街两边是刷成酒红、墨绿和赭黄的老店面，铁艺招牌伸到街上",
+        "戈尔韦大教堂（Galway Cathedral），灰石穹顶，内部是浅色大理石和整面彩窗",
+        "圣尼古拉教堂旁的周六集市，棚子挤在教堂墙下的窄巷里，卖旧书、木器、手套和鲜花",
+        "长廊（The Long Walk），一排彩色房子贴着防波堤排开，尽头是灰色的海和一道石堤",
+        "盐山的海滨步道（Salthill Promenade），两公里多的石砌海堤，尽头有一面矮墙，人要伸脚去踢",
+        "坐巴士去莫赫悬崖（Cliffs of Moher），一小时多，崖壁垂直落进海里"
+      ],
+      "foods": [
+        "康尼马拉羊肉汤",
+        "苏打面包配烟熏三文鱼",
+        "戈尔韦生蚝",
+        "海藻布丁 dulse"
+      ],
+      "night": "拉丁区的酒吧晚上有传统乐 session，小提琴、手鼓和长笛挤在角落，谁都能加进来",
+      "shows": [
+        "德鲁伊剧院（Druid Theatre）：小剧场，常演爱尔兰当代剧和辛格的作品，票不贵"
+      ],
+      "festivals": [
+        { "name": "戈尔韦国际艺术节", "months": [7], "what": "七月两周，街头有杂技和乐队，剧院里排新戏" },
+        { "name": "戈尔韦赛马会（Galway Races）", "months": [7, 8], "what": "七月底八月初的一周，去赛马场的路上全是戴帽子的人" },
+        { "name": "圣诞集市", "months": [12], "what": "艾尔广场搭起木棚，从十二月十四开到二十四，天黑得早，灯串一直亮着" }
+      ],
+      "lore": "中世纪时和西班牙做贸易的港口，十四个商人家庭轮流当市长，被叫作 tribes。",
+      "priceIdx": 2.8,
+      "vista": "墙刷成酒红、墨绿和赭黄，屋顶深灰板岩，河口岸边是灰色石堤，草深绿，天低云厚"
+    }
+  ]
+}

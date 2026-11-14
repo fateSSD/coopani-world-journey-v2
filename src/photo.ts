@@ -1,4 +1,5 @@
 import { vistaOf, spotLook, cityById } from './geo/cities.ts';
+import { spotProfile, trimVistaFor } from './geo/spot-profile.ts';
 import { seasonLine, regionOf } from './geo/season.ts';
 import { tzOffsetHours } from './clock.ts';
 
@@ -1840,8 +1841,27 @@ export function photoPrompt(scene: PhotoScene): string {
    * 照样挂着「叶子被晒得发亮」（一致性测试当场抓住）。
    * 现在只有一个入口，规则只有一条：**没有日光就不写季节。**
    */
+  /**
+   * 这个点在不在室内 —— 三处要它：季节句、天空句、「周边一带」。
+   *
+   * 室内一条铁律：**凡是站在屋里看不见的东西，一个字都不写。**
+   * 实测（2026-11-14）：敦煌博物馆只剩「室内，展柜和展墙」+ 周边街景时，
+   * 出图仍是一条村街 —— 矛盾的两半里，写得多的那半赢。
+   */
+  const spotIndoor = Boolean(scene.spot)
+    && !scene.onRoad && !sky
+    /* 只认 `ground`：拍街景、拍特写、拍吃的时候，室内与否跟她站在哪儿无关。 */
+    && (scene.subject ?? 'ground') === 'ground'
+    /*
+     * **有专属锚点时以锚点为准。** 西安碑林博物馆名字里带「博物馆」，
+     * 但它的锚点写的是「砖砌院墙里一排排石碑立在方座上」—— 那是露天的碑林，
+     * 判成室内会把季节句和天空句一起退掉。**锚点是有人看过真地方写的，比名字规则可信。**
+     */
+    && !spotLook(scene.cityId, scene.spot)
+    && spotProfile(scene.spot).indoor;
+
   const seasonText = (() => {
-    if (closeup || sky || scene.onRoad) return '';
+    if (closeup || sky || scene.onRoad || spotIndoor) return '';
     const full = trimScene(seasonLine(scene.cityId ? cityById(scene.cityId) : null, scene.month ?? 1));
     if (!full) return '';
     /*
@@ -2097,9 +2117,45 @@ export function photoPrompt(scene: PhotoScene): string {
       /* 景点自己的锚点：直接描述这个景点，不加「周边一带」那层退让。 */
       : spotOwn
         ? `${named}，${spotOwn}`
-      /* 退回城市锚点：划线，说明那是周围环境而不是景点本身。 */
+      /*
+       * 退回城市锚点：划线，说明那是周围环境而不是景点本身。
+       *
+       * **先判这个点是什么，再决定城市锚点里哪句能留（2026-11-14）。**
+       *
+       * 起因是 Mr.Q 一句「敦煌市明明是个市，敦煌博物馆却建在沙漠里，非常离谱」。
+       * 查下来是这条路：敦煌博物馆没有专属锚点 → 退回敦煌的城市锚点
+       * （「党河两岸窄绿洲…出城就是连片沙丘」）→ 一句「周边一带是」根本拦不住模型，
+       * 它把沙丘一起画进了博物馆周边。
+       *
+       * 而这不是个例：`SPOT_LOOK` 只有 60 城 136 条，`CITIES` 是 185 城 × 3–9 个点，
+       * 覆盖率约 15% —— **剩下 85% 全在这条路上**。代码注释里早写着这个死结
+       * （「1300 条，这条先止血」），止血止不住。
+       *
+       * 所以不再往「一个点写一条」补。改判两件地点自身的事实：
+       *   ① 类型（博物馆 / 石窟 / 关隘…）→ 决定室内还是野外
+       *   ② 在城里还是野地 → 决定城市锚点里**哪几个分句根本不该出现**
+       * 这两条不靠谁记得写，所以「博物馆旁边有沙丘」在结构上就不发生了。
+       *
+       * 形制（`p.form`）只在**她没写画面**时才补一句 —— 她写了就以她的为准。
+       * 这是「以她看到的为主，系统只兜底」那条线，别倒过来。
+       */
       : scene.spot
-        ? (vista ? `${named}。周边一带是${vista}` : named)
+        ? (() => {
+            const p = spotProfile(scene.spot);
+            /*
+             * **室内没有「周边一带」。** 站在展厅里看不见城外的平顶房和葡萄架。
+             *
+             * 实测过（2026-11-14，同种子两张）：只把沙丘剔掉、留着「周边一带：平顶房、
+             * 白杨葡萄架夹着巷子」，出来仍然是一条村街 —— 模型在「室内，展柜和展墙」
+             * 与「平顶房、巷子」之间选了后者，因为后者更长、更像一张旅行照片该有的景。
+             * 句子之间不是平等的：**互相矛盾的描述里，写得多的那半边赢。**
+             */
+            const v = p.indoor ? '' : trimVistaFor(vista, p);
+            const form = describeNow ? '' : p.form;
+            const head = form ? `${named}，${form}` : named;
+            /* 冒号不是句号：`周边一带是${v}` 会和锚点自己的「XX是…」撞出两个「是」。 */
+            return v ? `${head}。周边一带：${v}` : head;
+          })()
         : vista ? `${named}，${vista}` : named;
   /*
    * 光：**一个事实，一处宣布**（2026-11-12 重写）。
@@ -2126,7 +2182,12 @@ export function photoPrompt(scene: PhotoScene): string {
       indoor: false, whiteNight: sun.whiteNight,
     });
   /** 天空那一句。特写没有天，抬头那张由 `skyOf` 说 —— 这里只管「地面以上的颜色」。 */
-  const skyTold = sky || closeup
+  /*
+   * **室内不写天。** `spotIndoor` 这一条是 2026-11-14 加的：
+   * 展厅里「天往浅里退，西边有一层薄云」是假的，而且它会把这句读成「户外」，
+   * 跟「室内，展柜和展墙」打架 —— 打架的部分见 `where` 上面那段注释。
+   */
+  const skyTold = sky || closeup || spotIndoor
     ? ''
     : skyLine(sun.phase, sun.overcast, sun.precip, sun.whiteNight);
   const lightFinal = light;
@@ -2570,7 +2631,13 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
   const body: Record<string, unknown> = {
     model: req.model?.trim() || PHOTO_MODEL,
     prompt: req.prompt,
-    n: 1,
+    /*
+     * `n` 不写在 body 里，改由 `withN` 控制（2026-11-14）。
+     *
+     * 火山方舟的图片接口**根本没有 n 这个参数**（只有 `sequential_image_generation`），
+     * 而豆包是这次新接的一条路。我们只出一张，本来就不必发它 ——
+     * 但有些中转服务要求这个字段，所以默认照发、400 时摘掉。
+     */
     // 有的服务只认 response_format，有的根本不认这个字段（认不认都不会报错）。
     response_format: 'b64_json',
   };
@@ -2599,6 +2666,8 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
    */
   let sizeField: 'size' | 'image_size' | null = 'size';
   let withFormat = true;
+  /** 发不发 `n`。方舟不认，服务商报 400 时摘掉。 */
+  let withN = true;
   /*
    * 默认请求「不要水印」。
    *
@@ -2609,6 +2678,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
   let withWatermark = true;
   const build = (): Record<string, unknown> => {
     const payload: Record<string, unknown> = { ...body };
+    if (withN) payload.n = 1;
     if (!withFormat) delete payload.response_format;
     if (withWatermark) payload.watermark = false;
     if (sizeField) payload[sizeField] = sizeValue;
@@ -2624,7 +2694,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
      */
     for (let i = 0; i < 3 && res.status === 400; i++) {
       const peek = (await res.clone().text()).slice(0, 400);
-      const before = `${sizeField}|${withFormat}|${withWatermark}|${sizeValue}`;
+      const before = `${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}`;
       if (/image_size/i.test(peek) && sizeField !== 'image_size') {
         // 硅基流动、阿里百炼那一支：只认 image_size，传 size 直接拒
         sizeField = 'image_size';
@@ -2641,6 +2711,9 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
         const alt = nearestSize(peek, sizeValue);
         if (alt) sizeValue = alt;
         else sizeField = null;   // 连候选都解析不出来，只能退回默认尺寸
+      } else if (withN && /(^|[^a-z])n([^a-z]|$)|num_images|batch/i.test(peek)) {
+        /* 不认 `n` 的服务（火山方舟就是）：摘掉，反正只要一张。 */
+        withN = false;
       } else if (/response_format/i.test(peek) && withFormat) {
         // 不认识这个字段的服务：去掉它，回头看 data[0].url 也能取图
         withFormat = false;
@@ -2651,7 +2724,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
         // 尺寸值本身它不收：什么尺寸都不带，让它用自己的默认值
         sizeField = null;
       }
-      if (`${sizeField}|${withFormat}|${withWatermark}|${sizeValue}` === before) break;   // 认不出该改什么，别乱试
+      if (`${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}` === before) break;   // 认不出该改什么，别乱试
       res = await send(build());
     }
   } catch (e) {

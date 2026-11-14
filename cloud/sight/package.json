@@ -1,0 +1,9 @@
+{
+  "name": "sight",
+  "version": "1.2.0",
+  "description": "碰面服务器（PostgreSQL 版）：她到站报一声，看看同城同时段还有谁；外加发/看/接邀约",
+  "main": "index.js",
+  "dependencies": {
+    "@cloudbase/node-sdk": "^3.18.7"
+  }
+}

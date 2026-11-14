@@ -146,17 +146,28 @@ export interface JourneyConfigSection extends WorldSection {
    */
   amapKey: string;
   /**
-   * 生图走哪条协议。
+   * 生图走哪条协议：`openai`（云端）或 `comfyui`（本地）。
    *
    * **必须由人明确选，不许自动判断。** 两条路的请求形状毫无关系（一个是
    * `POST /images/generations` 带 prompt 参数，一个是 `POST /prompt` 带整份
    * workflow），猜错的表现不是报错而是静默卡住 —— 正是用户抱怨的那种。
+   *
+   * 2026-11-14 改成下拉。原来是个自由文本框，得手打 `openai` / `comfyui` 两个词 ——
+   * 打错了不报错，只是拍不出来。
    *
    * `imageApi` 这个字段名是历史遗留：它现在表示「服务根地址」，
    * 填 `https://api.openai.com/v1` 或 `http://127.0.0.1:8188` 都行，
    * 取决于这一项选的是什么。
    */
   imageProtocol: string;
+  /**
+   * 云端服务商预设（2026-11-14）。
+   *
+   * 选一个就把「接口地址 / 模型 ID / 合规尺寸」三样填好，用户只需要贴密钥。
+   * 只在本项协议是云端时有意义；手填的 `imageApi` / `imageModel` / `imageSize`
+   * 仍然优先 —— 预设是兜底，不是覆盖。
+   */
+  imagePreset: string;
   /**
    * ComfyUI 的 workflow JSON 原文（「Save (API Format)」导出的那份）。
    *
@@ -238,7 +249,10 @@ export interface JourneyConfigSection extends WorldSection {
   imageWatermark: 'auto' | 'off' | 'crop';
   /** 生图密钥。只存本机配置，不进日记目录、不落盘到日志。 */
   imageKey: string;
-  /** 生图模型 id。留空用 `gpt-image-1`。换服务商通常只需要改这一项。 */
+  /**
+   * 生图模型 id。留空＝用所选预设自带的模型（豆包 Seedream / OpenAI gpt-image-1）；
+   * 预设也没选就还是空，请求会失败并在日志里说明。换服务商通常只需要改这一项。
+   */
   imageModel: string;
   /**
    * 面板底部「说两句」那一栏发给谁。**空 = 整块不显示。**
@@ -281,6 +295,14 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
    * 选 ComfyUI 是明确动作，不会因为地址长得像本地就被切成另一条协议。
    */
   imageProtocol: 'openai',
+  /*
+   * 默认「自定义」：什么都不预设，地址模型全手填 —— 老配置升上来就是这一档。
+   *
+   * **不能写成空串**（2026-11-14 当场踩到）：这一项有 `enum`，而空串不在枚举里，
+   * 宿主拿默认值去校验，一保存就弹「只能是 doubao / openai / custom」。
+   * 有这个 enum 的字段，默认值必须在枚举里。
+   */
+  imagePreset: 'custom',
   imageWorkflow: '',
   imagePromptNode: '',
   imageApi: '',
@@ -433,9 +455,9 @@ export function journeyConfigGroups(): ConfigGroup[] {
             /*
              * 2026-11-04 Mr.Q：有人说「加群才能用这个功能」。
              *
-             * 其实不用 —— 这个地址就是个 HTTP 服务器地址，谁都能自己起一个
-             * （项目里附带 `cloud/sight`，一个人一套、不需要和别人互通）。
+             * 其实不用 —— 这个地址就是个普通的 HTTP 接口，谁都能自己起一个。
              * 原文案只写「填群主给的地址」，等于默认了"你得先有个群"。
+             * （2026-11-14：服务端源码不随包发布，文案里不再引导「自己搭」，见 README。）
              *
              * 顺带修掉：原文案里的 `**…**` 是 markdown，而设置页不解析 markdown，
              * 用户看到的是两个星号本身。这个界面里只有纯文本。
@@ -450,7 +472,14 @@ export function journeyConfigGroups(): ConfigGroup[] {
              */
             description: '填一个「碰面服务器」的地址，她到站就能看见同城同时段还有谁。'
               + '想省事就填这个（作者维护的公共池）：https://cooppetsjourney.top —— 填上就能碰上别人的桌宠，不用自己搭。'
-              + '不想被别人看见就留空，或者自己起一个（项目附带 Cloudflare 和腾讯云两套服务端，见 README）。'
+              /*
+               * 2026-11-13：读者报「名片一直填不了」「约鱼发不出去」。
+               * 查下来是这一栏漏了 https:// 时 fetch 直接抛，被压成「没连上碰面服务器」——
+               * 代码那边已经会自己补、也会说清原因；文案这边补两句，让人一开始就填对。
+               */
+              + '只填域名也行，前面的 https:// 会自动补上；地址粘错了（多了 /sight/xxx、带了 ? #）也会自动剪掉。'
+              + '这一栏同时管「碰到别的鱼」和「名片」—— 名片存在服务器上，这一栏空着就存不了。'
+              + '不想被别人看见就留空 —— 照常旅行，只是永远一个人。'
               + '不填＝照常旅行，只是永远一个人，其它功能一点不受影响。'
               + '填了之后会被别人看到的是：宠物名、在哪座城、这个时段在干嘛 —— 只给同城同时段的人看，'
               + '24 小时过期，只能看不能聊；反过来，你在这边也会被别人看见。'
@@ -490,125 +519,6 @@ export function journeyConfigGroups(): ConfigGroup[] {
             title: '高德密钥',
             description: '填了用高德：分昼夜、中文天气名准。留空自动用 Open-Meteo，不填也有天气。'
               + '填过一次就会搬到部署目录的 .env（只有本人可读），这一栏随之变空 —— 那是搬走了，不是丢了。要换密钥就在这儿填新的。',
-          },
-          'worlds.journey.imageProtocol': {
-            type: 'string',
-            title: '生图接口类型',
-            description: '填 openai（云端服务商，像 OpenAI、方舟、硅基流动、各种中转）或 comfyui（本地跑的 ComfyUI）。留空按 openai。两条路的请求格式完全不同，这里选错了不会报错，只会一直拍不出来，所以别猜。',
-          },
-          'worlds.journey.imageWorkflow': {
-            type: 'string',
-            title: 'ComfyUI 工作流（仅 ComfyUI）',
-            description: '在 ComfyUI 里点「Save (API Format)」导出，然后点右边按钮选那份 .json 文件，或者把 JSON 整份粘进来。上面那项选 comfyui 时必填。带 nodes/links 的界面格式提交不了。',
-            /*
-             * 2026-11-04 Mr.Q：「我想让工作流直接能拖进这里」。
-             *
-             * 宿主不支持拖放（前端代码里没有任何 drop / dataTransfer），
-             * 但 `x-path` 会渲染成「文本框 + 一个选择按钮」，效果一样好用。
-             * 加 `extensions` 是为了让文件对话框默认只显示 .json，
-             * 免得在一堆 output 图里找那份 workflow。
-             *
-             * 选了之后配置里存的是**路径**而不是内容，所以 `parseWorkflow`
-             * 那边两种形态都要收 —— 粘贴的 JSON 和文件路径。
-             */
-            'x-path': { kind: 'file', extensions: ['.json'] },
-          },
-          'worlds.journey.imagePromptNode': {
-            type: 'string',
-            title: '提示词节点 id（可留空）',
-            description: 'ComfyUI 里写画面描述的那个节点的编号，比如 6。留空会自动从正向采样链上找；找不到会明确报错让你填，不会把描述写进负面提示。',
-          },
-          'worlds.journey.imageApi': {
-            type: 'string',
-            title: '生图服务地址',
-            description: '云端填到 /v1 或 /api/v3 为止，别带 images/generations，比如 https://api.openai.com/v1。本地 ComfyUI 填 http://127.0.0.1:8188。留空＝不拍照，只写字。',
-          },
-          'worlds.journey.imageMinimal': {
-            type: 'boolean',
-            title: '极简提示词（画出来老是同一座建筑时打开）',
-            description: '打开后只发给模型「城市 + 景点 + 时间」，不再补城市风貌、季节、机位那一大段。模型本身认识这些地方时会画得更准（豆包、Seedream 实测有效）；不认识小众地方的老实模型可以关着，靠补描述。',
-          },
-          'worlds.journey.imageStyle': {
-            type: 'string',
-            title: '画面风格',
-            description: '留空＝真实旅行照片（胶片、自然光）。接的是本地 ComfyUI 或二次元底模时，在这里写你的风格，比如「anime style, cel shading」；写 none 表示完全不指定风格，画风交给底模决定。',
-          },
-          'worlds.journey.imageCast': {
-            type: 'string',
-            title: '照片里出不出人',
-            description: '留空＝画面里没有人，拍的是她眼前的风景。想让照片里有她，就在这里写一段角色描述（外貌、发型、衣服），越具体越稳，比如「一个穿米色风衣、黑色短发的女孩」。注意换种子、换底模都会变样，要长相固定得用 LoRA。',
-          },
-          'worlds.journey.imageSize': {
-            type: 'string',
-            title: '出图尺寸',
-            description: '填「宽x高」，比如 1664x928。留空＝1024x1024 方形。'
-              + '方形一眼看得出是生成的，建议按手机照片的比例来：'
-              + '横 16:9 填 1664x928｜竖 3:4 填 1152x1536｜横 4:3 填 1536x1152｜竖 9:16 填 928x1664｜方形 1024x1024。'
-              + '本地 ComfyUI 要求宽高是 8 的倍数（上面几个都满足），填别的会自动吸附到最近的 8 的倍数。'
-              + '云端服务商支持的尺寸不一样，填了不支持的值会被拒，日志里能看到它报的错。',
-          },
-          'worlds.journey.imageWatermark': {
-            type: 'string',
-            title: '去掉「AI生成」水印',
-            enum: ['auto', 'off', 'crop'],
-            description: 'auto（默认）＝云端服务商出的图裁掉底边一条，本地 ComfyUI 不动；'
-              + 'off＝一律不裁；crop＝一律裁。'
-              + '本地生成的图根本没有水印（那是服务商后盖的），所以默认不对本地图动刀。'
-              + '裁掉的是底部 8%，画面会矮一点点。',
-          },
-          'worlds.journey.photoDir': {
-            type: 'string',
-            title: '照片额外存一份到（可留空）',
-            /*
-             * 2026-11-12 用户反馈「图片保存地址修改不成功」，追下来是**说明写错了**。
-             *
-             * 原文案写「填一个绝对路径，照片就存那儿」—— 听起来像「换地方」，
-             * 实际实现是**在日记目录之外再复制一份**（主位置一直是 `<日记>/media/`，
-             * 因为月报里嵌的是相对路径 `../media/`，主位置不能动）。
-             *
-             * 用户改了以后去新目录看，发现「没保存」—— 他以为是搬家，其实是备份。
-             * 而且 `cfg` 只在启动时读一次，**改完不重启不会生效**，这一点原文案也没说。
-             *
-             * 说明和实现不一致，比功能坏掉更伤人：功能坏了用户会报 bug，
-             * 说明错了用户只会以为自己没看懂。
-             */
-            description: '这是「额外再存一份」，不是「换个地方存」。照片的主位置永远是'
-              + '日记目录下的 media/（月报里嵌的是那边）。这里填一个绝对路径，会额外复制一份过去，'
-              + '当作自己的备份。'
-              + '想跟日记放同一个同步盘，就把日记那个路径贴过来（面板「照片」页底部写着当前目录）。'
-              + '改完保存就生效，不用重启。只对新拍的照片起作用，旧照片不会搬过去。',
-          },
-          'worlds.journey.comfyNegative': {
-            type: 'string',
-            title: '负向提示词（仅本地 ComfyUI）',
-            description: '不想让画面出现什么，写在这儿。比如当地季节不对的东西：「rapeseed flowers, canola field, snow」。'
-              + '云端接口没有这个参数，填了也不起作用。留空＝什么都不加。',
-          },
-          'worlds.journey.comfyNegativeNode': {
-            type: 'string',
-            title: '负向提示词节点 id（可留空）',
-            description: '留空＝自动找（看哪个节点被采样器的 negative 输入指着）。'
-              + '自动找不准时，去 workflow 里看一眼那个 CLIPTextEncode 的 id 填进来。',
-          },
-          'worlds.journey.imageTimeoutSec': {
-            type: 'integer',
-            title: '出图最多等几秒（0 = 默认）',
-            description: '本地 ComfyUI 默认 180 秒、云端默认 90 秒。模型大、步数多、图大的时候会超时，'
-              + '而超时只是「还没画完」，不是坏了。填 300 或 600 就多等一会儿。',
-            minimum: 0,
-            'x-suffix': '秒',
-          },
-          'worlds.journey.imageKey': {
-            type: 'string',
-            title: '生图密钥',
-            description: '服务商给你的那串 API Key。只存本机，不进日记、不进日志。'
-              + '填过一次就会搬到部署目录的 .env（只有本人可读），这一栏随之变空 —— 那是搬走了，不是丢了。'
-              + '自建免鉴权的服务、以及本地 ComfyUI 都留空。',
-          },
-          'worlds.journey.imageModel': {
-            type: 'string',
-            title: '生图模型名（仅云端）',
-            description: '服务商文档里的图片模型 ID，各家不同。不知道就留空，按 gpt-image-1 试。ComfyUI 那一项不用管 —— 模型写在 workflow 里。',
           },
         },
       },

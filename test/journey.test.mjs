@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 
 import { CITIES, cityById, cityByName, isForeign, expandSlots, spotDays, spotName } from '../src/geo/cities.ts';
 import { JOURNEY_DESCRIBE, whoOf } from '../src/world.ts';
-import { parseVocab, readPetVocab, actionsPrompt } from '../src/pet-vocab.ts';
+import { actionsPrompt } from '../src/pet-vocab.ts';
 import { PILGRIMS, pilgrimAt, pilgrimsOf } from '../src/geo/pilgrim.ts';
 import { distanceKm, waypoints, haulOf, bearingDeg, angleBetween } from '../src/geo/distance.ts';
 import { MODES, modeById, hoursFor, reachable } from '../src/geo/modes.ts';
@@ -2250,38 +2250,33 @@ test('景点是时间段：一整天的地方要撑到下午，不能中午就�
   assert.ok(mid && mid.at > 12.5, '中段那句压在午饭前，像是上午就散了');
 });
 
-// ---- 2026-11-01 晚：动作词表现读 + 她想做的新动作 ----
+// ---- 2026-11-14：动作段只讲用法，不再读宿主目录 ----
 
-test('词表：按首选名取，别把别名也铺进去', () => {
-  const out = parseVocab({
-    vocab: [
-      { id: 'walk', kind: 'action', names: { zh: ['走走', '散步'] } },
-      { id: 'sit', kind: 'action', names: { zh: ['坐下', '坐'] } },
-      { id: 'happy', kind: 'expression', names: { zh: ['开心', '高兴'] } },
-      { id: 'broken' },
-    ],
-  });
-  assert.deepEqual(out.actions, ['走走', '坐下'], '动作别名没剔掉，或坏条目没跳过');
-  assert.deepEqual(out.expressions, ['开心']);
+test('动作段：不列词表，指向她手上那份', () => {
+  /*
+   * 2026-11-14 按市集作者要求撤掉了「现读 figure.json」那段（读宿主安装目录 = 越界）。
+   * 词表由桌宠 World 的 {{pet.vocab}} 提供，这一段只管「怎么用」。
+   * 所以这里钉住两件事：**不许再出现具体动作清单**，且**必须指向她手上那份**。
+   */
+  const text = actionsPrompt();
+  assert.match(text, /【平静, 坐下】/, '没给可直接照抄的格式示例');
+  assert.match(text, /词表/, '没提「以你手上的词表为准」');
+  assert.equal(text.includes('{{pet.vocab}}') || text.includes('当前形象的词表'), true, '没指向宿主给的词表');
+  assert.equal(text.includes('也可以写'), true, '没说「词表外的也能写，会被记下来」');
+  // 老版本会把整份词表铺进来；现在不该再有那种成串的清单
+  assert.equal(/其余可用的/.test(text), false, '还在列「其余可用的」词表');
 });
 
-test('词表：读不到时降级，而且要说得出来', () => {
-  const v = readPetVocab('C:/definitely/not/here');
-  assert.equal(v.source, 'fallback', '找不到宿主目录居然算读到了');
-  assert.ok(v.actions.length > 0, '兜底清单是空的，提示词会开天窗');
-  assert.match(v.note, /找不到|没找到/, '降级了却不说原因');
-});
-
-test('词表：提示词里不出现这套立绘没有的动作', () => {
-  const text = actionsPrompt({
-    figure: 'test', source: 'live', note: '',
-    actions: ['走走', '坐下', '跳'], expressions: ['平静', '开心'],
-  });
-  assert.match(text, /走走/, '可用动作没写进去');
-  assert.equal(text.includes('怔住'), false, '写了词表里没有的动作');
-  assert.equal(text.includes('拍拍'), false, '写了词表里没有的动作');
-  assert.match(text, /test/, '没说是哪套立绘');
-  assert.match(text, /也可以写/, '没说「词表外的也能写，会被记下来」');
+test('动作段：不再读文件（这条是防回归的）', () => {
+  /*
+   * 光删函数不够 —— 哪天有人为了「让动作更准」又把 readFileSync 加回来，
+   * 行为上完全看不出区别，直到宿主换目录布局。直接在源码上钉。
+   */
+  const src = readFileSync(new URL('../src/pet-vocab.ts', import.meta.url), 'utf8');
+  assert.equal(/from 'node:fs'/.test(src), false, 'pet-vocab.ts 又引入了 node:fs');
+  assert.equal(/readFileSync|existsSync/.test(src), false, 'pet-vocab.ts 又去读文件了');
+  // 不钉 `figure.json` 这个词 —— 注释里要解释「为什么撤掉」，提到它是应该的。
+  // 真正会伤人手脚的是这两样：引入 fs、调读文件。上面两条已经够了。
 });
 
 test('提示词天花板：静态正文 + 注入的动作段都要算进去', () => {

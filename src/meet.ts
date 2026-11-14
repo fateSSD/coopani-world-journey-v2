@@ -55,6 +55,97 @@ const TIMEOUT_MS = 5000;
 const clean = (s: string) => String(s ?? '').trim();
 
 /**
+ * 用户填的那一栏，整理成能用的**根地址**（不带 `/sight`）。
+ *
+ * ## 为什么要单独一步（2026-11-13）
+ *
+ * 读者报「名片一直填不了」「约鱼发不出去，说没连上碰面服务器」，
+ * 而线上服务实测完全正常：GET/POST `/sight/profile` 全是 200。
+ * 追下去发现是**填法**的问题 —— 少一个 `https://`，`fetch` 就抛 `Invalid URL`，
+ * 被 `catch` 压成「没连上碰面服务器」。用户和模型都只能推「地址没填对」，
+ * 真实那一层永远传不出来。
+ *
+ * 所以这里做三件事：把肉眼看不见的东西清掉、把缺的协议补上、把多余的路径剪掉。
+ * **能修的直接修，修不了的说清楚哪里不对** —— 不要静默改写成一个它自己猜的地址。
+ *
+ * ## 认哪些写法
+ *
+ * - 漏协议：`cooppetsjourney.top` → `https://cooppetsjourney.top`
+ * - 带尾斜杠、多斜杠
+ * - 从浏览器地址栏复制带上的 `?query` `#hash`
+ * - 误填到具体接口：`…/sight/status` → 剪回 `…/sight`
+ * - 复制带来的零宽空格、BOM、全角空格、首尾引号/尖括号
+ *
+ * `http://` 原样保留（自建服务常用），不强行升 https —— 那是他的选择。
+ */
+export interface MeetUrlFix {
+  /** 整理后的根地址。`error` 非空时为空串。 */
+  readonly base: string;
+  /** 动过什么，一句人话。原样可用时为空。 */
+  readonly fixed: string;
+  /** 不能用时的原因。空串 = 没问题（含「没填」）。 */
+  readonly error: string;
+}
+
+export function normalizeMeetUrl(raw: unknown): MeetUrlFix {
+  const original = String(raw ?? '');
+  let s = original
+    // 零宽字符与 BOM：从网页/聊天框复制时最常见，肉眼完全看不出来
+    .replace(/[\u200b-\u200d\u2060\ufeff]/g, '')
+    .replace(/[\u00a0\u3000]/g, ' ')
+    .trim()
+    // 首尾的引号、书名号、尖括号 —— 从邮件或文档里复制会带上
+    .replace(/^[<"'“”‘’「」『』]+/, '')
+    .replace(/[>"'“”‘’「」『』]+$/, '')
+    .trim();
+  if (!s) return { base: '', fixed: '', error: '' };
+
+  const fixes: string[] = [];
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    s = `https://${s}`;
+    fixes.push('补了 https://');
+  }
+
+  let u: URL;
+  try {
+    u = new URL(s);
+  } catch {
+    return { base: '', fixed: '', error: `这串读不成网址（${s.slice(0, 60)}）` };
+  }
+  if (!/^https?:$/.test(u.protocol)) {
+    return { base: '', fixed: '', error: `只认 http 和 https，这串是 ${u.protocol.replace(':', '')}` };
+  }
+  if (!u.hostname) return { base: '', fixed: '', error: '地址里没有域名' };
+
+  if (u.search || u.hash) {
+    u.search = '';
+    u.hash = '';
+    fixes.push('去掉了地址里的 ? 和 #');
+  }
+
+  /*
+   * 路径只留到 `/sight` 为止。
+   *
+   * 会有人把文档里那句 `…/sight/status` 直接抄进来（那是**状态接口**，不是根）。
+   * 留着它，`endpointOf` 会再补一个 `/sight`，变成 `…/sight/status/sight` —— 404，
+   * 而 404 的文案是「这台服务器上还没有邀约功能」，比真实原因还误导。
+   */
+  let path = u.pathname.replace(/\/+$/, '');
+  const hit = /^(.*?)\/sight(\/.*)?$/.exec(path);
+  if (hit) {
+    path = hit[1];
+    if (hit[2]) fixes.push('剪掉了 /sight 后面那段');
+  }
+  if (path === '/') path = '';
+
+  return {
+    base: `${u.protocol}//${u.host}${path}`,
+    fixed: fixes.join('，'),
+    error: '',
+  };
+}
+
+/**
  * 拼出真正的接口地址。
  *
  * 用户会怎么填？大概率是**从控制台直接复制完整地址**（带 `/sight`）——
@@ -66,9 +157,61 @@ const clean = (s: string) => String(s ?? '').trim();
  * 填完整地址就会变成 `/sight/sight`，404。
  */
 const endpointOf = (url: string): string => {
-  const base = clean(url).replace(/\/+$/, '');
+  const fix = normalizeMeetUrl(url);
+  const base = fix.error ? clean(url).replace(/\/+$/, '') : fix.base;
   return base.endsWith('/sight') ? base : `${base}/sight`;
 };
+
+/**
+ * 一个网络异常，说成人话。
+ *
+ * ## 为什么要有它（2026-11-13）
+ *
+ * 原来所有 `catch` 都只回一句「没连上碰面服务器」。可这一句底下压着**六种完全
+ * 不同的失败**：地址没写协议、域名打错、服务没起、本机断网、证书过期、超时。
+ * 六种的修法毫不相干，而用户只能看到同一句话 —— 他唯一能得出的结论是
+ * 「这个功能坏了」，我们连去查哪一层都不知道。
+ *
+ * **只报能确认的事实**：DNS 查不到就说查不到，不替他推「你是不是打错了」。
+ * 原始 `code` 附在末尾，用户复制给我们就够定位。
+ */
+export function explainNet(e: unknown): string {
+  const err = e as
+    | { name?: string; message?: string; code?: string; cause?: { code?: string; message?: string } }
+    | null
+    | undefined;
+  const name = String(err?.name ?? '');
+  const code = String(err?.code ?? err?.cause?.code ?? '');
+  const msg = String(err?.cause?.message ?? err?.message ?? '');
+
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    return `请求 ${TIMEOUT_MS / 1000} 秒没回话`;
+  }
+  /*
+   * 这两个都属 DNS 层，但修法不同：一个是名字真的不存在（地址拼错了），
+   * 一个是这会儿查不了（本机 DNS/网络抽了，过会儿就好）。
+   * 合成一句会让用户去改一个根本没写错的地址。
+   */
+  if (code === 'ENOTFOUND') return '域名解析不了（DNS 查不到这个名字）';
+  if (code === 'EAI_AGAIN') return 'DNS 这会儿查不了（临时失败，过一会儿再试）';
+  if (code === 'ECONNREFUSED') {
+    return `域名通，但这个端口没人应答（服务没起或端口不对）`;
+  }
+  if (code === 'ECONNRESET') return '连接被对面掐断了';
+  if (code === 'ETIMEDOUT') return '网络层超时（本机断网或被挡）';
+  if (code === 'EPROTO') return '协议握手失败';
+  if (/CERT|TLS|SSL/i.test(code) || /certificate/i.test(msg)) {
+    return '证书没通过（多半已过期，或证书上的域名和这个对不上）';
+  }
+  if (/Failed to parse URL|Invalid URL/i.test(msg)) {
+    return '这串读不成网址（前面是不是漏了 https://）';
+  }
+  const tail = [code, name].filter(Boolean).join('/') || '未知';
+  return msg ? `网络没通（${tail}：${msg.slice(0, 60)}）` : `网络没通（${tail}）`;
+}
+
+/** 失败时的统一说法：**先说是哪一层，再给原始码**。 */
+const netFail = (e: unknown): string => `没连上碰面服务器 —— ${explainNet(e)}`;
 
 /**
  * 上报「我在这儿」。
@@ -332,8 +475,12 @@ const WHY: Record<string, string> = {
   'bad json': '请求体没拼对，服务器没收',
 };
 
-/** 连服务端都够不着时，唯一能说的一句。 */
-const UNREACHABLE = '没连上碰面服务器';
+/**
+ * 连服务端都够不着时说什么 —— 现在由 `netFail()` / `explainNet()` 生成。
+ *
+ * 原来这里是一个固定常量「没连上碰面服务器」。2026-11-13 撤掉它：
+ * 同一句话盖着六种不同的失败，用户只能推「地址没填对」，我们也查不下去。
+ */
 
 /**
  * 一个响应该说成什么。
@@ -437,8 +584,8 @@ export async function sendInvite(
     // 老实现可能只回 ok 不回 id —— 那也算发成了，只是她自己接不了自己这条。
     const id = typeof body.raw?.id === 'string' ? body.raw.id.slice(0, 32) : '';
     return { ok: true, id };
-  } catch {
-    return { ok: false, reason: UNREACHABLE };
+  } catch (e) {
+    return { ok: false, reason: netFail(e) };
   }
 }
 
@@ -467,8 +614,8 @@ export async function listInvites(
       ok: true,
       list: toInvites(list),
     };
-  } catch {
-    return { ok: false, reason: UNREACHABLE };
+  } catch (e) {
+    return { ok: false, reason: netFail(e) };
   }
 }
 
@@ -504,8 +651,8 @@ export async function fetchStatus(
       pool: Math.max(0, Math.floor(Number(body.raw?.pool) || 0)),
       invites: toInvites(body.raw?.list),
     };
-  } catch {
-    return { ok: false, reason: UNREACHABLE };
+  } catch (e) {
+    return { ok: false, reason: netFail(e) };
   }
 }
 
@@ -540,8 +687,8 @@ export async function myTakenInvites(
     const body = await readBody(res);
     if (!res.ok || !body.ok) return { ok: false, reason: whyNot(res.status, body.error) };
     return { ok: true, list: toInvites(body.raw?.list) };
-  } catch {
-    return { ok: false, reason: '没连上碰面服务器' };
+  } catch (e) {
+    return { ok: false, reason: netFail(e) };
   }
 }
 
@@ -596,8 +743,8 @@ export async function acceptInvite(
       meetCity: meetOf(b.meet, to),
       pace: paceOf(b.pace),
     };
-  } catch {
-    return { ok: false, reason: UNREACHABLE };
+  } catch (e) {
+    return { ok: false, reason: netFail(e) };
   }
 }
 
@@ -903,8 +1050,9 @@ export async function putProfile(opt: MeetOptions, text: string): Promise<PutPro
       reason: `服务器回了 ${res.status}${body ? `：${body.slice(0, 80)}` : ''}`,
     };
   } catch (e) {
-    const name = (e as { name?: string } | null)?.name ?? '';
-    return { ok: false, reason: name === 'TimeoutError' ? `请求 ${TIMEOUT_MS / 1000} 秒没回话` : '请求发不出去' };
+    // 2026-11-13：原来只认 TimeoutError，其余一律「请求发不出去」—— DNS、证书、
+    // 地址没写协议全都挤在这一句里，等于什么都没说。统一交给 explainNet。
+    return { ok: false, reason: explainNet(e) };
   }
 }
 

@@ -1,0 +1,51 @@
+# 碰面服务器 · Cloudflare Workers 版
+#
+# 接口和 `cloud/sight/`（腾讯云开发版）完全一样，客户端不用改，
+# 只把设置里那个地址换成 `https://<你的子域>.workers.dev` 就行。
+#
+# 部署见 README.md。
+
+name = "coop-sight"
+main = "src/worker.js"
+compatibility_date = "2026-11-01"
+
+# 管鱼页由这个 Worker 自己发（`/pets`）而不是发到 pages.dev ——
+# `*.pages.dev` 在国内经常连不上（2026-11-06 Mr.Q 在公司就是这么打不开的），
+# 而 cooppetsjourney.top 这个自定义域是通的。
+#
+# 页面内容来自 `site/pets.html`，经 `build-pets.mjs` 转成 `src/pets-page.js`（一个字符串模块）。
+# **不走 wrangler 的 Text rule**：那样 node 跑测试时 import 不到 .html，整套测试会挂。
+# 改完 html 记得跑一次 `node cloud/sight-cf/build-pets.mjs`；`pets-page.test.mjs` 会盯着两份一致。
+
+# 运行时不需要 Node 兼容层 —— 这个 Worker 只用 fetch / crypto / D1。
+# 加上反而会拖慢冷启动。
+
+[[d1_databases]]
+binding = "DB"
+database_name = "coop-sight"
+# ⚠️ 这一行必须在跑完 `wrangler d1 create coop-sight` 之后，
+#    把控制台输出的 database_id 填进来。不填部署会报错。
+database_id = "adeb1aa9-e114-4c44-8b42-3e9adba71237"
+
+# 可选：想看日志就开，免费额度够用。
+[observability]
+enabled = true
+
+# 定时清理（`worker.js` 里的 `scheduled()`）。
+#
+# 不清理的话表会一直长：一天五万行，一个月一百五十万行，免费版 5 GB 存储撑不到年底。
+# 每小时一次、每次最多删五千行 —— 一天十二万行清理能力，覆盖最坏情况还绰绰有余。
+#
+# 这一行不加也能跑，但表会无限增长。**建议加。**
+[triggers]
+crons = ["17 * * * *"]
+
+# ── 管理接口的密钥（可选）────────────────────────────────────────
+#
+# 不配 = `/admin/*` 整条路 404，管理面板连不上，正常功能一点不受影响。
+# 想用 `site/admin.html` 看线上数据，就设一个长随机串：
+#
+#   npx wrangler secret put ADMIN_KEY
+#
+# **别写在这个文件里** —— 这个文件是要进版本库的。
+# 用 secret 命令，它只存在 Cloudflare 那边。

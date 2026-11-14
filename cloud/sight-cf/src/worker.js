@@ -1,0 +1,2020 @@
+/**
+ * 碰面服务器 · Cloudflare Workers 版。
+ *
+ * 和 `cloud/sight/index.js`（腾讯云开发 + PostgreSQL 版）**接口完全一样**：
+ * 同一个 `GET /sight?city=&date=&slot=&exclude=`，同一个 `POST /sight {uid,pet,city,date,slot,doing}`。
+ * 客户端只要把地址从 `xxx.tcloudbase.com` 换成 `xxx.workers.dev`，别的一个字都不用改。
+ *
+ * ## 为什么搬到 Workers
+ *
+ * 腾讯云开发免费版一个月只有 3000 资源点（约 1000 次调用）。一万用户里只要有
+ * 两千人开了碰面，一天就是一万两千次请求 —— 免费额度撑不到两个小时。
+ * Workers 免费 10 万请求/天、D1 免费 10 万行写入/天，同样的量占 12% 左右。
+ *
+ * **注意：必须配 D1，不能用 KV。** KV 免费只给 1000 次写入/天，
+ * 一次上报写一条就爆了。这是 Cloudflare 免费额度里最大的一个坑。
+ *
+ * ## 两条不能破的规矩（从旧版继承）
+ *
+ * 1. **只回宠物名和在干嘛。** 别人的 uid、上报时间、任何能拿来联系的东西都不出这个函数。
+ *    设计上就不是社交 —— 看得见，摸不着。
+ * 2. **只按「城 + 日 + 时段」查。** 不接受模糊查询、不接受按 uid 查别人的轨迹。
+ *
+ * ## 这一版新加的：限速
+ *
+ * 旧版没有任何防刷。五个人的时候无所谓，一万人的时候必须堵 —— uid 是本地随机的，
+ * 谁都能伪造。更彻底的办法是给客户端发 token 做签名，但那要改客户端；
+ * token 字段已经在表里留好了（`token_hash`），以后客户端升级直接填。
+ *
+ * ## 三条闸都按「天」算，且都是 O(1)
+ *
+ * - `u:<uid>:<day>` —— 一个宠物一天最多 50 次。正常人 4–8 次，这一档只挡脚本。
+ * - `i:<ip>:<day>`  —— 一个出口 IP 一天最多 2000 次。按公司 NAT 五十人 × 24 次算还差一半。
+ * - `d:<day>`       —— 全站一天 5 万次，最后的硬顶。
+ *
+ * ## 为什么不是「两次上报间隔 20 秒」
+ *
+ * 第一版是那么写的，跑起来才发现两个毛病：
+ *
+ * 1. **粒度错了。** 她的行程里同一天换城市、换时段各报一次是**合法的**，
+ *    但按 uid 算间隔会把这些正常上报一起挡掉，而且客户端是 `void` 调用，
+ *    挡了没人知道 —— 那一格就静默缺了。
+ * 2. **防重复本来就不需要它。** 写入是 upsert（主键 uid+city+date+slot），
+ *    重复报同一格只是覆盖同一个值，天然幂等。真正要防的是「刷出大量不同的格」。
+ *
+ * ## 为什么不是 `COUNT(*)`
+ *
+ * 第一版三条闸全用 `COUNT(*) FROM presence WHERE ...`。执行计划很漂亮
+ * （走 covering index，没有全表扫描），但**走索引不等于不花钱** ——
+ * `COUNT` 范围内有多少行就要读多少行。实测表里 8 万行时每次 POST 读 8 万行，
+ * D1 免费版一天 500 万行读取，**62 次上报就烧光**。
+ *
+ * 也就是说：那道「防止刷爆额度」的闸，本身就是最大的刷子。换成计数表后一次判定读 1 行。
+ */
+
+/** 时段白名单。和扩展里的 `slotOf()` 必须一致，改一边记得改另一边。 */
+const SLOTS = new Set(['morning', 'afternoon', 'evening', 'night']);
+/** 一次最多回几个 —— 加上查询方自己正好四个。 */
+/*
+ * 管鱼页由这个 Worker 自己发（`/pets`）。
+ *
+ * 内容是 `site/pets.html` 的生成物（`pets-page.js`，见 `build-pets.mjs`）。
+ * 不走 wrangler 的 Text rule：那样 node 跑测试时 import 不到 .html，整套 worker 测试会挂。
+ */
+import petsPage from './pets-page.js';
+
+const MAX = 3;
+
+/** 一个宠物一天的写入上限。正常人一天 4–8 次，50 是给反复调试留的余量。 */
+const UID_PER_DAY = 50;
+/** 一个出口 IP 一天的写入上限。公司 NAT 五十人一天也就一千二，取两千。 */
+const IP_PER_DAY = 2000;
+
+/*
+ * ## 每日硬顶为什么按「行」算，不按「次」算
+ *
+ * D1 免费额度的单位是**行**（10 万行写入/天），不是请求数。
+ * 而一次上报要写 4 行：presence 一条 + rate 三条。
+ *
+ * 第一版直接拿「8 万次」当上限（那是旧版 `COUNT(*) FROM presence` 的口径，
+ * 一次上报只写 1 行）。换成计数表之后每次写 4 行，同样 8 万次就是 **32 万行** ——
+ * 超额度三倍。**阈值没变，但它的单位偷偷变了。**
+ *
+ * 现在按行算，再除以每次的行数，以后改写入行数会自动跟着变。
+ */
+const DAILY_ROW_BUDGET = 80_000;   // 10 万额度留 20% 给定时清理
+const ROWS_PER_POST = 4;           // presence 1 + rate 3
+const DAILY_WRITE_CAP = Math.floor(DAILY_ROW_BUDGET / ROWS_PER_POST);   // = 20000 次
+
+/** 历史数据保留天数。查询只用到今天和昨天，四天足够宽松。 */
+const KEEP_DAYS = 4;
+/** 一次清理最多删几行 —— 分批删，别让一次 cron 撞上执行时间上限。 */
+const PURGE_BATCH = 5000;
+
+/*
+ * 表里有两个时间，别混用。
+ *
+ *   `date_key`  **她那边的游戏日期**。世界时钟跑 24 倍，跑上几天的鱼早就到 2027 年了。
+ *   `at`        服务端写进去的**真实上报时刻**，跟谁的游戏进度无关。
+ *
+ * 2026-11-10 的 bug 就出在拿真实日期去比 `date_key`：
+ * 「今天多少只」数的是「游戏内日期恰好等于现实今天」那一小撮，
+ * 来多少新上报都不会动 —— 面板上的数字就这么卡死在 19。
+ * 当天真实上线的是 174 只。
+ *
+ * 凡是「今天 / 最近 / 留存」这类**现实时间**的口径，一律用 `at`。
+ * 只有「同城同日同时段还有谁」这种**她自己那套日历**的查询才用 `date_key`。
+ */
+
+/*
+ * 「今天」按北京时间算，不是 UTC。
+ *
+ * 用户都在国内，UTC 零点等于北京早上八点 —— 凌晨 0 点到 8 点上过线的鱼会被算进
+ * 「昨天」，早上打开面板看到一个明显偏小的数字。2026-11-10 一并修掉。
+ */
+const CN_OFFSET_MS = 8 * 3_600_000;
+const todayStartIso = () => {
+  const shifted = Date.now() + CN_OFFSET_MS;
+  const midnight = Math.floor(shifted / 86_400_000) * 86_400_000 - CN_OFFSET_MS;
+  return new Date(midnight).toISOString();
+};
+
+/*
+ * 「在线」= 最近 30 分钟有过上报。
+ *
+ * 客户端每 20 分钟一次心跳（`world.ts` 的 `HEARTBEAT_MS`），所以正常在线的鱼
+ * 一定落在窗口里，留 10 分钟给一次失败的请求重来。
+ *
+ * **别再把这个数叫做「今天多少只」。** 一个人今天来过、现在关掉了，那是「今天来过」，
+ * 不是在线 —— 2026-11-10 Mr.Q 问「我的鱼有两只，何来一只在线」，就是这个词用错了。
+ */
+const ONLINE_WINDOW_MS = 30 * 60_000;
+const onlineSinceIso = () => new Date(Date.now() - ONLINE_WINDOW_MS).toISOString();
+
+const CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, OPTIONS',
+  /*
+   * `x-admin-key` 必须列在这里 —— 管理页面是跨域打过来的，
+   * 自定义头会触发预检，预检说这个头不允许，浏览器就不会发真正的请求。
+   * 症状是「明明密钥对了却一直连不上」。
+   */
+  'access-control-allow-headers': 'content-type, x-admin-key',
+  'access-control-max-age': '86400',
+};
+
+const reply = (status, body, extra) => new Response(JSON.stringify(body), {
+  status,
+  // 接口数据一律不缓存：改名之后要立刻看到新名字，不能被浏览器或边缘拿旧响应糊过去。
+  headers: {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    ...CORS,
+    // 给调用方一个口头补充的位置（目前只用来自报池子计数是不是命中缓存）。
+    ...(extra || {}),
+  },
+});
+
+/* ------------------------------------------------------------------
+ * 扩展市场索引的国内镜像
+ *
+ * ## 为什么要有这个
+ *
+ * 宿主读索引的超时是**硬编码**的：raw.githubusercontent.com 3 秒、GitHub API 5 秒。
+ * 国内直连 raw 实测 2.2 秒 —— 余量不到一秒，网络抖一下就整片市场读不出来。
+ * 2026-11-06 Mr.Q 那台就是从 11-05 晚上起一直失败，界面停在旧索引上。
+ *
+ * 这个 Worker 跑在 Cloudflare 上，访问 GitHub 快；国内访问它又快（同一个域名）。
+ * 于是把索引反代一遍，宿主把索引源指过来。jsDelivr 试过：命中缓存 0.3 秒，
+ * 但**回源要 11 秒**，purge 之后照样超时，不可用。
+ *
+ * **只放行索引仓里那几类路径** —— 不做开放式反代，免得被人当免费代理用。
+ * 边缘缓存 5 分钟：索引是 Action 生成后推到 main 的，5 分钟延迟没有影响。
+ * ------------------------------------------------------------------ */
+
+const MARKET_UPSTREAM = 'https://raw.githubusercontent.com/Pal-AI-Lab/cortico-extensions/main';
+/** index.json / catalog.json / packages/*.json / comments/*.json / icons|screenshots/*。 */
+const MARKET_PATH = /^\/(?:index|catalog)\.json$|^\/(?:packages|comments)\/[a-z0-9._-]+\.json$|^\/(?:icons|screenshots)\/[A-Za-z0-9._\/-]+$/i;
+
+async function marketProxy(path, ctx) {
+  if (!MARKET_PATH.test(path)) return reply(404, { ok: false, error: 'not found' });
+  /*
+   * 用 Cache API 显式缓存，**不用** fetch 的 `cf.cacheTtl`。
+   *
+   * 实测：`cf: { cacheTtl, cacheEverything }` 对 catalog.json（750KB）不生效，
+   * 每次都回源，稳定在 3 秒上下 —— 而宿主那边的超时正好是 3 秒。
+   * Cache API 对单个响应的体积限制宽得多，缓存住之后就是几十毫秒。
+   *
+   * `caches` 在本地 node 测试里不存在，所以要先判一下。
+   */
+  const cache = typeof caches === 'object' && caches.default ? caches.default : null;
+  const key = new Request(`https://market-cache.internal/v2${path}`);
+  if (cache) {
+    const hit = await cache.match(key);
+    if (hit) return hit;
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(MARKET_UPSTREAM + path);
+  } catch {
+    return reply(502, { ok: false, error: 'upstream' });
+  }
+  if (!upstream.ok) return reply(upstream.status, { ok: false, error: 'upstream' });
+  const type = path.endsWith('.json') ? 'application/json; charset=utf-8'
+    : path.endsWith('.png') ? 'image/png'
+      : path.endsWith('.webp') ? 'image/webp'
+        : 'application/octet-stream';
+  /*
+   * **不要自己 gzip。**
+   *
+   * 试过：Workers 里 `new Response(gzBytes, { headers: { 'content-encoding': 'gzip' } })`
+   * 出来之后 Cloudflare 会把那个 header **剥掉**，body 仍是压缩过的字节 ——
+   * 客户端按 JSON 解析就是语法错误。这比读不到更糟：读不到还有缓存兜底，读坏了没有。
+   *
+   * 明文直出，体积交给 Cloudflare（它会按 content-type 自己压）。
+   */
+  const out = new Response(await upstream.arrayBuffer(), {
+    status: 200,
+    headers: {
+      'content-type': type,
+      // 索引文件更新频率是「Action 跑一次才变」，但 CF 对 .json 有自己的默认缓存；
+      // 写短一点，免得发了新版四个小时看不到。
+      'cache-control': 'public, max-age=300',
+      'access-control-allow-origin': '*',
+    },
+  });
+  if (cache && ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(cache.put(key, out.clone()));
+  return out;
+}
+
+const okUid = (v) => typeof v === 'string' && /^[a-f0-9]{20,64}$/i.test(v);
+const okCity = (v) => typeof v === 'string' && /^[a-z0-9_-]{1,40}$/i.test(v);
+const okDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+/**
+ * 「这一带还有谁」看多久以内报过的（2026-11-10）。
+ *
+ * 原来是同城 + 同日 + 同时段三重与，而那个「日」是 `date_key` —— **各人自己的游戏内日期**。
+ * 世界时钟按 24 倍速跑，同一刻线上同时存在 2026-11-10、2026-11-12、2027-03-07，
+ * 两条鱼差几天到几个月是常态，于是这行几乎永远返回空。
+ * 2026-11-10 实测：他女儿在昆明，`/sight?...&date=2026-11-10&slot=afternoon` 回 `list: []`，
+ * 而池子里有 7 只在跑。
+ *
+ * 改成按 `at`（真实写入时刻）划一个窗口 —— 跟「现实时间口径一律用 `at`」同一条线。
+ * `slot` 留着：4 个值撞得上，而且它担着语义（凌晨三点不该说「她也在这一带」）。
+ */
+const RECENT_NEIGHBOR_MS = 2 * 3600_000;
+const clean = (v, max) => String(v == null ? '' : v)
+  .replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
+
+/* ------------------------------------------------------------------
+ * 宠物名和「在干嘛」的清洗
+ *
+ * ## 为什么必须在服务端做
+ *
+ * 客户端改一行就能跳过过滤。一万用户的规模下，「有人把名字改成广告蹲在
+ * 热门城市」是**必然会发生**的事，不是可能性 —— 而宠物名是唯一展示给
+ * 陌生人的字段。
+ *
+ * ## 为什么是「换掉」而不是「拒绝」
+ *
+ * 拒绝会让那只鱼彻底从别人屏幕上消失，用户完全不知道为什么 ——
+ * 他只会以为「碰面坏了」，然后来找你。换成中性名字她还在，
+ * 只是别人看到的不是他填的那个。恶意名字本来也不该出现在别人屏幕上，
+ * 这个代价是合理的。
+ *
+ * ## 词表为什么这么短
+ *
+ * 中文没有词边界，用「包含匹配」查脏话，词越短误伤越大（「沙」会撞「长沙」）。
+ * 所以只收**多字、无歧义**的。这份表故意不全 —— 靠 `BANNED_WORDS`
+ * 环境变量按反馈往上加，比在代码里堆一份大表更实际，也更好维护。
+ * ------------------------------------------------------------------ */
+
+/** 被判为广告/脏话时换成的名字。中性，不像占位符，也不跟世界观冲突。 */
+const FALLBACK_PET = '一只鱼';
+
+/** 内置最小词表。只收多字、无歧义的，单字一概不收。 */
+const BAD_WORDS = [
+  '傻逼', '煞笔', '操你', '草你', '尼玛', '你妈死', '滚你妈', '滚蛋', '去死',
+  '卖片', '约炮', '裸聊', '代开发票', '办证', '刷单', '招代理',
+];
+
+/** 广告与联系方式的「形状」。这些不用词表，模式就认得出来。 */
+const AD_PATTERNS = [
+  /https?:\/\//i,
+  /www\./i,
+  /\b[a-z0-9-]{2,}\.(com|cn|net|org|top|xyz|vip|cc|me|shop|site|link)\b/i,
+  /(微信|威信|薇信|vx|wx|weixin|qq|扣扣|企鹅)\s*[:：]?\s*[a-z0-9_-]{2,}/i,
+  /(私聊|加我|联系我|扫码|返利|优惠券|代购|微商)/,
+  /\b1[3-9]\d{9}\b/,   // 手机号
+  /\b\d{6,11}\b/,      // QQ 号那一档。6 位起，「海拔 3000 米」这种四位数不会中
+];
+
+/** 额外的词表，部署时用 `wrangler secret put BANNED_WORDS` 配，逗号分隔。 */
+function bannedExtra(env) {
+  return String(env?.BANNED_WORDS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** 这个名字能不能直接给人看。 */
+function looksBad(s, extra) {
+  if (!s) return false;
+  if (/(.)\1{3,}/.test(s)) return true;   // 「啊啊啊啊」刷屏式占位
+  for (const p of AD_PATTERNS) if (p.test(s)) return true;
+  const low = s.toLowerCase();
+  for (const w of BAD_WORDS) if (low.includes(w)) return true;
+  for (const w of extra) if (low.includes(w)) return true;
+  return false;
+}
+
+/**
+ * 洗宠物名。`flagged` 表示被换过 —— 调用方据此记日志，
+ * 但**不回给客户端**（不想让人拿它来试探词表边界）。
+ */
+function safePet(raw, extra) {
+  const s = clean(raw, 24);
+  if (!s) return { name: '', flagged: false };
+  if (looksBad(s, extra)) return { name: FALLBACK_PET, flagged: true };
+  return { name: s, flagged: false };
+}
+
+/**
+ * 「在干嘛」也给别人看，同一套判断。
+ * 被换掉就留空 —— 空的时候那句话会退化成「也在这一带」，比挂个假动作自然。
+ */
+function safeDoing(raw, extra) {
+  const s = clean(raw, 40);
+  if (!s) return '';
+  return looksBad(s, extra) ? '' : s;
+}
+
+/** 一个宠物一天最多发几条邀约。正常人一周也发不了一条，3 是给调试留的。 */
+const INVITE_PER_DAY = 3;
+/** 一天最多接几条。接多了等于把行程排满，那不是「一起玩」，是赶场。 */
+const ACCEPT_PER_DAY = 1;
+/** 邀约挂多久。过期不通知任何人 —— 不回应就是没看见，不该构成一次「被拒绝」。 */
+const INVITE_TTL_MS = 24 * 3_600_000;
+
+/** 某个计数 key 今天用了多少。 */
+async function rateOf(db, key) {
+  const row = await db.prepare('SELECT n FROM rate WHERE key = ?1').bind(key).first();
+  return Number(row?.n ?? 0);
+}
+
+/** 记一次。窗口按 UTC 日期天然切，跨天换 key 从 1 重新数。 */
+async function bumpRate(db, key, day) {
+  const expSec = Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000) + 86_400;
+  await db.prepare(
+    `INSERT INTO rate (key, n, exp) VALUES (?1, 1, ?2)
+     ON CONFLICT(key) DO UPDATE SET n = rate.n + 1`,
+  ).bind(key, expSec).run();
+}
+
+const newId = () => [...crypto.getRandomValues(new Uint8Array(8))]
+  .map((b) => b.toString(16).padStart(2, '0')).join('');
+
+/**
+ * 邀约。**服务端完全不懂语义** —— 它只存「谁、从哪、想去哪、几天、一句话」，
+ * 和「这条被谁接了」。
+ *
+ * 想不想去、凭什么判断、要不要回应，全在模型那边。这里一旦开始做撮合判断，
+ * 就得有用户关系、权限、审核，那是另一个量级的东西。
+ */
+/**
+ * 一条邀约最多几个人一起走（**含发起者**）。
+ *
+ * 2026-11-05 之前一条邀约只能被一个人接，三只鱼同城时总有一只没位置 ——
+ * 用户原话：「两两配对总有一个鱼会单出来」。
+ *
+ * 2026-11-06 从 4 提到 6：Mr.Q 有两只鱼（两台电脑），本机那只的邀约已经满员，
+ * 另一只从成都方向过来却挤不进去 ——「不想让她伤心」。四条鱼一车是他自己提过的场景，
+ * 六个人（含发起者）刚好是一辆七座车的量。
+ *
+ * 不再和 `MEET_MAX = 4` 绑定：「同城能看见几只」和「一趟能带几个人」本来就不是一件事，
+ * 绑在一起会让「看得见但加不进」变成常态。
+ */
+const MAX_PARTY = 6;
+
+/* ------------------------------------------------------------------
+ * 同行卡（2026-11-11，Discussion #586）
+ *
+ * 用户来信：「约到一起的那几天里，让同行的伙伴能留下一个号，或者留一句话。
+ * 不用多复杂，能让我在别处说一句「我在」就够了。」
+ *
+ * ## 和 `AD_PATTERNS` 的正面冲突 —— 这条要看清
+ *
+ * 上面那套过滤把「微信号 / QQ / 手机号」当成广告特征，`safeDoing` 一撞就清空。
+ * 而这张卡的字面功能就是**留一个号**。两条规则直接对撞，不是漏了。
+ *
+ * 为什么最后决定为卡片开一个口子：
+ *
+ * 1. **可见范围根本不同。** `doing` 是给同城任何一只鱼看的（公开广场），
+ *    卡片只有同一段同行的 ≤5 个人取得到 —— 他们要一起走几天，本来就会互相知道。
+ * 2. **不留号，这个功能就没有意义。** 只留一句「她的话」，散了还是找不着人。
+ * 3. **口子是可关的。** `CARD_ALLOW_CONTACT` 一改 false 就退回老策略，
+ *    线上真出问题不用改结构。
+ *
+ * 放开的是**联系方式那一格**，不是全部：`note` 仍然按 `looksBad` 洗，
+ * 两个字段都禁 URL —— 链接能钓鱼，而且它比号传播得远得多。
+ * ------------------------------------------------------------------ */
+
+/** 卡片活多久。散伙之后还能找，所以比邀约（24 小时）长得多。 */
+const CARD_KEEP_DAYS = 30;
+
+/** 卡片能不能留联系方式。关掉就退回「联系方式也算广告」的老策略。 */
+const CARD_ALLOW_CONTACT = true;
+
+/** 她写的那句话的上限。跟 `doing` 同档就够，再长就成小作文了。 */
+const CARD_NOTE_MAX = 40;
+
+/** 联系方式那一格的上限。一个微信号/手机号远用不到 40 个字。 */
+const CARD_CONTACT_MAX = 40;
+
+/** 一天最多留几张。正常一段同行留一张，5 是给重试和手滑留的。 */
+const CARD_PER_DAY = 5;
+
+/** 名片多长。够写一句自我交代 + 一两个外部 id，再长就成小作文了。 */
+const PROFILE_MAX = 120;
+
+/** 名片活多久。和卡同一个尺度 —— 用户不用记两套规矩。 */
+const PROFILE_KEEP_DAYS = 30;
+
+/**
+ * 洗名片那一段字。
+ *
+ * 和 `safeContact` 同一套判断，只是长了点：**不套 `AD_PATTERNS`**。
+ * 名片的意义就是让人找到你，把「微信号 / QQ / 花语乡 id」清掉等于把功能清掉。
+ * 但**继续禁 URL** —— 号是给发生过关系的人用的，链接是给所有人用的。
+ */
+function safeProfile(raw, extra) {
+  const s = clean(raw, PROFILE_MAX);
+  if (!s) return '';
+  if (/https?:\/\//i.test(s) || /www\./i.test(s)) return '';
+  if (/(.)\1{3,}/.test(s)) return '';
+  const low = s.toLowerCase();
+  for (const w of BAD_WORDS) if (low.includes(w)) return '';
+  for (const w of extra) if (low.includes(w)) return '';
+  return s;
+}
+
+/**
+ * 名片（2026-11-11）。全局一张，只有**真的一起走过**的人看得见。
+ *
+ * ## 可见性怎么判
+ *
+ * 「一起走过」= 在同一份 `invites` 里出现过。三种情况都要算：
+ *   ① 我们都是接单的人（`invite_takers` 同一 id）
+ *   ② 我是接单的人，他是发起者
+ *   ③ 我是发起者，他是接单的人
+ *
+ * 少算任何一种，就会有一半人「明明一起走过却看不见」——
+ * 而这个问题不会报错，只会让人觉得功能时好时坏。
+ *
+ * ## 不做「请求-同意」
+ *
+ * chloveln 原本提的是「发请求 → 对方同意 → 公开」。这一版没做，理由写在
+ * `schema.sql` 里那张表的注释上：她没有通知通道，一个要等下次碰面才生效的同意，
+ * 比不给更让人难受。换成「一起走过」这个已经发生过的事实，不需要谁点同意。
+ *
+ * ## 陌生人拿不到
+ *
+ * 这就是「和碰面同一条线」的延续：能看见，摸不着 —— 而且现在**能摸到一点了**，
+ * 但只对真的同路走过的人开放。
+ */
+async function profileRoute(request, env, url, method) {
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  const extra = bannedExtra(env);
+  const nowIso = new Date().toISOString();
+
+  try {
+    if (method === 'GET') {
+      const uid = clean(url.searchParams.get('uid'), 64);
+      if (!okUid(uid)) return reply(400, { ok: false, error: 'bad query' });
+
+      /*
+       * 一次查完：自己的那张 + 一起走过的人的那几张。
+       *
+       * 用 UNION 三个子查询求「同行过的 uid 集合」，再一次 JOIN 到 profiles ——
+       * 分成多次往返会把 D1 行读和延迟都翻倍，而这里每次轮询都会调。
+       */
+      const rows = await db.prepare(
+        `SELECT uid, pet, text, at FROM profiles
+          WHERE exp > ?2 AND (
+            uid = ?1 OR uid IN (
+              SELECT t2.uid FROM invite_takers t1
+                JOIN invite_takers t2 ON t2.id = t1.id
+               WHERE t1.uid = ?1 AND t2.uid <> ?1
+              UNION
+              SELECT i.uid FROM invite_takers t JOIN invites i ON i.id = t.id
+               WHERE t.uid = ?1 AND i.uid <> ?1
+              UNION
+              SELECT t.uid FROM invites i JOIN invite_takers t ON t.id = i.id
+               WHERE i.uid = ?1 AND t.uid <> ?1
+            )
+          )
+          ORDER BY at DESC LIMIT 20`,
+      ).bind(uid, nowIso).all();
+
+      const all = rows?.results ?? [];
+      const mineRow = all.find((r) => r.uid === uid);
+      const others = all
+        .filter((r) => r.uid !== uid)
+        .map((r) => ({ pet: String(r.pet ?? ''), text: String(r.text ?? ''), at: String(r.at ?? '') }));
+      const mine = mineRow
+        ? { text: String(mineRow.text ?? ''), at: String(mineRow.at ?? '') }
+        : null;
+      return reply(200, { ok: true, mine, others });
+    }
+
+    if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+
+    let body;
+    try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+    const uid = clean(body?.uid, 64);
+    if (!okUid(uid)) return reply(400, { ok: false, error: 'bad fields' });
+    const pet = safePet(body?.pet, extra).name;
+    if (!pet) return reply(400, { ok: false, error: 'bad fields' });
+
+    /*
+     * 空名字段 = 撤回。
+     *
+     * 用户想收回名片，不该只能等 30 天 —— 他能改，就该能清。
+     */
+    const text = safeProfile(body?.text, extra);
+    if (!text) {
+      await db.prepare('DELETE FROM profiles WHERE uid = ?1').bind(uid).run();
+      return reply(200, { ok: true, cleared: true });
+    }
+
+    const exp = new Date(Date.now() + PROFILE_KEEP_DAYS * 86_400_000).toISOString();
+    await db.prepare(
+      `INSERT INTO profiles (uid, pet, text, at, exp)
+       VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(uid) DO UPDATE SET
+         pet = ?2, text = ?3, at = ?4, exp = ?5`,
+    ).bind(uid, pet, text, nowIso, exp).run();
+
+    return reply(200, { ok: true });
+  } catch (e) {
+    /*
+     * **这里原来是个空 catch**（2026-11-13 补）。
+     *
+     * 同一个文件里 invite / status / accept / admin 都有 `console.error`，
+     * 只有名片这两条没有 —— 于是 11-12 那天全站 D1 500，客户端只拿到一句
+     * 「服务器回了 500」，而 Worker 侧一个字都没留。
+     * 用户替我们查了一天，我们连「no such table」和「quota exceeded」都分不出来。
+     */
+    console.error('[sight profile]', e && e.message ? e.message : e);
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+/**
+ * 洗「联系方式」那一格。
+ *
+ * 和 `safeDoing` 的区别只有一条：**不套 `AD_PATTERNS`**。
+ * 词表（脏话）和刷屏判据照旧 —— 留号可以，骂人不行。
+ *
+ * 另外**禁 URL**：链接能钓鱼，而且一条短链能把人带到任何地方，
+ * 那不是「留个号」的意思。号是给认识的人用的，链接是给陌生人用的。
+ */
+function safeContact(raw, extra) {
+  const s = clean(raw, CARD_CONTACT_MAX);
+  if (!s) return '';
+  if (!CARD_ALLOW_CONTACT) return looksBad(s, extra) ? '' : s;
+  // 只放行「联系方式」，不放行链接。
+  if (/https?:\/\//i.test(s) || /www\./i.test(s)) return '';
+  if (/(.)\1{3,}/.test(s)) return '';
+  const low = s.toLowerCase();
+  for (const w of BAD_WORDS) if (low.includes(w)) return '';
+  for (const w of extra) if (low.includes(w)) return '';
+  return s;
+}
+
+/**
+ * 留一张卡，或者取同一段同行里别人留的卡。
+ *
+ * ## 鉴权只有一条：你是不是这段同行的人
+ *
+ * 判断依据是 `invite_takers`（接单表）和 `invites.uid`（发起者）。
+ * 不是这两者之一，`id` 猜对了也拿不到 —— `id` 是 16 位 hex，
+ * 但安全不能建立在「猜不到」上面。
+ *
+ * ## 什么都不返回「失败」
+ *
+ * 没卡就是空列表，不是错误。客户端拿去显示「这一趟没有人留卡」。
+ */
+async function cardRoute(request, env, url, method) {
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  const day = new Date().toISOString().slice(0, 10);
+  const extra = bannedExtra(env);
+  const nowIso = new Date().toISOString();
+
+  /** 这段同行的成员吗？是就返回 true。 */
+  const inParty = async (id, uid) => {
+    const own = await db.prepare('SELECT uid FROM invites WHERE id = ?1').bind(id).first();
+    if (own && own.uid === uid) return true;
+    const tak = await db.prepare(
+      'SELECT 1 AS x FROM invite_takers WHERE id = ?1 AND uid = ?2',
+    ).bind(id, uid).first();
+    return !!tak;
+  };
+
+  try {
+    /* ---------------- 取：同一段同行里，别人留了什么 ---------------- */
+    if (method === 'GET') {
+      const id = clean(url.searchParams.get('id'), 32);
+      const uid = clean(url.searchParams.get('uid'), 64);
+      if (!okUid(uid) || !/^[a-f0-9]{16}$/.test(id)) {
+        return reply(400, { ok: false, error: 'bad query' });
+      }
+      if (!(await inParty(id, uid))) return reply(403, { ok: false, error: 'not in party' });
+
+      const rows = await db.prepare(
+        `SELECT uid, pet, note, contact, at FROM party_cards
+          WHERE id = ?1 AND exp > ?2
+          ORDER BY at ASC LIMIT 8`,
+      ).bind(id, nowIso).all();
+
+      /*
+       * **不回 uid。** 谁留的是谁，客户端不需要知道 —— 名字已经够了，
+       * 而 uid 一旦给出去，就能被拿去反查 presence、串起这个人所有行程。
+       * 这条和 `invites` 不发 uid 是同一条线。所以下面按 uid 分完组就把它扔掉。
+       *
+       * 自己那张单独放 `mine`（2026-11-11）：用户改自己留的话时要能回填，
+       * 混在「别人留了什么」里既读着别扭，也会让他以为多了一个人。
+       */
+      const all = rows?.results ?? [];
+      const mineRow = all.find((r) => r.uid === uid);
+      const cards = all
+        .filter((r) => r.uid !== uid)
+        .map((r) => ({
+          pet: String(r.pet ?? ''),
+          note: String(r.note ?? ''),
+          contact: String(r.contact ?? ''),
+          at: String(r.at ?? ''),
+        }));
+      const mine = mineRow
+        ? {
+            note: String(mineRow.note ?? ''),
+            contact: String(mineRow.contact ?? ''),
+            at: String(mineRow.at ?? ''),
+          }
+        : null;
+      return reply(200, { ok: true, cards, mine });
+    }
+
+    /* ---------------- 留：写一张（重复提交就是覆盖） ---------------- */
+    if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+
+    let body;
+    try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+    const uid = clean(body?.uid, 64);
+    const id = clean(body?.id, 32);
+    if (!okUid(uid) || !/^[a-f0-9]{16}$/.test(id)) {
+      return reply(400, { ok: false, error: 'bad fields' });
+    }
+
+    const pet = safePet(body?.pet, extra).name;
+    if (!pet) return reply(400, { ok: false, error: 'bad fields' });
+    if (!(await inParty(id, uid))) return reply(403, { ok: false, error: 'not in party' });
+
+    /*
+     * `note` 走和 `doing` 一样的清洗：它同样是「给别人看的字」。
+     * 空串是正常的 —— 有的人就想留个号，不想写字。
+     */
+    const note = safeDoing(body?.note, extra);
+    const contact = safeContact(body?.contact, extra);
+    if (!note && !contact) return reply(400, { ok: false, error: 'empty card' });
+
+    /*
+     * 限流只按「第一次留」算。
+     *
+     * 覆盖自己那张不该扣额度 —— 用户改一个字就重发一次是正常动作，
+     * 按次计数会让他十分钟内什么都改不了。所以先查有没有旧卡，
+     * 有就直接更新，不走 `bumpRate`。
+     */
+    const had = await db.prepare(
+      'SELECT 1 AS x FROM party_cards WHERE id = ?1 AND uid = ?2',
+    ).bind(id, uid).first();
+
+    if (!had) {
+      const key = `cc:${uid}:${day}`;
+      if (await rateOf(db, key) >= CARD_PER_DAY) {
+        return reply(429, { ok: false, error: 'too many' });
+      }
+      await bumpRate(db, key, day);
+    }
+
+    const exp = new Date(Date.now() + CARD_KEEP_DAYS * 86_400_000).toISOString();
+    await db.prepare(
+      `INSERT INTO party_cards (id, uid, pet, note, contact, at, exp)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+       ON CONFLICT(id, uid) DO UPDATE SET
+         pet = ?3, note = ?4, contact = ?5, at = ?6, exp = ?7`,
+    ).bind(id, uid, pet, note, contact, nowIso, exp).run();
+
+    return reply(200, { ok: true });
+  } catch (e) {
+    /* 和名片同一条（2026-11-13 补）：留卡失败也得留下是哪种失败。 */
+    console.error('[sight card]', e && e.message ? e.message : e);
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+async function inviteRoute(request, env, url, method) {
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  const day = new Date().toISOString().slice(0, 10);
+  const extra = bannedExtra(env);
+
+  try {
+    /* ---------------- 收：同城别人发的，还挂着的 ---------------- */
+    if (method === 'GET') {
+      const city = clean(url.searchParams.get('city'), 40);
+      const uid = clean(url.searchParams.get('uid'), 64);
+      /*
+       * **两条口径**（2026-11-05）：
+       *   mine=1  → 「我发的、已经被人接了的」。发起者靠它知道有人应了，
+       *             然后自己也往那座城走 —— 这才是「两条鱼一起去」。
+       *   其余    → 别人发的、还挂着的。带 city 时同城优先（池子小的时候，
+       *             只给同城等于永远没人接，所以**不再只查同城**）。
+       */
+      const mine = url.searchParams.get('mine') === '1';
+      if (!okUid(uid)) return reply(400, { ok: false, error: 'bad query' });
+      if (!mine && city && !okCity(city)) return reply(400, { ok: false, error: 'bad query' });
+
+      const nowIso = new Date().toISOString();
+
+      if (mine) {
+        /*
+         * 「我发的、已经有人接了的」。
+         *
+         * 一条邀约现在可以被好几个人接，所以**每个人一行** —— 发起者一次拿到全部，
+         * 自己在客户端合成一句「X、Y 接了你的话」，而不是收到三次「有人接了」。
+         */
+        const { results } = await db.prepare(
+          `SELECT t.id AS id, t.pet AS pet, t.uid AS taker_uid,
+                  i.to_city AS to_city, i.days AS days, i.note AS note,
+                  i.meet_city AS meet_city, i.pace AS pace
+             FROM invite_takers t JOIN invites i ON i.id = t.id
+            WHERE i.uid = ?1 AND t.seen = 0 AND i.expires_at > ?2
+            ORDER BY t.at ASC LIMIT 12`,
+        ).bind(uid, nowIso).all();
+
+        if (results && results.length) {
+          // 认领一次就勾掉，别在每次排表时反复建同一份约定。
+          const ids = [...new Set(results.map((r) => r.id))];
+          for (const one of ids) {
+            await db.prepare('UPDATE invite_takers SET seen = 1 WHERE id = ?1 AND seen = 0').bind(one).run();
+          }
+        }
+        const list = (results ?? []).map((r) => ({
+          id: r.id,
+          pet: safePet(r.pet, extra).name,            // 接的人
+          to: r.to_city,
+          days: Number(r.days) || 1,
+          note: looksBad(String(r.note || ''), extra) ? '' : clean(r.note, 60),
+          /* 见面城。空 = 老数据（那时没有这一级），客户端按「就在 to 见」处理。 */
+          meet: clean(r.meet_city, 40),
+          pace: Number(r.pace) || 0,
+        }));
+        return reply(200, { ok: true, list });
+      }
+
+      const { results } = await db.prepare(
+        /*
+         * 还**能进人**的邀约才返回。
+         *
+         * 判据从 `taken_by = ''`（一个都没接）换成「已接人数 < MAX_PARTY - 1」——
+         * 这样三个人一起走之后，第四只鱼仍然看得见这条邀约、还能加进来。
+         */
+        `SELECT id, pet, to_city, days, note, at, meet_city, pace,
+                CASE WHEN from_city = ?1 THEN 1 ELSE 0 END AS near,
+                (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) AS joined
+         FROM invites
+         WHERE expires_at > ?2 AND uid <> ?3
+           AND (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) < ?4
+         ORDER BY near DESC, at DESC LIMIT 3`,
+      ).bind(city, nowIso, uid, MAX_PARTY - 1).all();
+
+      /*
+       * **不返回发起者的 uid。** 跟碰面同一条线：能看见，摸不着。
+       * 名字和「想去哪」够她判断了，多一个标识就是多一条能拿去别处用的东西。
+       */
+      const list = (results ?? []).map((r) => ({
+        id: r.id,
+        pet: safePet(r.pet, extra).name,
+        to: r.to_city,
+        days: Number(r.days) || 1,
+        note: looksBad(String(r.note || ''), extra) ? '' : clean(r.note, 60),
+        meet: clean(r.meet_city, 40),
+        pace: Number(r.pace) || 0,
+      }));
+
+      return reply(200, { ok: true, list });
+    }
+
+    /* ---------------- 发 ---------------- */
+    if (method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+      const uid = clean(body?.uid, 64);
+      const from = clean(body?.from, 40);
+      const to = clean(body?.to, 40);
+      const pet = safePet(body?.pet, extra).name;
+      const days = Math.min(30, Math.max(1, Number(body?.days) || 1));
+      /*
+       * 见面城（2026-11-07，Mr.Q：「约好在哪个城市见面，然后一起走」）。
+       *
+       * **空字符串是合法的**，意思是「老口径：直接在目的地见」。老客户端不发这个字段，
+       * 新客户端也可能就在本地发（见面城 = 自己所在城），两种情况都得过。
+       *
+       * 合法性只在「非空」时才校验：空串不是城市 id，不该被 `okCity` 判死。
+       */
+      const meet = clean(body?.meet, 40);
+      /*
+       * 发起方的世界流速（1 = 和真实时间同步）。**0 = 老客户端没报。**
+       *
+       * 不拿它做拒绝，只拿它让接的人在界面上说清「你们时间流速差太多，凑不到一起」——
+       * 这件事本地能判断（自己的 speed 在配置里），服务端不需要懂业务。
+       */
+      const pace = Math.min(240, Math.max(0, Math.round(Number(body?.pace) || 0)));
+
+      /*
+       * 一句话。**这是整个系统里唯一一段自由文本**，所以它是过滤最该管的地方 ——
+       * 也是「邀约」这件事必须先有内容安全才能做的原因。
+       * 被判定为广告就留空，不拒绝整条邀约：她还能发，只是不带那句话。
+       */
+      const noteRaw = clean(body?.note, 60);
+      const note = looksBad(noteRaw, extra) ? '' : noteRaw;
+
+      if (!okUid(uid) || !okCity(from) || !okCity(to) || !pet) {
+        return reply(400, { ok: false, error: 'bad fields' });
+      }
+      if (meet && !okCity(meet)) return reply(400, { ok: false, error: 'bad fields' });
+      /*
+       * 被封的也不能发邀约。
+       *
+       * 只挡上报的话，她照样能发邀请、照样能被别人接走 —— 那叫封了半截。
+       */
+      if ((await flagOf(db, uid))?.kind === 'ban') return reply(403, { ok: false, error: 'banned' });
+
+      const key = `iv:${uid}:${day}`;
+      if (await rateOf(db, key) >= INVITE_PER_DAY) {
+        return reply(429, { ok: false, error: 'too many' });
+      }
+
+      const now = new Date();
+      const id = newId();
+      await db.prepare(
+        `INSERT INTO invites (id, uid, pet, from_city, to_city, days, note, date_key, at, expires_at, meet_city, pace)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+      ).bind(
+        id, uid, pet, from, to, days, note, day,
+        now.toISOString(), new Date(now.getTime() + INVITE_TTL_MS).toISOString(),
+        meet, pace,
+      ).run();
+
+      await bumpRate(db, key, day);
+      return reply(200, { ok: true, id });
+    }
+
+    return reply(405, { ok: false, error: 'method not allowed' });
+  } catch (e) {
+    console.error('[sight invite]', e && e.message ? e.message : e);
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+/* ------------------------------------------------------------------
+ * 池子计数：全站最贵的一次读（2026-11-13）
+ *
+ * ## 它贵在哪
+ *
+ * `SELECT COUNT(DISTINCT uid) FROM presence WHERE at >= 今天零点` ——
+ * D1 按**扫过的行数**计费，不是按返回的行数。几万只鱼的时候这条要扫
+ * 当天 presence 的全部行；而它被三处调用：`/sight/status`（每只鱼每天 24 次）、
+ * `/sight`（排表时问邻居）、落地页（任何人打开域名）。
+ *
+ * 2026-11-12 事故复盘：免费额度 500 万行读/天，当天 16:12 就打光了，
+ * 之后 16 小时全站 500，直到 08:00（UTC 零点）额度重置才自己好。
+ * **写有自保闸（`DAILY_WRITE_CAP`），读一个闸都没有** —— 所以爆的必然是读。
+ *
+ * ## 为什么可以缓存
+ *
+ * 这两个数是**全站聚合**，跟 uid、城市、时段都无关；它回答的是
+ * 「今天来过多少只 / 此刻在线多少只」。晚 60 秒没人看得出来 ——
+ * 面板上那行字本来就是「今天一共 N 只」，不是秒级指标。
+ *
+ * 于是：60 秒内，同一个 Cloudflare 边缘节点（PoP）只查一次库，
+ * 其余请求全部命中缓存。行读量与请求数解耦，这才是把平方级成本压成常数。
+ *
+ * ## 三条不能省的保险
+ *
+ * ① `caches` 不存在（本地 node 跑测试、非 Workers 环境）→ 直接查库，不报错；
+ * ② 缓存读坏了、解析失败 → 当作没命中，绝不让缓存把接口搞挂；
+ * ③ 查询抛错（额度耗尽就是这个）→ 照旧往上抛，**不缓存错误结果**，
+ *    否则一次失败会被缓存放大成 60 秒的「池子 0 只」。
+ */
+
+/** 缓存多久。60 秒：够把请求摊薄两三个数量级，又不至于让面板显示过期数。 */
+const POOL_TTL_S = 60;
+
+/**
+ * 缓存键。
+ *
+ * 用**本站真实域名**造一个不存在的路径，而不是随便编一个 `.internal` 假域名。
+ * 原因：`cache.put()` 存不上时**不报错**（官方文档原话：resolves to undefined
+ * regardless of whether the cache successfully stored the response）——
+ * 假域名能不能存，只能靠线上试出来，而「试不出来」的表现就是缓存静默失效、
+ * 额度照常烧。用真实 origin 就没有这个不确定性。
+ *
+ * 这个路径在路由表里不存在，外部访问只会 404，跟缓存键不冲突。
+ * 三处调用必须命中**同一个** key，所以只认 origin，不带 query。
+ */
+const poolCacheKey = (origin) => `${origin}/__pool-count`;
+
+/**
+ * 造缓存键，造不出来就返回 null。
+ *
+ * `new Request()` 对非法 URL 会抛 —— 而这是**缓存内部的事**，
+ * 绝不能因为它把一个正常请求打成 500。宁可这一次不用缓存。
+ */
+function safeCacheKey(origin) {
+  try {
+    return new Request(poolCacheKey(origin));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 拿「今天来过多少只 / 此刻在线多少只」。
+ *
+ * @param {string} origin 当前请求的 origin，用来造缓存键（见 `poolCacheKey`）
+ * @returns {Promise<{pool:number, online:number, cached:boolean}>}
+ */
+async function poolCounts(env, ctx, origin) {
+  const cache = typeof caches !== 'undefined' && caches?.default ? caches.default : null;
+  const key = cache ? safeCacheKey(origin) : null;
+
+  if (cache && key) {
+    try {
+      const hit = await cache.match(key);
+      if (hit) {
+        const v = await hit.json();
+        if (Number.isFinite(v?.pool) && Number.isFinite(v?.online)) {
+          return { pool: v.pool, online: v.online, cached: true };
+        }
+      }
+    } catch {
+      /* 缓存层自己的毛病不该传染给接口 —— 当没命中，走下面的直查。 */
+    }
+  }
+
+  const [poolRow, onlineRow] = await Promise.all([
+    env.DB.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+      .bind(todayStartIso()).first(),
+    env.DB.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+      .bind(onlineSinceIso()).first(),
+  ]);
+  const out = {
+    pool: Number(poolRow?.n ?? 0) || 0,
+    online: Number(onlineRow?.n ?? 0) || 0,
+  };
+
+  if (cache && key) {
+    /*
+     * 写缓存整体包一层 try。两个原因：
+     * ① `cache.put()` 对非法参数是**同步抛**的，`.catch()` 接不住同步异常；
+     * ② 这活本来就只是「顺手存一份」，失败的正确反应是忽略，不是报错。
+     */
+    try {
+      const put = cache.put(key, new Response(JSON.stringify(out), {
+        headers: {
+          'content-type': 'application/json',
+          // Cache API 只认这个头决定存多久；写成 no-store 会当场被丢掉。
+          'cache-control': `public, max-age=${POOL_TTL_S}`,
+        },
+      })).catch(() => { /* 异步失败同理：下个请求再查一次 */ });
+      /*
+       * 有 `waitUntil` 就不 await —— 响应先回给用户，写缓存的事交给运行时收尾。
+       * 这一句省掉的是「每次冷查都要等一次缓存写盘」的那几十毫秒。
+       */
+      if (ctx?.waitUntil) ctx.waitUntil(put);
+      else await put;
+    } catch {
+      /* 同上：写不进缓存不是业务错误。 */
+    }
+  }
+
+  return { ...out, cached: false };
+}
+
+/**
+ * 一次拿齐「池子多大」和「谁在找伴」。
+ *
+ * ## 为什么要合成一个
+ *
+ * 客户端原来每 20 分钟问一次池子、每 30 分钟问一次邀约 —— **一只鱼一天 120 次请求**。
+ * Cloudflare 免费额度是 10 万/天，等于 800 只鱼就到顶（2026-11-06 算的账）。
+ * 这两样本来就是「顺手一问」，合成一个请求次数直接砍半；客户端再把间隔拉到 60 分钟，
+ * 一只鱼一天 24 次，同样额度能撑到 4000 只。
+ *
+ * ## 为什么不带 mine=1
+ *
+ * 「谁接了她的话」是一次性认领（`taken` → `seen=1`），必须单独走 `/sight/invite?mine=1`，
+ * 不能和这个「随便看一眼」的请求混在一起 —— 混了就会出现「顺手看一眼把约定认领了」。
+ */
+async function statusRoute(request, env, url, ctx) {
+  if (request.method !== 'GET') return reply(405, { ok: false, error: 'method not allowed' });
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  const city = clean(url.searchParams.get('city'), 40);
+  const uid = clean(url.searchParams.get('uid'), 64);
+  if (!okUid(uid)) return reply(400, { ok: false, error: 'bad query' });
+  if (city && !okCity(city)) return reply(400, { ok: false, error: 'bad query' });
+
+  const extra = bannedExtra(env);
+  const nowIso = new Date().toISOString();
+  try {
+    /*
+     * 两个数一起给，别混：
+     *
+     *   `pool`   今天有过上报的去重 uid —— 「今天来过多少只」
+     *   `online` 最近 30 分钟有过上报   —— 「此刻在线多少只」
+     *
+     * 客户端面板说的是「它今天碰上过几只」，用 `pool` 是对的；
+     * 管理页要看的「现在有几只在跑」必须用 `online`。
+     */
+    /*
+     * 先编译好邀约那条语句，再并发跑两件事。
+     *
+     * 顺序有讲究：`db.prepare()` 是**同步**的，D1 额度耗尽时它会当场抛。
+     * 如果写成 `Promise.all([poolCounts(...), db.prepare(...)])`，
+     * 那么 prepare 抛出的瞬间 `poolCounts` 返回的那个 Promise 就没人接了 ——
+     * 变成 unhandledRejection（Workers 里会打出额外错误、也可能让这次请求判失败）。
+     * 2026-11-13 写测试时真的踩到了，所以把同步部分提到 await 之前。
+     */
+    const inviteStmt = db.prepare(
+      `SELECT id, pet, to_city, days, note, at, meet_city, pace,
+              CASE WHEN from_city = ?1 THEN 1 ELSE 0 END AS near,
+              (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) AS joined
+       FROM invites
+       WHERE expires_at > ?2 AND uid <> ?3
+         AND (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) < ?4
+       ORDER BY near DESC, at DESC LIMIT 3`,
+    ).bind(city, nowIso, uid, MAX_PARTY - 1);
+
+    const [counts, invites] = await Promise.all([poolCounts(env, ctx, url.origin), inviteStmt.all()]);
+    const { results } = invites;
+    return reply(200, {
+      ok: true,
+      pool: counts.pool,
+      online: counts.online,
+      list: (results ?? []).map((r) => ({
+        id: r.id,
+        pet: safePet(r.pet, extra).name,
+        to: r.to_city,
+        days: Number(r.days) || 1,
+        note: looksBad(String(r.note || ''), extra) ? '' : clean(r.note, 60),
+        meet: clean(r.meet_city, 40),
+        pace: Number(r.pace) || 0,
+      })),
+    }, { 'x-pool-cache': counts.cached ? 'hit' : 'miss' });
+  } catch (e) {
+    console.error('[sight status]', e && e.message ? e.message : e);
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+/**
+ * 接一条。
+ *
+ * 用 `UPDATE ... WHERE taken_by = ''` 做条件更新 —— 两个人同时接同一条，
+ * 只有一个能改到行，另一个拿到 0 行受影响。比「先查再写」可靠，
+ * 那种写法在并发下会两个人都以为接到了。
+ */
+async function acceptRoute(request, env, url, method) {
+  if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  const day = new Date().toISOString().slice(0, 10);
+  const extra = bannedExtra(env);
+
+  try {
+    let body;
+    try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+    const uid = clean(body?.uid, 64);
+    const id = clean(body?.id, 32);
+    /*
+     * 接的人的名字。**必须由客户端带上** —— 服务端只认得 uid，
+     * 而发起者要知道「谁接了」，否则他那边没法说「小满接了你的话，一起去拉萨」。
+     */
+    const pet = safePet(body?.pet, extra).name;
+    if (!okUid(uid) || !/^[a-f0-9]{16}$/.test(id)) {
+      return reply(400, { ok: false, error: 'bad fields' });
+    }
+
+    const row = await db.prepare(
+      'SELECT id, uid, pet, to_city, days, note, expires_at, taken_by, meet_city, pace FROM invites WHERE id = ?1',
+    ).bind(id).first();
+
+    if (!row) return reply(404, { ok: false, error: 'gone' });
+    if (row.uid === uid) return reply(400, { ok: false, error: 'own invite' });
+    if (Date.parse(row.expires_at) <= Date.now()) return reply(410, { ok: false, error: 'expired' });
+
+    const respond = (extraFields = {}) => reply(200, {
+      ok: true,
+      with: safePet(row.pet, extra).name,
+      to: row.to_city,
+      days: Number(row.days) || 1,
+      note: looksBad(String(row.note || ''), extra) ? '' : clean(row.note, 60),
+      meet: clean(row.meet_city, 40),
+      pace: Number(row.pace) || 0,
+      ...extraFields,
+    });
+
+    /*
+     * 已经在这条里了 → 幂等成功，不重复计数。
+     *
+     * 客户端可能会重试（网络抖一下、她说了两遍「接」），
+     * 第二遍回 409 taken 会让她以为「没接上」，其实上一次就成功了。
+     */
+    const dup = await db.prepare(
+      'SELECT 1 AS x FROM invite_takers WHERE id = ?1 AND uid = ?2',
+    ).bind(id, uid).first();
+    if (dup) return respond({ already: true });
+
+    /*
+     * 人数上限。原来这里写的是「taken_by 非空就 409」——
+     * 一条邀约只能成一对，三只鱼同城时总有一只没位置。
+     */
+    const cnt = await db.prepare(
+      'SELECT COUNT(*) AS n FROM invite_takers WHERE id = ?1',
+    ).bind(id).first();
+    const joined = Number(cnt?.n ?? 0);
+    if (joined >= MAX_PARTY - 1) return reply(409, { ok: false, error: 'full' });
+
+    const key = `ia:${uid}:${day}`;
+    if (await rateOf(db, key) >= ACCEPT_PER_DAY) {
+      return reply(429, { ok: false, error: 'too many' });
+    }
+
+    /*
+     * INSERT OR IGNORE 而不是 UPDATE ... WHERE taken_by = ''：
+     * 后者只能记一个人，第二个人来的时候那句 UPDATE 影响 0 行。
+     */
+    const ins = await db.prepare(
+      'INSERT OR IGNORE INTO invite_takers (id, uid, pet, at) VALUES (?1, ?2, ?3, ?4)',
+    ).bind(id, uid, pet, new Date().toISOString()).run();
+    if (!ins?.meta?.changes) return respond({ already: true });
+
+    /*
+     * 老字段继续写：**只记第一位接单人**。
+     * 老版本客户端还在读 `taken_pet` 判断「有没有人接」，这一行不能断。
+     */
+    await db.prepare(
+      "UPDATE invites SET taken_by = ?1, taken_pet = ?2 WHERE id = ?3 AND taken_by = ''",
+    ).bind(uid, pet, id).run();
+
+    await bumpRate(db, key, day);
+
+    // `size` = 含发起者一共几只。她会说「现在这条路上有三只了」。
+    return respond({ size: joined + 2 });
+  } catch (e) {
+    console.error('[sight accept]', e && e.message ? e.message : e);
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+/** IP 不做明文入库 —— 存前 16 位 sha256，够去重，又不可逆。 */
+async function ipHash(request) {
+  const ip = request.headers.get('cf-connecting-ip') || request.headers.get('x-forwarded-for') || '';
+  if (!ip) return '';
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip.split(',')[0].trim()));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+}
+
+/** 恒定时间比较。用 `===` 比密钥会按「第几个字符开始不同」泄露时间差。 */
+/**
+ * 这只鱼有没有被人工标过。
+ *
+ * **表不存在就当没标。** `pet_flags` 是 2026-11-05 才加的，线上可能还没跑 DDL；
+ * 让它把上报卡死，等于「加了个管理功能，整个池子先停了」。
+ */
+async function flagOf(db, uid) {
+  try {
+    const row = await db.prepare('SELECT kind, note FROM pet_flags WHERE uid = ?1').bind(uid).first();
+    return row ? { kind: String(row.kind || ''), note: String(row.note || '') } : null;
+  } catch (e) {
+    /*
+     * 行为不变：表不存在就当没标，不能把上报卡死。
+     * 但**要留一句**（2026-11-13）—— D1 整体不可用时这里也会静默返回 null，
+     * 于是故障现场只剩后面那句写入报错，看不出前面已经挂过一次。
+     */
+    console.error('[sight flag]', e && e.message ? e.message : e);
+    return null;
+  }
+}
+
+function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** uid 只露头尾 —— 页面上够定位，又不会把完整标识留在截图里。 */
+const maskUid = (uid) => (typeof uid === 'string' && uid.length > 8
+  ? `${uid.slice(0, 4)}…${uid.slice(-4)}`
+  : String(uid ?? ''));
+
+/**
+ * 管理接口：**只读**。
+ *
+ * 凭什么只读：封禁和清理都要改数据，走 `wrangler d1 execute` 就够了，
+ * 不给网页留写入口 —— 少一个能把线上数据搞坏的地方。
+ *
+ * 三条闸：
+ * 1. `ADMIN_KEY` 没配 → 整个接口 404（默认关闭）
+ * 2. 密钥不对 → 401，恒定时间比较
+ * 3. 只接受 GET
+ */
+/**
+ * 浏览器里打开根路径的人，看到的是这张说明页。
+ *
+ * 2026-11-05：群友把域名粘进浏览器，看到 `{"ok":false,"error":"not found"}`，
+ * 结论是「服务器连不上」。其实那条路径本来就不是接口 —— 但用户没有第二个线索，
+ * 一句 not found 就等于「坏了」。
+ *
+ * 所以根路径给人看，未知子路径照旧 404（不给扫描器留探测面）。
+ * 顺手把「今天池子里有几只」打出来 —— 这是最快能证明「服务活着」的数字。
+ */
+async function landingPage(env, url, ctx) {
+  const today = new Date().toISOString().slice(0, 10);
+  let pool = 0;
+  let online = 0;
+  try {
+    /* 和 /sight/status 共用同一份缓存 —— 顺手打开域名的人不该再烧一次额度。 */
+    const counts = await poolCounts(env, ctx, url.origin);
+    pool = counts.pool;
+    online = counts.online;
+  } catch { /* 数据库没就绪也不该让这页 500 —— 它只是说明页 */ }
+
+  const origin = url.origin;
+  const selfCheck = `${origin}/sight?city=xian&date=${today}&slot=morning`;
+  const html = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>碰面服务器 · 大肥鱼环游世界</title>
+<style>
+  body{margin:0;padding:32px 20px;background:#f7f7f8;color:#1c1c1e;font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  main{max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e5ea;border-radius:14px;padding:28px 26px}
+  h1{font-size:19px;margin:0 0 4px}
+  p.sub{margin:0 0 20px;color:#6b6b70;font-size:13px}
+  h2{font-size:14px;margin:22px 0 6px;color:#3a3a3c}
+  .big{background:#f2f2f7;border-radius:9px;padding:12px 14px;font-size:14px;word-break:break-all;margin:8px 0}
+  .ok{color:#0a7d32;font-weight:600}
+  .hint{color:#8e8e93;font-size:12px;margin-top:8px}
+  a{color:#0a63c9}
+</style></head>
+<body><main>
+  <h1>碰面服务器 · 大肥鱼环游世界</h1>
+  <p class="sub">让她的宠物和别人的宠物在同一个地方遇上</p>
+
+  <h2>这是干嘛的</h2>
+  <p>你的鱼和别人家的鱼各自在旅行，本来互不相干。把下面这个地址打开之后，
+  她到站会看一眼这一带还有谁 —— 面板上会多一行「池子 · 今天一共 N 只」。</p>
+  <p>想找人一起走就更直接：<b>跟她说一声就行</b>（「帮我问问有没有人想一起去成都，待三天」），
+  她会发条话进池子；有人接了，两边就都改道往那儿去。</p>
+  <p>每天最多发 3 条、接 1 条 —— 这是防止把池子刷成广告栏，不是限制你。</p>
+
+  <h2>该怎么用</h2>
+  <p>把这个地址填进扩展设置里的「碰面」那一栏，保存就好 —— <b>不用在浏览器里打开它</b>。</p>
+  <div class="big">${origin}</div>
+
+  <h2>扩展本身在哪</h2>
+  <p>Coopani 的扩展市场里搜「大肥鱼环游世界」。介绍、更新和反馈在
+  <a href="https://github.com/Pal-AI-Lab/cortico-extensions/discussions/586">这里</a>。</p>
+
+  <h2>服务是活的</h2>
+  <p>此刻在线 <span class="ok">${online}</span> 只，今天一共来过 <span class="ok">${pool}</span> 只。${
+  (online === 0 && pool === 0)
+    ? '数字是 0 说明今天还没人上报，不代表坏了。'
+    : ''}</p>
+
+  <h2>想自己确认通不通</h2>
+  <p>打开这个链接，能看到一段 JSON 就是通的：<br><a href="${selfCheck}">${selfCheck}</a></p>
+
+  <p class="hint">填完之后：她到站会看一眼这一带还有谁，面板上会多一行「池子 · 今天一共 N 只」。
+  不想被别人看见就把那一栏留空，其它功能一点不受影响。</p>
+</main></body></html>`;
+
+  return new Response(html, {
+    status: 200,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', ...CORS },
+  });
+}
+
+async function adminRoute(request, env, url, method) {
+  const key = env?.ADMIN_KEY;
+  if (!key) return reply(404, { ok: false, error: 'not found' });
+
+  /*
+   * `/admin/flag` 只认 POST，其余只认 GET。
+   * 不写死这条的话，GET /admin/flag 会掉进下面 /admin/list 那个分支，
+   * 拿回一份列表 —— 看起来像成功，其实请求根本没被拒。
+   */
+  if (url.pathname === '/admin/flag') {
+    if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+  } else if (method !== 'GET') {
+    return reply(405, { ok: false, error: 'method not allowed' });
+  }
+
+  const got = request.headers.get('x-admin-key') || url.searchParams.get('key') || '';
+  if (!safeEqual(got, key)) return reply(401, { ok: false, error: 'unauthorized' });
+
+  const db = env.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  const day = clean(url.searchParams.get('date'), 10) || new Date().toISOString().slice(0, 10);
+
+  try {
+    /*
+     * 认领一只鱼 —— 管理面板（`site/pets.html`）用的那个口。
+     *
+     * 回的是**完整 uid**，不是打码的：面板要靠它去封/改名。
+     * 这条路由整体由 ADMIN_KEY 挡着，没配 key 时 404（见函数开头）。
+     */
+    /*
+     * 实时块：**此刻谁在线**。和下面的「累计」分开成一个接口（2026-11-11）。
+     *
+     * Mr.Q：「把实时数据和累计数据分开」。这不只是分显示，得分接口 ——
+     *
+     * 累计那份要扫全表（4 天 × 每只鱼十几格），实时这份只碰最近 30 分钟的几十行。
+     * 混在一个口里，页面为了看一眼「在线几只」就得把全表拉一遍；
+     * 30 秒一次轮询乘上去，免费版每天 500 万行的额度两天就烧光
+     * （2026-11-10 已经真烧光过一次，Cloudflare 发信、池子停了一整天）。
+     *
+     * **自动刷新只打这个口。** 累计那份只在人点「刷新」时拉。
+     */
+    if (url.pathname === '/admin/live') {
+      const since = onlineSinceIso();
+      const [onlineRow, todayRow, listRes] = await Promise.all([
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+          .bind(since).first(),
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+          .bind(todayStartIso()).first(),
+        db.prepare(
+          /*
+           * 每人只取最近那一条。用 `JOIN (MAX(at) GROUP BY uid)` 而不是窗口函数：
+           * 外层只回最多 60 行，索引能直接用上 `(uid, …)` 与 `at`，
+           * 行读 ≈ 在线窗口内的行数，不会随表变大而变慢。
+           */
+          /*
+           * 名片也带上（2026-11-12）。Mr.Q 在「此刻」这页找不到名片列 ——
+           * 原来只有「在册」有，两张表口径不一致。
+           *
+           * profiles 的 uid 是主键，这个 LEFT JOIN 每个 uid 最多配一行，
+           * 不会把「每人一行」变成「每人多行」。
+           * 这里没有 GROUP BY（外层就是每人一条），所以直接取列，不用 MAX。
+           */
+          `SELECT p.uid, p.pet, p.city, p.doing, p.at,
+                  pr.text AS profile_text, pr.at AS profile_at, pr.exp AS profile_exp
+             FROM presence p
+             JOIN (
+               SELECT uid, MAX(at) AS m FROM presence WHERE at >= ?1 GROUP BY uid
+             ) x ON x.uid = p.uid AND x.m = p.at
+             LEFT JOIN profiles pr ON pr.uid = p.uid
+            ORDER BY p.at DESC LIMIT 60`,
+        ).bind(since).all(),
+      ]);
+      return reply(200, {
+        ok: true,
+        online: Number(onlineRow?.n ?? 0) || 0,
+        today: Number(todayRow?.n ?? 0) || 0,
+        onlineWindowMin: Math.round(ONLINE_WINDOW_MS / 60_000),
+        at: new Date().toISOString(),
+        pets: (listRes?.results ?? []).map((r) => ({
+          uid: r.uid,
+          pet: clean(r.pet, 24),
+          city: clean(r.city, 24),
+          doing: clean(r.doing, 40),
+          at: r.at,
+          /* 和 /admin/pets 同一个形状，前端共用 profileCell()。 */
+          profile: {
+            text: clean(r.profile_text, 120),
+            at: r.profile_at || '',
+            expired: !!(r.profile_exp && Date.parse(r.profile_exp) <= Date.now()),
+          },
+        })),
+      });
+    }
+
+    if (url.pathname === '/admin/pets') {
+      /*
+       * 面板请求的是 `?limit=800`，但这个口原来**写死 LIMIT 200** ——
+       * 池子里超过 200 只之后「累计」那个数就顶在 200 不动了，
+       * 而且页面等着 `data.truncated` 来提示「已截断」，服务端从来没返回过。
+       * 现在认 params，上限 800（D1 单次返回行数的安全区），并在顶满时明说。
+       */
+      const limit = Math.min(800, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+      const { results } = await db.prepare(
+        /*
+         * `city` 用相关子查询取「最近那一条上报的城市」。
+         *
+         * 不能写成裸列 `p.city` —— 那拿到的是**组里随便一行**的城市，不一定是最新的。
+         * 也不能指望 `MAX(p.at)` 配合裸列的那套 SQLite bare-column 语义：
+         * 它确实有文档写着，但读代码的人看不出来，改天换个引擎就静默变味。
+         * 显式写一次子查询，多几次索引查找，换一个「不用猜」。
+         *
+         * 2026-11-05 面板上「最近在哪」全是「—」就是因为这里根本没返回城市。
+         */
+        `SELECT p.uid AS uid,
+                MAX(p.at) AS last, COUNT(*) AS rows,
+                /*
+                 * **跨了几个城、跨了几天。**
+                 *
+                 * 只给一个行数，看的人会把它读成「发了 N 条消息」——
+                 * 2026-11-07 Mr.Q 看到面板上「31」就去查是不是有人刷屏，
+                 * 其实是 4 天里跑了两座城（一天最多 4 个时段，4 天 × 4 × 2 ≈ 32 格）。
+                 * 把口径直接摆在旁边，比让人自己推省事。
+                 */
+                COUNT(DISTINCT p.city) AS cities,
+                COUNT(DISTINCT p.date_key) AS days,
+                MAX(p.date_key) AS day,
+                /*
+                 * **名字也要取最近那条的。**
+                 *
+                 * 原来这里写的是裸列 p.pet —— 分组之后它是「组里随便一行」的名字。
+                 * 一只鱼改过名，presence 里就有新旧两种名字的行，面板可能一直显示旧的，
+                 * 看起来像改名没生效。2026-11-05 用户问「改名了面板看不到吧」，
+                 * 查下来一半是这个，一半是「改名只有下一次上报才进库」。
+                 */
+                /*
+                 * 最近一条的名字和城市 —— **用窗口函数，不用相关子查询**（2026-11-11）。
+                 *
+                 * 原来是两个 「(SELECT … ORDER BY at DESC LIMIT 1)」，对**每一行**跑一次。
+                 * 800 行明细 × 2 次子查询 = 单次请求几千行读；面板 30 秒轮询一次，
+                 * 一天就是几百万行 —— 免费版每天 500 万行的额度就是这么烧光的
+                 * （2026-11-10 Cloudflare 直接发信说 D1 行读超额，池子停了一整天）。
+                 *
+                 * 现在在子查询里一次算好 「rn」（每只鱼按时间倒序的第一行），
+                 * 外面 「MAX(CASE WHEN rn = 1 …)」 取出来 —— 全表只扫一遍。
+                 */
+                MAX(CASE WHEN p.rn = 1 THEN p.pet END) AS pet,
+                MAX(CASE WHEN p.rn = 1 THEN p.city END) AS city,
+                COALESCE(f.kind, '') AS kind,
+                COALESCE(f.note, '') AS note, COALESCE(f.at, '') AS flag_at,
+                /*
+                 * **名片（2026-11-12）。**
+                 *
+                 * Mr.Q 要在管理页看见谁写了什么、能不能管。
+                 * profiles 的 uid 是主键，一个 uid 最多一行 —— 这个 JOIN 不会放大行数，
+                 * 也就不会把 8 万行的额度账再翻一倍（那是 2026-11-10 停服的原因）。
+                 *
+                 * exp 一起取回来，是因为「过期了」和「没写过」在页面上要分开说：
+                 * 前者是「他写了但已经撤回去了」，后者是「他从没写过」。
+                 */
+                MAX(pr.text) AS profile_text,
+                MAX(pr.at) AS profile_at,
+                MAX(pr.exp) AS profile_exp
+           FROM (
+             /*
+              * 每只鱼标出「最近那一行」。
+              *
+              * 扫一遍就够，且**只取这五列** —— doing 不进来，
+              * 明细表用不到它，少读一列就少一次行内解码。
+              */
+             SELECT uid, pet, city, date_key, at,
+                    ROW_NUMBER() OVER (PARTITION BY uid ORDER BY at DESC) AS rn
+               FROM presence
+           ) p LEFT JOIN pet_flags f ON f.uid = p.uid
+               LEFT JOIN profiles pr ON pr.uid = p.uid
+          GROUP BY p.uid
+          ORDER BY last DESC LIMIT ${limit}`,
+      ).all();
+      /*
+       * **这个口只回「累计」，不再带今天/在线**（2026-11-11）。
+       *
+       * 三个数天然不一样（在册 / 今天来过 / 此刻在线），原来混在一个响应里，
+       * 2026-11-06 Mr.Q 看到「管理页 25、面板 15」以为哪边坏了；
+       * 2026-11-10 又问「我有两只鱼，何来一只在线」—— 都是同一个毛病：口径没摆在脸上。
+       *
+       * 这次不是改文案，是**拆接口**：实时那两个数去了 `/admin/live`。
+       * 理由跟额度有关 —— 页面自动刷新时只需要那几个数，不该为此把全表明细拉一遍。
+       *
+       * `pets` 是**累计**（presence 里还剩的所有 uid，只留 KEEP_DAYS 天）。
+       * 数的时候**按 `at`（真实时刻），不按 `date_key`（游戏内日期）** ——
+       * 后者是两套时标，2026-11-10 数出来的 19 只从此不动，就是那个 bug。
+       */
+      return reply(200, {
+        ok: true,
+        /* 覆盖了几天 —— 累计块要和「在册几只」一起看，否则读不出量级。 */
+        days: KEEP_DAYS,
+        /* 顶满就是可能还有没列出来的 —— 让面板能说实话，而不是假装完了。 */
+        truncated: (results ?? []).length >= limit,
+        pets: (results ?? []).map((r) => ({
+          uid: r.uid,
+          pet: clean(r.pet, 24),
+          rows: Number(r.rows ?? 0),
+          cities: Number(r.cities ?? 0),
+          days: Number(r.days ?? 0),
+          /*
+           * 面板要的是 `lastAt`（它拿这个格式化时间），早先这里回的是 `last` ——
+           * 名字对不上，那一列也一样是「—」。两个都留着，谁读都不落空。
+           */
+          last: r.last,
+          lastAt: r.last,
+          day: r.day,
+          city: clean(r.city, 24),
+          kind: r.kind || '',
+          note: clean(r.note, 60),
+          flagAt: r.flag_at || '',
+          /*
+           * 名片。三种状态分开：
+           *   `text` 有值、`expired: false` → 正常挂着
+           *   `text` 有值、`expired: true`  → 过期了但行还在（还没被清）
+           *   `text` 空                    → 没写过，或者自己撤回了
+           *
+           * 管理页要能看出区别 —— 「他从没写过」和「他写过又撤了」在处理上不是一回事。
+           */
+          profile: {
+            text: clean(r.profile_text, 120),
+            at: r.profile_at || '',
+            expired: !!(r.profile_exp && Date.parse(r.profile_exp) <= Date.now()),
+          },
+        })),
+      });
+    }
+
+    if (url.pathname === '/admin/flags') {
+      const { results } = await db.prepare(
+        'SELECT uid, pet, kind, note, at FROM pet_flags ORDER BY at DESC LIMIT 200',
+      ).all();
+      return reply(200, { ok: true, flags: results ?? [] });
+    }
+
+    if (url.pathname === '/admin/flag' && method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+      const uid = clean(body?.uid, 64);
+      const kind = clean(body?.kind, 8);
+      const pet = clean(body?.pet, 24);
+      const note = clean(body?.note, 60);
+      if (!okUid(uid) || !['ban', 'rename', 'ok'].includes(kind)) {
+        return reply(400, { ok: false, error: 'bad fields' });
+      }
+      if (kind === 'ok') {
+        await db.prepare('DELETE FROM pet_flags WHERE uid = ?1').bind(uid).run();
+        return reply(200, { ok: true, uid, kind: 'ok' });
+      }
+      await db.prepare(
+        `INSERT INTO pet_flags (uid, pet, kind, note, at) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(uid) DO UPDATE SET pet = ?2, kind = ?3, note = ?4, at = ?5`,
+      ).bind(uid, pet, kind, note, new Date().toISOString()).run();
+      return reply(200, { ok: true, uid, kind });
+    }
+
+    if (url.pathname === '/admin/stats') {
+      /* 一律按 `at`（真实时刻）数 —— `date_key` 是游戏内日期，跟「今天」不是一回事。 */
+      const since = todayStartIso();
+      const [rateRow, dayRow, uidRow, onlineRow, totalRow, cityRes] = await Promise.all([
+        db.prepare('SELECT n FROM rate WHERE key = ?1').bind(`d:${day}`).first(),
+        db.prepare('SELECT COUNT(*) AS n FROM presence WHERE at >= ?1').bind(since).first(),
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1').bind(since).first(),
+        db.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence WHERE at >= ?1')
+          .bind(onlineSinceIso()).first(),
+        db.prepare('SELECT COUNT(*) AS n FROM presence').first(),
+        db.prepare(`SELECT city, COUNT(*) AS n FROM presence
+                    WHERE at >= ?1 GROUP BY city ORDER BY n DESC LIMIT 12`).bind(since).all(),
+      ]);
+
+      const posts = Number(rateRow?.n ?? 0);
+      return reply(200, {
+        ok: true,
+        day,
+        today: {
+          posts,                                   // 今天上报了几次（rate 计数）
+          rows: Number(dayRow?.n ?? 0),            // 今天库里有多少格
+          uids: Number(uidRow?.n ?? 0),            // 今天有多少只宠物出现过
+          online: Number(onlineRow?.n ?? 0),       // 此刻在线（最近 30 分钟有上报）
+        },
+        budget: {
+          cap: DAILY_WRITE_CAP,
+          used: posts,
+          ratio: DAILY_WRITE_CAP ? Math.min(1, posts / DAILY_WRITE_CAP) : 0,
+        },
+        tables: {
+          presence: Number(totalRow?.n ?? 0),
+          rowsPerPost: ROWS_PER_POST,
+        },
+        cities: (cityRes?.results ?? []).map((r) => ({ city: r.city, n: Number(r.n) })),
+      });
+    }
+
+    // /admin/list
+    const city = clean(url.searchParams.get('city'), 40);
+    const slot = clean(url.searchParams.get('slot'), 12);
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+
+    const where = ['date_key = ?1'];
+    const args = [day];
+    if (city) { args.push(city); where.push(`city = ?${args.length}`); }
+    if (slot) { args.push(slot); where.push(`slot = ?${args.length}`); }
+
+    const { results } = await db.prepare(
+      `SELECT uid, pet, city, date_key, slot, doing, at FROM presence
+       WHERE ${where.join(' AND ')} ORDER BY at DESC LIMIT ${limit}`,
+    ).bind(...args).all();
+
+    return reply(200, {
+      ok: true,
+      day,
+      rows: (results ?? []).map((r) => ({
+        uid: maskUid(r.uid),
+        pet: clean(r.pet, 24),
+        city: r.city,
+        slot: r.slot,
+        doing: clean(r.doing, 40),
+        at: r.at,
+      })),
+    });
+  } catch (e) {
+    console.error('[sight admin]', e && e.message ? e.message : e);
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const method = request.method.toUpperCase();
+
+    // 预检：浏览器发 POST(JSON) 前会先问一次。
+    if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+
+    /*
+     * 管理接口（只读）。给 `site/admin.html` 用。
+     *
+     * **没配 `ADMIN_KEY` 时整条路 404** —— 默认关闭，不是默认开放。
+     * 部署时用 `wrangler secret put ADMIN_KEY` 设一个长随机串，
+     * 不设就等于没有这个接口。
+     *
+     * 2026-11-05 扩了一条写入口：`POST /admin/flag`（ban / rename / ok）。
+     * 原来这里写着「不给网页留写入口」—— 那条规矩是为了少一个能搞坏数据的地方，
+     * 但 Mr.Q 要的是能自己判断谁该封、封完立刻生效，只读面板做不到这件事。
+     * 折中：写入口只有一条、只认三种取值、整个口由 ADMIN_KEY 挡着。
+     */
+    /*
+     * 管理接口。2026-11-05 从「只读」扩成可写（被封的那只鱼要能真的挡在门外）——
+     * 但写入口只有一个 `/admin/flag`，三种取值，别的一概不动。
+     */
+    /*
+     * 这张白名单**必须和 `adminRoute` 里的分支一一对应**。
+     *
+     * 2026-11-11 加 `/admin/live` 时忘了加这儿 —— 新路由写好了、语法也对、
+     * 单元测试直接 404。报错长得像「接口没实现」，其实是没进分发。
+     */
+    if (url.pathname === '/admin/stats' || url.pathname === '/admin/list'
+        || url.pathname === '/admin/live'
+        || url.pathname === '/admin/pets' || url.pathname === '/admin/flags'
+        || url.pathname === '/admin/flag') {
+      return adminRoute(request, env, url, method);
+    }
+
+    /*
+     * 只认这三个路径，其他一律 404 —— 不给扫描器留探测面。
+     *
+     *   /sight          到站上报、看看这一带还有谁
+     *   /sight/invite   邀约：POST 发一条，GET 收同城别人发的
+     *   /sight/accept   接一条
+     *
+     * 尾斜杠一律剥掉再比 —— 用户从浏览器直接试的时候很容易多打一个。
+     */
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    // 扩展市场索引的镜像。放在最前面：它跟碰面池一点关系都没有，也不碰 D1。
+    if (path.startsWith('/market2/')) return marketProxy(path.slice('/market2'.length), ctx);
+    if (path === '/sight/status') return statusRoute(request, env, url, ctx);
+    if (path === '/sight/invite') return inviteRoute(request, env, url, method);
+    if (path === '/sight/accept') return acceptRoute(request, env, url, method);
+    if (path === '/sight/card') return cardRoute(request, env, url, method);
+    if (path === '/sight/profile') return profileRoute(request, env, url, method);
+    // 根路径给人看（浏览器里打开的那种），别回一句 not found。
+    if (path === '/' && (method === 'GET' || method === 'HEAD')) return landingPage(env, url, ctx);
+    // 管鱼页：同一个域名发出去，国内能打开；页面里地址栏会自动填成它自己。
+    /*
+     * 管鱼页有**两个地址**（2026-11-11）：
+     *   `/pets`      → 「此刻」（实时，自动刷新）
+     *   `/pets/all`  → 「在册」（累计，手动刷新）
+     *
+     * 界面上是两块页签，这里给两个地址是为了「收藏哪个打开就是哪个」。
+     */
+    if ((path === '/pets' || path === '/pets.html' || path === '/pets/all')
+      && (method === 'GET' || method === 'HEAD')) {
+      return new Response(petsPage, {
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          /*
+           * **别再缓存 10 分钟**（原来是 `public, max-age=600`）。
+           *
+           * 2026-11-11 一上午两次「怎么还是旧的」都是它：部署完了，浏览器还拿
+           * 十分钟前那份 HTML，新加的界面看不见，看着像没上线。
+           * 这张页面只有几 KB，每次都让浏览器回源问一句，比让人怀疑部署失败便宜。
+           */
+          'cache-control': 'no-cache',
+        },
+      });
+    }
+    if (path !== '/sight') return reply(404, { ok: false, error: 'not found' });
+
+    const db = env.DB;
+    if (!db) return reply(500, { ok: false, error: 'server error' });
+
+    try {
+      /* ---------------- 查：同城同日同时段还有谁 ---------------- */
+      if (method === 'GET') {
+        const city = clean(url.searchParams.get('city'), 40);
+        const slot = clean(url.searchParams.get('slot'), 12);
+        const exclude = clean(url.searchParams.get('exclude'), 64);
+        /*
+         * `date` 不再参与筛选（2026-11-10），参数收到也不报错 ——
+         * 旧客户端还在传，多一个没用的参数不该让它 400。
+         */
+        if (!okCity(city) || !SLOTS.has(slot)) {
+          return reply(400, { ok: false, error: 'bad query' });
+        }
+
+        const since = new Date(Date.now() - RECENT_NEIGHBOR_MS).toISOString();
+        const stmt = exclude
+          ? db.prepare(
+            `SELECT pet, doing FROM presence
+             WHERE city = ?1 AND slot = ?2 AND at >= ?3 AND uid <> ?4
+             ORDER BY at DESC LIMIT ${MAX}`,
+          ).bind(city, slot, since, exclude)
+          : db.prepare(
+            `SELECT pet, doing FROM presence
+             WHERE city = ?1 AND slot = ?2 AND at >= ?3
+             ORDER BY at DESC LIMIT ${MAX}`,
+          ).bind(city, slot, since);
+
+        const { results } = await stmt.all();
+        /*
+         * **只挑两个字段。** 防线设在最外层：以后有人改了客户端或 SQL，
+         * 这里仍然漏不出 id 和时间戳。
+         *
+         * 再洗一遍名字 —— 过滤是后加的，库里可能有更早写进去的脏数据。
+         * 读的时候也过一道，历史数据才不会漏出去。
+         */
+        const extra = bannedExtra(env);
+        const list = (results || [])
+          .map((r) => ({
+            pet: safePet(r.pet, extra).name,
+            doing: safeDoing(r.doing, extra),
+          }))
+          .filter((r) => r.pet);
+
+        /*
+         * **这个池子今天一共多少只**（不分城市）。
+         *
+         * 2026-11-05 加的。面板原来只有「同城几个」，而一个人用的时候那一行永远是
+         * 「这段时间没别人」—— 用户没法判断是「没人」还是「这条线坏了」，
+         * 也没法判断这个功能到底有没有人在用。给一个总数，这两件事同时解决。
+         *
+         * 只回**数量**，不回任何 uid/名字 —— 聚合数字不构成隐私问题。
+         * 旧客户端会忽略这个字段，旧服务端不回它，客户端那边按 0 处理。
+         */
+        let pool = 0;
+        let online = 0;
+        /* null = 没查成（或没查），此时不带头，别让人误读成「miss」。 */
+        let poolCached = null;
+        try {
+          /*
+           * 按 `at` 数（2026-11-10）：`date_key` 是游戏内日期，跟现实对不上，
+           * 拿它数出来的池子会永远停在一个数上 —— 管理页「卡在 19」就是这么来的。
+           *
+           * 2026-11-13：换成共享缓存版（见 `poolCounts`）。这里是全站最贵的读，
+           * 而它只是面板上那行「今天一共 N 只」—— 晚 60 秒没有人在意。
+           */
+          const counts = await poolCounts(env, ctx, url.origin);
+          pool = counts.pool;
+          online = counts.online;
+          poolCached = counts.cached;
+        } catch (e) {
+          /* 数不出来不能让整张邻居列表 500 —— 但也不能不留痕迹。 */
+          console.error('[sight list counts]', e && e.message ? e.message : e);
+          pool = 0;
+          online = 0;
+        }
+
+        return reply(
+          200,
+          { ok: true, list, pool, online },
+          poolCached === null ? {} : { 'x-pool-cache': poolCached ? 'hit' : 'miss' },
+        );
+      }
+
+      /* ---------------- 报：我在这儿 ---------------- */
+      if (method === 'POST') {
+        let body;
+        try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+        const uid = clean(body?.uid, 64);
+        const city = clean(body?.city, 40);
+        const date = clean(body?.date, 10);
+        const slot = clean(body?.slot, 12);
+
+        /*
+         * 名字和「在干嘛」是**唯二会出现在别人屏幕上的字段**，所以在这里洗。
+         * 洗在写入前，不是读的时候才遮 —— 脏数据不进库，管理面板看到的也是干净的。
+         */
+        const extra = bannedExtra(env);
+        const washed = safePet(body?.pet, extra);
+        const pet = washed.name;
+        const doing = safeDoing(body?.doing, extra);
+
+        if (!okUid(uid) || !okCity(city) || !okDate(date) || !SLOTS.has(slot) || !pet) {
+          return reply(400, { ok: false, error: 'bad fields' });
+        }
+        if (washed.flagged) {
+          // 只记打码后的 uid，够定位是哪只鱼，又不留完整标识
+          console.warn('[sight] pet name replaced', maskUid(uid));
+        }
+
+        /*
+         * 人工标记：被封的连上报都不收。
+         *
+         * 挡在写入这一处，读的时候就不用每条查询都挂条件 —— 散在查询里早晚漏一处。
+         */
+        const flag = await flagOf(db, uid);
+        if (flag?.kind === 'ban') return reply(403, { ok: false, error: 'banned' });
+
+        const now = Date.now();
+        const nowIso = new Date(now).toISOString();
+        const ip = await ipHash(request);
+
+        /* ---- 限速：三条日限，一条 SQL 查完 ---- */
+        /*
+         * key 里带 UTC 日期，所以「按天」是天然完成的 —— 不需要在 SQL 里
+         * 判断窗口有没有过期，跨天就是换了一个 key，从 1 重新数。
+         */
+        const day = nowIso.slice(0, 10);
+        const keys = [`u:${uid}:${day}`, `d:${day}`];
+        if (ip) keys.splice(1, 0, `i:${ip}:${day}`);
+
+        const marks = keys.map((_, i) => `?${i + 1}`).join(',');
+        const { results: counted } = await db
+          .prepare(`SELECT key, n FROM rate WHERE key IN (${marks})`)
+          .bind(...keys).all();
+
+        const got = new Map((counted || []).map((r) => [r.key, Number(r.n) || 0]));
+        const nUid = got.get(`u:${uid}:${day}`) ?? 0;
+        const nIp = ip ? got.get(`i:${ip}:${day}`) ?? 0 : 0;
+        const nAll = got.get(`d:${day}`) ?? 0;
+
+        if (nUid >= UID_PER_DAY) return reply(429, { ok: false, error: 'too many' });
+        if (ip && nIp >= IP_PER_DAY) return reply(429, { ok: false, error: 'too many' });
+        if (nAll >= DAILY_WRITE_CAP) {
+          console.error('[sight] daily cap hit', nAll);
+          return reply(503, { ok: false, error: 'busy' });
+        }
+
+        /*
+         * 撞主键 **(uid, date_key, slot)** 就更新 —— 同一天同一时段只留最新那条。
+         * 她一天里换几个地方，留下的就是最后一次，那才是「这会儿她在哪」。
+         *
+         * ## 主键里为什么不再带 `city`（2026-11-07）
+         *
+         * 带 city 时，「换一座城」不是覆盖而是**多一行**：一天换 2 城 = 8 行，
+         * 4 天留存 = 32 行（管理面板上那只「31 格」的鱼就是这么来的）。
+         * 而 `/sight/status` 每次都要 `SELECT COUNT(DISTINCT uid) ... WHERE date_key=?`
+         * 把当天所有行扫一遍 —— 行数直接乘进 D1 的读取额度。
+         *
+         * 去掉 city 之后：一只鱼一天最多 4 行（4 个时段），全表小 2–8 倍，
+         * 语义一点没变（城市跟着最后一次上报走）。
+         */
+        await db.prepare(
+          `INSERT INTO presence (uid, pet, city, date_key, slot, doing, at, ip_hash)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+           ON CONFLICT(uid, date_key, slot) DO UPDATE SET
+             pet = excluded.pet,
+             city = excluded.city,
+             doing = excluded.doing,
+             at = excluded.at,
+             ip_hash = excluded.ip_hash`,
+        ).bind(uid, pet, city, date, slot, doing, nowIso, ip).run();
+
+        /*
+         * 计数放在写入成功之后 —— 被上面三条挡下的请求不消耗配额，
+         * 不然一个狂刷的脚本能靠「被拒」把全站额度顶满。
+         */
+        const expSec = Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000) + 86_400;
+        const vals = keys.map((_, i) => `(?${i * 2 + 1}, 1, ?${i * 2 + 2})`).join(',');
+        await db.prepare(
+          `INSERT INTO rate (key, n, exp) VALUES ${vals}
+           ON CONFLICT(key) DO UPDATE SET n = rate.n + 1`,
+        ).bind(...keys.flatMap((k) => [k, expSec])).run();
+
+        // 「请她改名」是软标记：照常上报，只在回执里多说一句，客户端可转成提醒。
+        return reply(200, flag?.kind === 'rename' ? { ok: true, notice: 'rename' } : { ok: true });
+      }
+
+      return reply(405, { ok: false, error: 'method not allowed' });
+    } catch (e) {
+      /*
+       * 不把内部错误回给调用方 —— 日志里留着就够了。
+       * 尤其别把 D1 的报错原文带出去，里面可能有表结构。
+       */
+      console.error('[sight]', e && e.message ? e.message : e);
+      return reply(500, { ok: false, error: 'server error' });
+    }
+  },
+
+  /**
+   * 定时清理。`wrangler.toml` 里的 `[triggers] crons` 每小时叫一次。
+   *
+   * 干两件事：
+   * 1. **删四天前的 presence。** 不删的话表会一直长 —— 一天五万行，一个月一百五十万行，
+   *    免费版 5 GB 存储撑不到年底。查询只用到今天和昨天，留四天很宽松。
+   * 2. **删过期的 rate 行。** 理论上这张表大小约等于「用户数 + IP 数」不会涨
+   *    （同一个 key 会一直复用），但换过 IP 的用户会留下旧行，顺手清掉。
+   *
+   * 每次都限量删（`PURGE_BATCH`）—— 一小时五千行，一天十二万行，
+   * 够覆盖最坏情况（五万行/天），又不会让单次执行太久。
+   *
+   * **判据是 `at`，不是 `date_key`**（2026-11-10）。`date_key` 是游戏内日期，
+   * 按它删有两个方向的错：跑到 2027 年的行**永远删不掉**（线上真实存在，
+   * 越攒越多），而游戏日期比现实落后的行又会被提前删掉。`at` 是真实写入时刻，
+   * 才是「四天前」该用的那把尺。
+   */
+  async scheduled(event, env) {
+    const db = env?.DB;
+    if (!db) return;
+
+    const cutoffIso = new Date(Date.now() - KEEP_DAYS * 86_400_000).toISOString();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const nowIso = new Date().toISOString();
+
+    try {
+      const p = await db.prepare(
+        `DELETE FROM presence WHERE rowid IN
+           (SELECT rowid FROM presence WHERE at < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(cutoffIso).run();
+      const r = await db.prepare(
+        `DELETE FROM rate WHERE rowid IN
+           (SELECT rowid FROM rate WHERE exp < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(nowSec).run();
+      /*
+       * 邀约按「过期」删，不按日期 —— 一条昨天发、今晚才过期的邀约，
+       * 按日期删会提前把它拿走。
+       */
+      const i = await db.prepare(
+        `DELETE FROM invites WHERE rowid IN
+           (SELECT rowid FROM invites WHERE expires_at < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso).run();
+      /*
+       * 接单记录要跟着邀约一起清 —— **清孤儿，不按时间**。
+       *
+       * 2026-11-05 加这张表时漏了这一步：邀约过期被删、`invite_takers` 的行留着，
+       * 表就会一直长（一天几十条，一年也是一万多行白占额度）。
+       * 用 LEFT JOIN 找「对应邀约已经不存在」的行，比按时间删安全：
+       * 一条还没过期的邀约，它的 takers 一条都不能动。
+       */
+      const t = await db.prepare(
+        `DELETE FROM invite_takers WHERE rowid IN
+           (SELECT t.rowid FROM invite_takers t
+              LEFT JOIN invites i ON i.id = t.id
+             WHERE i.id IS NULL LIMIT ${PURGE_BATCH})`,
+      ).run();
+      /*
+       * 卡也跟着邀约一起清（2026-11-11）。同一条道理：邀约过期被删，
+       * `party_cards` 的行留着就是孤儿 —— 没人取得到（鉴权查的 `invites` 已经不在了），
+       * 但占着额度，而且里面可能存着别人给的号。
+       * **按 `id` 清孤儿，不按 `exp`**：30 天的卡不该被 4 天的 presence 窗口带走。
+       */
+      const c = await db.prepare(
+        `DELETE FROM party_cards WHERE rowid IN
+           (SELECT c.rowid FROM party_cards c
+              LEFT JOIN invites i ON i.id = c.id
+             WHERE i.id IS NULL LIMIT ${PURGE_BATCH})`,
+      ).run();
+      /*
+       * 名片按自己的 exp 删（2026-11-11）。它不挂在任何一条邀约上 ——
+       * 名片是「这个人」，不是「这一趟」，所以不能用孤儿清理那套。
+       * 30 天不续就等于自己收回去，这里只是把行真的删掉。
+       */
+      const pf = await db.prepare(
+        `DELETE FROM profiles WHERE rowid IN
+           (SELECT rowid FROM profiles WHERE exp < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso).run();
+      console.log(
+        '[sight] purge', cutoffIso,
+        'presence', p?.meta?.changes ?? '?',
+        'rate', r?.meta?.changes ?? '?',
+        'invites', i?.meta?.changes ?? '?',
+        'cards', c?.meta?.changes ?? '?',
+        'profiles', pf?.meta?.changes ?? '?',
+        'takers', t?.meta?.changes ?? '?',
+      );
+    } catch (e) {
+      console.error('[sight] purge failed', e && e.message ? e.message : e);
+    }
+  },
+};
