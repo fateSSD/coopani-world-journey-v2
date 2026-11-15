@@ -2710,6 +2710,47 @@ export const CITIES: readonly City[] = [
 
 const BY_ID = new Map(CITIES.map((c) => [c.id, c]));
 
+/* ------------------------------------------------------------------
+ * 城名别名：生活层那座城 → 用哪座地理城的数据（2026-11-15）
+ *
+ * ## 为什么是「别名」不是「加一座城」
+ *
+ * `coopani-world-life` 里她住在一座叫芦花塘的城里 —— 那是**社群城**
+ * （装没装那个扩展），不是地理城。它在 `CITIES` 里**没有**任何数据：
+ * 没坐标、没景点、没酒店档次、没气候、没夜间去处。
+ *
+ * 往 `CITIES` 里加一座空的「芦花塘」是坏解：她到了那儿没地方去，
+ * 夜间安排算不出来、房价算不出、照片没地点 —— 所有地方都空着。
+ *
+ * 别名是另一条路：**id 和名字是芦花塘，其余数据全用兰州**。
+ * 她说话会说「我从芦花塘出发」，而天气、票价、景点、生图、日照都照兰州的算。
+ *
+ * ## 为什么这两个函数都要认
+ *
+ * 只认名字不认 id，会在回家那一趟断掉 —— 回程、日记的 `dateKey`、
+ * `footprints` 全按 id 走。所以 `cityById('luhuatang')` 也必须解回来。
+ *
+ * ## 这张表跟着那边走
+ *
+ * 城名改了要**两边一起改**：生活层的 `BUILTIN_TOWN` / 服务端 `TOWN_DEFAULTS`，
+ * 和这里。只改一边，她要么「不在城市表里」、要么找回一座不存在的城。
+ *
+ * ## ⚠ 这是**用户自己选择**的结果，不是默认行为
+ *
+ * 触发条件是用户把「出发地」填成「芦花塘」。没填就是兰州，行为一字不变。
+ * 代价要认：她的日记、照片地点、`footprints` 从此都写「芦花塘」，
+ * 而她其实在兰州 —— 而 `footprints` 是**永久**数据，写脏了洗不掉。
+ * ------------------------------------------------------------------ */
+const TOWN_ALIAS: Record<string, { id: string; name: string; base: string }> = {
+  '芦花塘': { id: 'luhuatang', name: '芦花塘', base: 'lanzhou' },
+};
+
+/** 别名 → 地理城：id / 名字换成别名的，其余全取 base 的。 */
+function cityFromAlias(a: { id: string; name: string; base: string }): City | null {
+  const base = BY_ID.get(a.base);
+  return base ? { ...base, id: a.id, name: a.name } : null;
+}
+
 /** 按 id 取。没有就返回 null —— 调用方必须处理"不认识的城"，别拿默认值顶。 */
 /**
  * 这个月这座城有哪些演出。
@@ -2745,7 +2786,14 @@ export function showsIn(city: { readonly shows: readonly Show[] }, month: number
 }
 
 export function cityById(id: string): City | null {
-  return BY_ID.get(id.trim().toLowerCase()) ?? null;
+  const key = id.trim().toLowerCase();
+  const hit = BY_ID.get(key);
+  if (hit) return hit;
+  /* 别名也要能按 id 反解回来，否则回程与日记会断。 */
+  for (const a of Object.values(TOWN_ALIAS)) {
+    if (a.id === key) return cityFromAlias(a);
+  }
+  return null;
 }
 
 /** 按名字找。中文名优先，其次英文 id。找不到返回 null。 */
@@ -2776,6 +2824,10 @@ export function cityByName(name: string): City | null {
     for (const c of CITIES) {
       if (c.name === stripped) return c;
     }
+  }
+  /* 最后才试别名 —— 常规城市优先，别让别名抢了真城的名字。 */
+  for (const [name, a] of Object.entries(TOWN_ALIAS)) {
+    if (name === key || a.id === lower) return cityFromAlias(a);
   }
   return null;
 }
