@@ -976,6 +976,8 @@ export class JourneyWorld implements World {
 
       if (this.st.phase === 'home') {
         if (this.stillResting(now)) return;
+        /* 她在睡 —— 在家也不出门（也不弹「让我出门吧」），等醒了再说。 */
+        if (this.asleepUntil() > this.realNow().getTime()) return;
         /*
          * 他开了「出门等点头」：她**不许自己走，但要开口问**。
          *

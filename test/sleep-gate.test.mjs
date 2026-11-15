@@ -120,3 +120,32 @@ test('睡着那天不占「今天已经判过」的额度 —— 醒来当天还
 
   assert.equal(w.st.decidedOn ?? null, null, '睡着那天不该占掉今天的决策额度');
 });
+
+test('在家睡着：也不出门（不出发也不弹 askToDepart）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jr-sleep-home-'));
+  new StateStore(dir).save({
+    ...initialState('lanzhou'),
+    phase: 'home',
+    hereId: 'lanzhou',
+    homeId: 'lanzhou',
+    homeAt: '2026-10-20T02:00:00Z',
+  });
+  writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+    schema: 1,
+    asleepUntil: '2026-10-31T03:00:00Z', // NOW 是 02:00Z，北京 10:00（在 7-21 点出门窗口内）
+    updatedAt: NOW.toISOString(),
+  }));
+
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', restDays: 0 },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => NOW,
+  });
+  await w.start(fakeHost());
+  w.bootedAt = 0; // 跳过加载宽限
+  await w.tick();
+
+  assert.equal(w.st.phase, 'home', '在家睡着不该出发');
+  assert.equal(w.st.leg ?? null, null, '在家睡着不该生成行程');
+});
