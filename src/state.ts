@@ -588,6 +588,19 @@ export interface TripState {
    */
   decidedOn: string | null;
   /**
+   * 「已经说了要走」是哪一天说的（当地日期键），以及当时挑好的下一站。
+   *
+   * 2026-11-15 加。起因是用户来信：她刚说完「大连才第三天，我还没待够」，
+   * 后台同一分钟就把车票买了。发车这件事**不再在掷中的那一拍执行**，
+   * 而是当场说出来、第二天早上再走 —— 中间隔着一整晚，够她改主意。
+   *
+   * 两个字段一起出现、一起清：`announceDepartOn` 非空就代表「有一趟等着走」，
+   * `announceCityId` 是那一趟的目的地（宣布时算好的，免得第二天挑出另一座城，
+   * 她说的是秦皇岛、去的却是锦州）。
+   */
+  announceDepartOn: string | null;
+  announceCityId: string | null;
+  /**
    * 已经**提醒过她**的邀约 id（每条只提醒一次，最多留 50 条）。
    *
    * 2026-11-06 加的。原来她只在排表那一刻（每天第一次醒来 / 刚到一座城）才看到邀约列表，
@@ -646,6 +659,8 @@ export function initialState(homeId: string): TripState {
     roadMarks: [],
     stayDateKey: null,
     decidedOn: null,
+    announceDepartOn: null,
+    announceCityId: null,
     car: null,
     inviteSeen: [],
     inviteNotice: null,
@@ -947,6 +962,9 @@ export class StateStore {
         : [],
       stayDateKey: typeof r.stayDateKey === 'string' ? r.stayDateKey : null,
       decidedOn: typeof r.decidedOn === 'string' ? r.decidedOn : null,
+      // 老状态里没有这两格：当作「没有等着走的那一趟」。
+      announceDepartOn: typeof r.announceDepartOn === 'string' ? r.announceDepartOn : null,
+      announceCityId: typeof r.announceCityId === 'string' ? r.announceCityId : null,
       // 老状态里没有这一格：当她手上没车。
       car: (() => {
         const v = r.car;

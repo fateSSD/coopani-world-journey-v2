@@ -220,10 +220,41 @@ const REPORT_RETRY_MS = [60_000, 3 * 60_000, 10 * 60_000] as const;
 /** 一个地方待几天。骨架阶段 2-4 天，之后可以按城市大小调。 */
 const STAY_DAYS_MIN = 2;
 const STAY_DAYS_MAX = 4;
+/**
+ * 当地几点决定「今天走不走」。
+ *
+ * 提成常量是因为**有两个地方要认同一个时刻**：`stayTick` 里做决定，
+ * 以及巡检里判断「这个决定点是不是被离线跨过去了」。两处各写一个 8，
+ * 改一处忘一处，就会出现「离线跳过保护永远不生效」这种查一天的问题。
+ */
+const DECIDE_HOUR = 8;
 /** 每种新地点待几天就走的概率。留着不走的余量让「她某天不想动了」有地方发生。 */
 const STAY_ONE_MORE = 0.15;
 /** 这一站结束后，回家的概率（其余是去下一站）。 */
 const GO_HOME_CHANCE = 0.2;
+/**
+ * `before` → `now` 这段里，有没有跨过当地 `DECIDE_HOUR` 那个决定点。
+ *
+ * 判据只有「跨没跨过那一刻」，**不设「离线多久才算」的阈值**：
+ * 阈值定了就必然有人卡在边上（离线 2 小时 1 分 vs 1 小时 59 分），
+ * 而真正要防的只有一件事 —— 那一拍的决定权属于「当时在场的她」，不属于开机后的补算。
+ *
+ * 纯函数，单测直接喂时间，不用起世界。
+ */
+export function decisionCrossedWhileAway(
+  before: Date,
+  now: Date,
+  tz: string,
+): boolean {
+  const b = localMoment(before, tz);
+  const a = localMoment(now, tz);
+  // 今天的决定点还没到 —— 到点儿自然会在正常的巡检里判，不算「被跳过」。
+  if (a.decimal < DECIDE_HOUR) return false;
+  // 跨了日期：今天的那个决定点一定落在 (before, now] 这段里。
+  if (b.dateKey !== a.dateKey) return true;
+  // 同一天：只有在 8 点前离开、8 点后回来，才算跨过去。
+  return b.decimal < DECIDE_HOUR;
+}
 
 /**
  * 进了这个圈就一趟车到家，不再中途停。
@@ -1102,6 +1133,37 @@ const TOOL_DECLS = [
     tags: ['write'] as const,
     summary: { zh: '在这座城留一句话，给以后来的人看。', en: 'Leave one line for whoever comes to this city later.' },
   },
+  /*
+   * 再待一天（2026-11-15）。
+   *
+   * 用户来信：她在大连第 3 天，刚说完「大连才第三天，我还没待够」，
+   * 同一分钟后台上车去了秦皇岛 —— 她手里**没有任何东西能拦住这次发车**。
+   *
+   * 现在发车改成「先宣布、第二天早上再走」，中间隔着一整晚。
+   * 这个工具就是那一晚的出口：她不想走，说一声就行，不必求人。
+   */
+  {
+    name: 'journey_stay',
+    description:
+      'Stay one more day where she is, after she has been told she is leaving tomorrow. '
+      + 'Call it the moment she would rather not go yet - something she has not seen, someone she wants another day with, '
+      + 'or she simply likes it here. It cancels that one departure; tomorrow morning she decides again from scratch, '
+      + 'and she may well leave then. Say why in one short line of her own. '
+      + 'Do not call it for a city she has not reached yet, and do not call it twice for the same departure.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Why she wants one more day, one short sentence in her own voice.',
+        },
+      },
+      required: ['reason'],
+    },
+    tags: ['write'] as const,
+    summary: { zh: '这一趟先不走，再待一天。', en: 'Stay one more day after all.' },
+  },
 ] as const;
 
 export interface JourneyWorldOptions {
@@ -1322,6 +1384,16 @@ export class JourneyWorld implements World {
    * 是因为 `advanceBeats` 从 `stayTick` 里调，那条链上的签名已经很深了。
    */
   private awayMs = 0;
+  /**
+   * 这一拍之所以「今天不判发车」，是因为**离线期间跨过了当地的决定点**（2026-11-15）。
+   *
+   * 为什么用实例字段而不是直接写进 `st.decidedOn`：
+   * `stayTick` 的「新的一天」分支会把 `decidedOn` 一律重置成 `null`
+   * （本意是「新的一天重新给一次决策机会」），写在它之前会被那一行当场覆盖掉。
+   * 而 `awayMs` 到 `awayNote` 那一段就被清零了，等 `stayTick` 再读已经是 0。
+   * 所以只在 `tick()` 里算一次、存在这儿，由「新的一天」那个分支去读。
+   */
+  private awayCrossedDecide = false;
   /** 上一次把 `lastSeenAt` 落进磁盘的真实毫秒。只用于节流，本身不落盘。 */
   private lastSeenSavedMs = 0;
   /**
@@ -2393,6 +2465,8 @@ export class JourneyWorld implements World {
       const realNowMs = this.realNow().getTime();
       const seenAt = this.st.lastSeenAt ? Date.parse(this.st.lastSeenAt) : Number.NaN;
       this.awayMs = Number.isFinite(seenAt) ? Math.max(0, realNowMs - seenAt) : 0;
+      // 每拍重算，别让上一拍的结论漏到这一拍（见 `awayCrossedDecide` 的声明）。
+      this.awayCrossedDecide = false;
       this.markSeen(realNowMs);
       const now = this.worldNow();
       /*
@@ -2418,6 +2492,48 @@ export class JourneyWorld implements World {
       // **不推事件。** 音乐扩展自己就「换歌必说一句」，这边再推一条，
       // 桌宠会连着说两句同样的事。状态变了，她下次开口自然会用上。
       this.syncSongWish();
+      /*
+       * **离线跨过了当天的发车决策点 —— 这一拍不补判。**（2026-11-15，用户来信）
+       *
+       * 反馈原样：她在大连第 3 天，12:17 刚查完 `journey_now`，12:18 说「大连才第三天，
+       * 我还没待够」，同一分钟后台上车去了秦皇岛 —— 日志里写着「他离开了 13 小时」。
+       *
+       * 根因不是「发车不看日程」（日程和发车本来就是两套东西：一个是今天的作息，
+       * 一个是这一站住几天）。根因是**决定权的时间归属错了**：发车判定属于
+       * 「当地早上八点、她在场的那一拍」，而那 13 小时里没人做出这个决定。
+       * 开机后补算，等于把「她不在时该发生的事」塞进她刚回来的这一分钟 ——
+       * 于是她一边说没待够，后台一边买票，两句话自相矛盾。
+       *
+       * 做法只改一件事：跨过去了就是跨过去了，**今天不补判**。
+       * 她照常过今天的日程，明天早上八点重新判 —— 想走的话明天还是走。
+       * 不改状态机、不加持久化字段（`decidedOn` 本来就是这个语义：「这天已经判过了」），
+       * 只在巡检里算一个当拍有效的标记，交给 `stayTick` 的新一天分支去读。
+       *
+       * **不动世界时间。** 锚回开机时刻看着更「合理」，实际会让她的人生断档：
+       * 他关一晚电脑，她的世界就停一晚，那她已经过去的十三个小时成了假的。
+       * 世界时间连续是这套东西的地基，问题从来不在时间会走，在于走的时候没人替她做决定。
+       */
+      if (this.st.phase === 'staying' && this.awayMs > 0) {
+        const here = this.cityOrNull(this.st.hereId);
+        const today = here ? localMoment(now, here.tz) : null;
+        if (here && today && this.st.decidedOn !== today.dateKey) {
+          const speed = Math.max(0.1, this.cfg.speed || 1);
+          const before = new Date(now.getTime() - this.awayMs * speed);
+          if (decisionCrossedWhileAway(before, now, here.tz)) {
+            /*
+             * 真正的落地在 `stayTick` 的「新的一天」分支 —— 那里决定 `decidedOn`
+             * 是重置成 `null`（照常给一次机会）还是直接记成今天（今天不判）。
+             * 这里只算、只说。为什么不能在这儿写：那一行会把值覆盖掉，
+             * 而 `awayMs` 到下面 `awayNote` 就被清零了，等不到 `stayTick` 再来读。
+             */
+            this.awayCrossedDecide = true;
+            this.log?.info(
+              `离线 ${Math.round(this.awayMs / 60_000)} 分钟，跨过了当地 ${DECIDE_HOUR} 点的发车决策点`
+              + ` —— 今天不补判，留在${here.name}。`,
+            );
+          }
+        }
+      }
       /*
        * **「你不在的这段时间」**（2026-11-11）。
        *
@@ -2706,6 +2822,9 @@ export class JourneyWorld implements World {
       stayDateKey: null,
       stayStartedAt: null,
       decidedOn: null,
+      // 人都离开这座城了，昨天宣布的那一趟自然作废。
+      announceDepartOn: null,
+      announceCityId: null,
     };
     this.plan = null;
     this.persist();
@@ -3296,7 +3415,12 @@ export class JourneyWorld implements World {
         ...this.st,
         stayDateKey: moment.dateKey,
         lastBeatKey: null,
-        decidedOn: null,   // 新的一天，重新给一次决策机会
+        /*
+         * 新的一天重新给一次决策机会 —— **除非这一天是在他关机的时候过去的**。
+         * 那种情况这个决定点已经不在了，补判等于「开机即发车」，
+         * 而她那会儿正在说「我还没待够」。判据见 `tick()` 里的 `awayCrossedDecide`。
+         */
+        decidedOn: this.awayCrossedDecide ? moment.dateKey : null,
       };
       await this.rebuildPlan(now, 'full', 0, here);
       this.persist();
@@ -3351,7 +3475,7 @@ export class JourneyWorld implements World {
 
     // 决策点：当地早上八点到九点之间，一天只决定一次。
     // 放在早饭之后，这样「今天走不走」是在吃过饭、喘过气之后才想的。
-    if (moment.decimal >= 8 && this.st.decidedOn !== moment.dateKey) {
+    if (moment.decimal >= DECIDE_HOUR && this.st.decidedOn !== moment.dateKey) {
       this.st = { ...this.st, decidedOn: moment.dateKey };
       this.persist();
       const startedDaysAgo = this.st.tripStartedAt
@@ -3483,12 +3607,32 @@ export class JourneyWorld implements World {
         return;
       }
 
+      /*
+       * **昨天说好的那一趟：今天执行，不再掷骰子。**（2026-11-15）
+       *
+       * 说了就走。否则「宣布」成了空话 —— 她会在同一座城里天天宣布、天天不走，
+       * 用户看到的是一句永远不兑现的预告，比原来更难受。
+       *
+       * 放在「待够没有」之前：这一趟昨天已经判过了，今天只是履行。
+       * 也放在回家那两支之前：说好了去 X，第二天不能改口回家。
+       */
+      if (this.st.announceDepartOn) {
+        const dest = this.st.announceCityId ? this.cityOrNull(this.st.announceCityId) : null;
+        this.st = { ...this.st, announceDepartOn: null, announceCityId: null };
+        await this.moveOn(now, here, dest ? { to: dest } : {});
+        return;
+      }
+
       if (stayedLongEnough && Math.random() < GO_HOME_CHANCE) {
         await this.goHome(now, here, 'done');
         return;
       }
       if (stayedLongEnough) {
-        await this.moveOn(now, here);
+        /*
+         * 掷中了，但**今天不走** —— 先说一句，明天早上再动身。
+         * 用户来信里那句「她没有被问过，也没有机会说不」，改的就是这一行。
+         */
+        await this.announceDepart(now, here);
         return;
       }
     }
@@ -4725,6 +4869,9 @@ export class JourneyWorld implements World {
       stayDateKey: null,
       stayStartedAt: null,
       decidedOn: null,
+      // 人都离开这座城了，昨天宣布的那一趟自然作废。
+      announceDepartOn: null,
+      announceCityId: null,
     };
     this.plan = null;
     this.persist();
@@ -4761,6 +4908,79 @@ export class JourneyWorld implements World {
     );
   }
 
+
+  /**
+   * 「打算走了」—— 只是说一声，今天不动身。（2026-11-15）
+   *
+   * 用户来信：她刚说完「大连才第三天，我还没待够」，后台同一分钟就把车票买了。
+   * 原来的流程是「掷中 → 立刻 `moveOn` → 推 `journey.depart`」，两件事在同一拍里做完，
+   * 她连一句话都插不进去。现在拆成两拍：今天说，明天走。
+   *
+   * 中间那一晚就是她的余地 —— 想留就 `journey_stay`，不想留就什么都不用做。
+   * 目的地在这一刻算好存进 state：隔一夜再挑，会出现「昨天说秦皇岛、今天去了锦州」，
+   * 而那句「打算去秦皇岛」是她说出口的，不能说变就变。
+   *
+   * **只挡「去下一站」，不挡回家**：回家是「这趟结束了」，不是「换座城接着玩」。
+   * 而且周数到期、他叫回、钱见底那几条都在待够之前，各自有各自的语气。
+   */
+  private async announceDepart(now: Date, here: City): Promise<void> {
+    const picked = this.pickNextLeg(here);
+    if (!picked) {
+      /*
+       * 挑不出下一站：留在原地，明天再判。
+       * 这里**不能当成已经宣布** —— 宣布了却没有目的地，明天那一拍会拿一座不存在的城去 moveOn。
+       */
+      this.log?.info('待够了，但眼下挑不出下一站，今天留在原地。');
+      return;
+    }
+    const local = localMoment(now, here.tz);
+    this.st = {
+      ...this.st,
+      announceDepartOn: local.dateKey,
+      announceCityId: picked.city.id,
+    };
+    this.persist();
+    await this.push(
+      'journey.departing',
+      `depart-plan-${local.dateKey}-${picked.city.id}`,
+      `她打算走了。${here.name}待够了，下一站${picked.city.name}，直线约 ${picked.km} 公里，明天早上动身。`
+      + '\n（还没上车。她要是不想走，说一声就留下 —— 不说的话，明天这个点照原计划走。）',
+      'flush',
+    );
+    this.log?.info(`打算明天从${here.name}去${picked.city.name}，先等一晚。`);
+  }
+
+  /**
+   * 再待一天 —— 把昨晚宣布的那一趟撤掉。（2026-11-15）
+   *
+   * 撤掉之后就当她今天没说过要走：明天早上八点重新判，可能又掷中，也可能不走。
+   *
+   * **不设次数上限**：想赖多久是她的事。真正封顶的是 `maxTripWeeks`（出门周数）和钱，
+   * 那两条已经够硬；再叠一个人为配额，某天她会突然被「配额用完」赶走 ——
+   * 一个她自己不知道的规则，比一个明确的截止更伤人。
+   */
+  private async stayOneMoreDay(reason: string): Promise<string> {
+    const why = reason.trim();
+    if (!why) return '（想再待一天，但得说清为什么 —— 一句话就行。）';
+    if (!this.st.announceDepartOn) {
+      return '（眼下没有等着走的那一趟，不用撤。）';
+    }
+    const now = this.worldNow();
+    const here = this.cityOrNull(this.st.hereId);
+    const where = here?.name ?? '这儿';
+    const destName = this.st.announceCityId ? this.cityName(this.st.announceCityId) : '下一站';
+    this.st = { ...this.st, announceDepartOn: null, announceCityId: null };
+    this.persist();
+    await this.push(
+      'journey.stay',
+      `stay-${now.getTime().toString(36)}`,
+      `她把那一趟撤了：不去${destName}了，在${where}再待一天。`
+      + `\n她自己的说法：${why}`
+      + '\n（明天早上会重新想一次 —— 到时候可能还是走。）',
+      'debounce',
+    );
+    return `那一趟撤了，在${where}再待一天。明天早上再定走不走。`;
+  }
 
   /** 去下一站。和 depart 的区别：不出家门，直接从当前城市走。 */
   private async moveOn(
@@ -4880,6 +5100,9 @@ export class JourneyWorld implements World {
       stayDateKey: null,
       stayStartedAt: null,
       decidedOn: null,
+      // 人都离开这座城了，昨天宣布的那一趟自然作废。
+      announceDepartOn: null,
+      announceCityId: null,
       // 赴约那一趟**真的走了**，约定才结掉。买不起票那种情况留在 `st.pledge` 里，
       // 明天接着试 —— 她答应了的事，不该因为今天没钱就悄悄消失。
       ...(fulfilled ? { pledge: null } : {}),
@@ -6638,6 +6861,17 @@ export class JourneyWorld implements World {
         handler: async (args) => {
           const a = (args ?? {}) as { text?: string; city?: string };
           return this.signpost(a.text ?? '', a.city ?? '');
+        },
+      },
+      {
+        /* 23：再待一天（2026-11-15 加）。前面 0–22 的号一个都没动。 */
+        name: decl[23].name,
+        description: decl[23].description,
+        parameters: decl[23].parameters,
+        tags: [...decl[23].tags],
+        handler: async (args) => {
+          const a = (args ?? {}) as { reason?: string };
+          return await this.stayOneMoreDay(a.reason ?? '');
         },
       },
     ];
@@ -10031,6 +10265,19 @@ export const JOURNEY_DESCRIBE = {
       type: 'journey.ask',
       description: { zh: '她在问：想出门（或者想接一条邀约），等他点头。面板上会有一张卡片，两个按钮。', en: 'She is asking to set off (or to take an invitation) and waiting for a yes. The panel shows a card with two buttons.' },
       trigger: 'flush' as const,
+    },
+    {
+      type: 'journey.departing',
+      description: {
+        zh: '打算明天走：下一站是哪、多远。**这是预告，还没上车** —— 她不想走的话可以撤。',
+        en: 'She plans to leave tomorrow: next stop and distance. A heads-up, not a departure yet.',
+      },
+      trigger: 'flush' as const,
+    },
+    {
+      type: 'journey.stay',
+      description: { zh: '她把那一趟撤了，决定再待一天，附她自己的理由。', en: 'She cancelled that departure and stays one more day, with her reason.' },
+      trigger: 'debounce' as const,
     },
     {
       type: 'journey.depart',

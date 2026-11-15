@@ -241,7 +241,7 @@
     },
     {
       "name": "journey_go_to",
-      "description": "Set off for a named city, optionally by a stated means of transport. Use it when the person says where to go and/or how - \"take the high-speed rail to Shanghai\", \"fly to Lhasa\". With no mode it picks one itself, weighted by distance; with a mode it uses exactly that one, and if that one is impossible (too far, no airport, no rail link, no money) it says why instead of silently substituting another. Only when she is settled in a city or at home: not while travelling, not while heading home, not during a short-term job, and not once the trip has hit its length limit - it will say which of those it is. Going home has its own tool.",
+      "description": "Set off for a named city, optionally by a stated means of transport. Use it when the person says where to go and/or how - \"take the high-speed rail to Shanghai\", \"fly to Lhasa\". With no mode it picks one itself, weighted by distance; with a mode it uses exactly that one, and if that one is impossible (too far, no airport, no rail link, no money) it says why instead of silently substituting another. Only when she is settled in a city or at home. While she is already on a leg it cannot turn around, but it still records the city as a wish for the next leg and says so - call it anyway when he names a place while she is travelling, and tell him it is meant for the next leg, not this one. Not while heading home, not during a short-term job, and not once the trip has hit its length limit - it will say which of those it is. Going home has its own tool.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -645,6 +645,30 @@
         "zh": "在这座城留一句话，给以后来的人看。",
         "en": "Leave one line for whoever comes to this city later."
       }
+    },
+    {
+      "name": "journey_stay",
+      "description": "Stay one more day where she is, after she has been told she is leaving tomorrow. Call it the moment she would rather not go yet - something she has not seen, someone she wants another day with, or she simply likes it here. It cancels that one departure; tomorrow morning she decides again from scratch, and she may well leave then. Say why in one short line of her own. Do not call it for a city she has not reached yet, and do not call it twice for the same departure.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Why she wants one more day, one short sentence in her own voice."
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "这一趟先不走，再待一天。",
+        "en": "Stay one more day after all."
+      }
     }
   ],
   "events": [
@@ -655,6 +679,22 @@
         "en": "She is asking to set off (or to take an invitation) and waiting for a yes. The panel shows a card with two buttons."
       },
       "trigger": "flush"
+    },
+    {
+      "type": "journey.departing",
+      "description": {
+        "zh": "打算明天走：下一站是哪、多远。**这是预告，还没上车** —— 她不想走的话可以撤。",
+        "en": "She plans to leave tomorrow: next stop and distance. A heads-up, not a departure yet."
+      },
+      "trigger": "flush"
+    },
+    {
+      "type": "journey.stay",
+      "description": {
+        "zh": "她把那一趟撤了，决定再待一天，附她自己的理由。",
+        "en": "She cancelled that departure and stays one more day, with her reason."
+      },
+      "trigger": "debounce"
     },
     {
       "type": "journey.depart",
