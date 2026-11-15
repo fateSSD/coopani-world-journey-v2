@@ -2388,6 +2388,15 @@ export default {
            *
            * 用 `julianday` 而不是 `datetime(...)` 比较：后者吐出 `YYYY-MM-DD HH:MM:SS`，
            * 跟 `excluded.at` 那个带 T/Z 的 ISO 串格式不同，比大小会出错。
+           *
+           * ## `ip_hash` 故意不进这个判断（2026-11-15 深夜纠正）
+           *
+           * 第一版把 `ip_hash` 也算进「变了才写」，结果命中率只有 5%。
+           * 查数据：414 只鱼对应 963 个不同 ip_hash —— 移动网络、代理、IPv6 轮换
+           * 每换一次就是一条「变化」。而这个字段只是**记录**（风控去看「同一 IP 几只鱼」），
+           * 不是她的状态，没必要每次都最新。
+           *
+           * 去掉它之后，触发写入的只剩 pet / city / doing 三个真状态 + 25 分钟兜底。
            */
           `INSERT INTO presence (uid, pet, city, date_key, slot, doing, at, ip_hash)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -2400,7 +2409,6 @@ export default {
            WHERE presence.pet <> excluded.pet
               OR presence.city <> excluded.city
               OR presence.doing <> excluded.doing
-              OR presence.ip_hash <> excluded.ip_hash
               OR (julianday(excluded.at) - julianday(presence.at)) * 1440 >= 25`,
         ).bind(uid, pet, city, date, slot, doing, nowIso, ip).run();
 

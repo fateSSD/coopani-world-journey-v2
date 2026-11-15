@@ -1342,3 +1342,30 @@ test('内容没变也要在 25 分钟内写一次 —— 否则在线会被判�
   const now = db.query('SELECT at FROM presence')[0].at;
   assert.notEqual(now, old, '超过 25 分钟了还不写，online 会算错');
 });
+
+test('换了 IP 不算内容变化 —— 移动网络天天换', async () => {
+  /*
+   * 2026-11-15 深夜：条件写入上线后 24 小时只跳过 5%，白做。
+   *
+   * 查线上数据才发现：414 只鱼对应 **963 个不同 ip_hash**。移动网络、代理、
+   * IPv6 轮换每换一次，`ip_hash <> excluded.ip_hash` 就成立一次 ——
+   * 而我把这个字段也放进了「变了才写」的条件里。
+   *
+   * `ip_hash` 只是记录（风控看「同一 IP 几只鱼」），不是她的状态。
+   */
+  const db = makeDB();
+  const env = { DB: db };
+  const send = (ip, doing) => new Request(`${BASE}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip },
+    body: JSON.stringify(rec({ doing })),
+  });
+
+  assert.equal((await worker.fetch(send('1.1.1.1', '吃面'), env)).status, 200);
+  const first = db.query('SELECT at FROM presence')[0].at;
+
+  // 内容一个字没变，只有 IP 换了 —— 不该重写整行
+  assert.equal((await worker.fetch(send('2.2.2.2', '吃面'), env)).status, 200);
+  const second = db.query('SELECT at FROM presence')[0].at;
+  assert.equal(second, first, '只是换了个 IP 就重写整行，条件写入等于没做');
+});
