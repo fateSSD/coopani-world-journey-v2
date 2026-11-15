@@ -12,7 +12,7 @@ import type {
 } from 'cortico/core/types.ts';
 import { JOURNEY_ID, journeyConfigGroups, type JourneyConfigSection } from './config.ts';
 import { cityByName, cityById, CITIES, terrainOf, type City } from './geo/cities.ts';
-import { spotKindLine } from './geo/spot-profile.ts';
+import { spotKindLine, spotProfile } from './geo/spot-profile.ts';
 import { distanceKm } from './geo/distance.ts';
 import { modeById, hoursFor, type ModeId, type TravelMode, type SeatGrade } from './geo/modes.ts';
 import { localMoment, humanHours, localHour, shiftDateKey, tzOffsetLabel, utcFromLocal } from './clock.ts';
@@ -771,7 +771,17 @@ export const photoMethods: Record<string, any> = {
         ok: true,
         title,
         // 抬头那张把「天上到底有没有星」交给调用方 —— 回执要拿它说实话。
-        ...(view === 'sky' ? { sky: skyOf(hour, weather?.dayWeather ?? '') } : {}),
+        /*
+         * **纬度和时区必须一起传**（2026-11-15）。原来只传了钟点，于是
+         * `skyOf` 拿纬度 0、一月去算极昼极夜 —— 而提示词那半边的光
+         * 是按太阳高度算的。两套判据并存，回执就敢说「拍到了星空」。
+         */
+        ...(view === 'sky'
+          ? {
+              sky: skyOf(hour, weather?.dayWeather ?? '', city.lat, month, city.lon, city.tz,
+                !onRoad && (spot ? spotProfile(spot).setting === 'urban' : true)),
+            }
+          : {}),
       };
     } catch (e) {
       // 不推事件、不停旅行：她照走。但**原因既要进日志也要进界面** ——
