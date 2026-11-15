@@ -9024,12 +9024,12 @@ export class JourneyWorld implements World {
           }
         : wOutcome === 'ok' ? { label: '天气', state: 'online', hint: `上次查到了（${srcName}）` }
           : wOutcome === 'fail' ? { label: '天气', state: 'error', hint: `上次没查到（${srcName}），先去日志里看那一行` }
-            : { label: '天气', state: 'offline', hint: `还没查过，用的是${srcName}` };
+            : { label: '天气', state: 'offline', hint: `还没查过，用的是${srcName}。不用管 —— 它自己会去查` };
 
     const health = this.diary.current;
     const diary: WorldLamp = health.problem
       ? { label: '日记', state: 'error', hint: health.problem }
-      : { label: '日记', state: 'online', hint: health.dir };
+      : { label: '日记', state: 'online', hint: `写得进去（目录：${health.dir}）` };
 
     /*
      * 照片这盏灯三态：
@@ -9064,7 +9064,7 @@ export class JourneyWorld implements World {
     const np = this.npCache.value;
     const music: WorldLamp = np
       ? { label: '听歌', state: 'online', hint: `在放《${np.title}》` }
-      : { label: '听歌', state: 'offline', hint: '没在放歌，或者没装「一起听歌」。这一条断了就不会有歌', };
+      : { label: '听歌', state: 'offline', hint: '没在放歌，或者没装「一起听歌」。没放歌时灰的是正常的，不用管', };
 
     return [weather, diary, photo, music];
   }
