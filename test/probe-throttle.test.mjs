@@ -32,55 +32,67 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
+const { JourneyWorld } = await import('../src/world.ts');
+const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
 
-test('probeStatus：失败也要记时间 —— 赋值必须在 early return 之前', () => {
-  const at = src.indexOf('private async probeStatus');
-  assert.ok(at > 0, '找不到 probeStatus');
-  /*
-   * 从函数头往后取一段足够覆盖到 handleInvites 的位置，
-   * **并把注释剥掉** —— 函数说明里就抄着那段旧代码（为了讲清为什么这么改），
-   * 不剥的话 `indexOf` 命中的是注释里的 `return`，测试会假红。
-   */
-  const body = src.slice(at, at + 3000)
-    .split('\n')
-    .filter((line) => {
-      const t = line.trim();
-      return !t.startsWith('*') && !t.startsWith('/*') && !t.startsWith('//');
-    })
-    .join('\n');
+test('probeStatus：失败也要记时间 —— 服务器挂掉时下一轮巡检不会立刻重打', async () => {
+  let nowMs = Date.parse('2026-11-11T10:00:00Z');
+  const dir = mkdtempSync(join(tmpdir(), 'jr-probe-throttle-'));
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, meetUrl: 'https://x.app.tcloudbase.com' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date(nowMs),
+  });
+  let calls = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response('server down', { status: 500 });
+  };
+  try {
+    await w.probeStatus(new Date(nowMs));
+    assert.equal(calls, 1, '第一次应该发出请求');
+    assert.ok(w.poolProbe && w.poolProbe.at === nowMs, '失败时没记下尝试时间 poolProbe.at');
 
-  const assign = body.indexOf('this.poolProbe = {');
-  const early = body.indexOf('if (!r.ok) return;');
-
-  assert.ok(assign > 0, 'probeStatus 里没有更新 poolProbe —— 限流靠什么生效？');
-  assert.ok(early > 0, '找不到失败分支，这条测试的前提不成立了');
-  assert.ok(
-    assign < early,
-    'poolProbe 的赋值在 `if (!r.ok) return;` 之后 —— 服务器一挂，'
-    + '每轮巡检（60 秒）都会重打一次，60 分钟的限流直接退化成 60 秒。'
-    + '2026-11-11 线上就是这么被放大 60 倍、把免费额度打满的。',
-  );
+    // 1 分钟后下一轮巡检：仍在 60 分钟限流窗口内，绝不该重打
+    nowMs += 60_000;
+    await w.probeStatus(new Date(nowMs));
+    assert.equal(calls, 1, '失败后没有限流，下一轮巡检又重打了一次');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
 
-test('probeStatus：失败时沿用上一次的值，不能写 0 或 NaN', () => {
-  const at = src.indexOf('private async probeStatus');
-  const body = src.slice(at, at + 3000)
-    .split('\n')
-    .filter((line) => {
-      const t = line.trim();
-      return !t.startsWith('*') && !t.startsWith('/*') && !t.startsWith('//');
-    })
-    .join('\n');
-  /*
-   * 写入失败时必须保留旧值。写 0 的话，面板上「池子今天 0 只」——
-   * 那比旧数字更误导人：用户会以为自己被踢出池子了。
-   */
-  assert.match(
-    body,
-    /value:\s*r\.ok\s*\?\s*r\.pool\s*:/,
-    '失败分支没有保留旧值 —— 池子数字会掉成 0，看着像「没人了」',
-  );
+test('probeStatus：失败时沿用上一次的值，不能写 0 或 NaN', async () => {
+  let nowMs = Date.parse('2026-11-11T10:00:00Z');
+  const dir = mkdtempSync(join(tmpdir(), 'jr-probe-keep-'));
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, meetUrl: 'https://x.app.tcloudbase.com' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date(nowMs),
+  });
+  let ok = true;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => (ok
+    ? new Response(JSON.stringify({ ok: true, pool: 68, mineTaken: 3, list: [] }), { status: 200 })
+    : new Response('boom', { status: 500 }));
+  try {
+    await w.probeStatus(new Date(nowMs));
+    assert.equal(w.poolProbe?.value, 68, '成功时应该记下 68');
+
+    // 跨过 60 分钟限流窗口后服务器失败：必须保留上次的 68，不能掉成 0
+    ok = false;
+    nowMs += 61 * 60_000;
+    await w.probeStatus(new Date(nowMs));
+    assert.equal(w.poolProbe?.value, 68, `失败分支没有保留旧值（实际：${w.poolProbe?.value}）`);
+    assert.equal(w.poolProbe?.taken, 3, 'taken 计数也应该保留旧值');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });

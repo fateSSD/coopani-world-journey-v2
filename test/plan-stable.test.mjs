@@ -71,49 +71,105 @@ test('表里确实有「城内交通」这一类节点（不然上面两条测�
   assert.ok(commute.length > 0, `成都一天里没有通勤节点，这条测试要换个城市：${p.beats.map((b) => b.kind)}`);
 });
 
-test('world 里调用 planDay 必须传种子随机 —— 否则每次重建都换车', () => {
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const at = src.indexOf('planDay({');
-  assert.ok(at > 0, '找不到 planDay 的调用点');
-  const seg = src.slice(at, at + 1600);
-  assert.match(seg, /rnd:\s*seededRandom\(/, '调用 planDay 时没传种子随机，重建会重新掷骰子');
-  assert.match(src, /const planSeed =/, '种子里没有日期/shape，同一天也会变');
+test('world 里调用 planDay 必须传种子随机 —— 否则每次重建都换车', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+
+  const now = new Date('2026-11-07T02:00:00Z');
+  const makeWorld = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jr-plan-seed-'));
+    const w = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => now,
+    });
+    w.st = {
+      ...w.st,
+      phase: 'staying',
+      hereId: 'chengdu',
+      stayStartedAt: '2026-11-06T02:00:00Z',
+      stayDateKey: '2026-11-07',
+    };
+    return w;
+  };
+  const w1 = makeWorld();
+  const w2 = makeWorld();
+  await w1.rebuildPlan(now);
+  await w2.rebuildPlan(now);
+  assert.deepEqual(w1.plan?.beats, w2.plan?.beats, '同状态两次 rebuildPlan 排出来的表不一样（通勤方式或时刻漂移）');
 });
 
-test('world 重建计划时保留已推出的那一段', () => {
+test('world 重建计划时保留已推出的那一段', async () => {
   /*
    * 种子随机让「同参数重建」幂等，但参数会变（钱紧、换酒店、shape）。
    * 那些变化只该影响还没发生的事 —— 已经说过的话不能被改写。
    */
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const at = src.indexOf('private async rebuildPlan');
-  assert.ok(at > 0, '找不到 rebuildPlan');
-  const end = src.indexOf('\n  private ', at + 10);
-  const body = src.slice(at, end > 0 ? end : at + 6000);
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
 
-  assert.match(body, /lastPushedAt\(/, '重建时没看「已经推到哪一刻」');
-  assert.match(body, /prevPlan\.beats\.filter/, '没有保留旧表里已经推过的那些节拍');
-  /*
-   * 后半段一定来自「打补丁之后的新表」。
-   *
-   * 原来断言的是变量名 `fresh` —— 2026-11-09 加「改行程」时中间插了一道
-   * `applyPlanPatches`，变量改名成 `patched`，这条就假红了。
-   * 改按**形状**断言：谁接了 `> pushedAt` 那一半就是新表，变量叫什么都行。
-   */
-  assert.match(body, /\.beats\.filter\(\(b\) => b\.at > pushedAt\)/, '新表的后半段没接上');
+  const now = new Date('2026-11-07T05:00:00Z'); // 成都 13:00
+  const dir = mkdtempSync(join(tmpdir(), 'jr-plan-keep-'));
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => now,
+  });
+  w.st = {
+    ...w.st,
+    phase: 'staying',
+    hereId: 'chengdu',
+    stayStartedAt: '2026-11-06T02:00:00Z',
+    stayDateKey: '2026-11-07',
+  };
+  await w.rebuildPlan(now);
+  // 假设午饭（12.5）已经推出去了，且早餐那句当时是特定内容
+  w.plan.beats[0] = { ...w.plan.beats[0], what: '早饭，已经说出口的那碗抄手' };
+  w.st = { ...w.st, lastBeatKey: '2026-11-07|lunch|12.5' };
+  await w.rebuildPlan(now);
+  assert.equal(w.plan.beats[0].what, '早饭，已经说出口的那碗抄手', '已经推出去的早饭在 rebuildPlan 时被改写了');
 });
 
-test('lastPushedAt 的解析与 key 的生成对得上', () => {
+test('lastPushedAt 的解析与 advanceBeats 写的 key 对得上', async () => {
   /*
    * 这一对我们抓过一次：`advanceBeats` 拼的是 `${dateKey}|${kind}|${at}`，
    * 如果哪天那边改了顺序，这里解析出来的就是垃圾 —— 而且不会报错，
    * 只会让「保留已推段」静默失效。
    */
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  assert.match(src, /const key = `\$\{dateKey\}\|\$\{last\.kind\}\|\$\{last\.at\}`/,
-    'lastBeatKey 的格式变了，lastPushedAt 要跟着改');
-  const at = src.indexOf('private lastPushedAt');
-  const body = src.slice(at, at + 700);
-  assert.match(body, /split\('\|'\)/, 'lastPushedAt 没按 | 切');
-  assert.match(body, /\[d, , at\]/, 'lastPushedAt 取错位了 —— 第二段是 kind，第三段才是 at');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+
+  const now = new Date('2026-11-07T05:00:00Z');
+  const dir = mkdtempSync(join(tmpdir(), 'jr-pushed-at-'));
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => now,
+  });
+  w.host = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    pushEvent: async () => {},
+  };
+  w.plan = {
+    sunriseHour: 7,
+    lodging: { price: 180, feel: '' },
+    beats: [
+      { kind: 'breakfast', at: 8.5, what: '早饭，肥肠粉' },
+      { kind: 'lunch', at: 12.5, what: '午饭，担担面' },
+    ],
+  };
+  await w.advanceBeats(now, cityById('chengdu'), 13.0, '2026-11-07');
+  assert.equal(w.lastPushedAt('2026-11-07'), 12.5, `advanceBeats 写下的 key (${w.st.lastBeatKey}) 被 lastPushedAt 解析错了`);
+  assert.equal(w.lastPushedAt('2026-11-08'), null, '不同日期的 key 不该命中');
 });

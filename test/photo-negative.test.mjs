@@ -13,17 +13,61 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
+const { JourneyWorld } = await import('../src/world.ts');
+const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+const { cityById } = await import('../src/geo/cities.ts');
 
-test('每一处 shootComfy 都传了负向提示词', () => {
+const src = readFileSync(new URL('../src/world-photo.ts', import.meta.url), 'utf8');
+
+test('maybePhoto 走 ComfyUI 时真的把负向提示词写进提交的工作流，且所有 shootComfy 调用都不漏传', async () => {
   const blocks = src.split('shootComfy({').slice(1);
   assert.ok(blocks.length >= 2, `只找到 ${blocks.length} 处 shootComfy —— 少了一条路径`);
   for (const [i, b] of blocks.entries()) {
     const seg = b.slice(0, 700);
     assert.ok(seg.includes('negative:'), `第 ${i + 1} 处 shootComfy 没传 negative —— 填了也不生效`);
     assert.ok(seg.includes('negativeNode:'), `第 ${i + 1} 处没传 negativeNode`);
+  }
+
+  // 行为断言：实际触发一次 ComfyUI 拍照，看提交给 /prompt 的工作流节点是否带上了用户配置的负向词
+  const dir = mkdtempSync(join(tmpdir(), 'jr-neg-'));
+  const wf = JSON.stringify({
+    '6': { class_type: 'CLIPTextEncode', inputs: { text: 'pos' } },
+    '7': { class_type: 'CLIPTextEncode', inputs: { text: 'neg' } },
+    '3': { class_type: 'KSampler', inputs: { positive: ['6', 0], negative: ['7', 0], seed: 1 } },
+  });
+  const w = new JourneyWorld({
+    cfg: {
+      ...JOURNEY_DEFAULTS(),
+      enabled: true,
+      imageProtocol: 'comfyui',
+      imageApi: 'http://127.0.0.1:8188',
+      imageWorkflow: wf,
+      comfyNegative: 'watermark, extra fingers',
+      comfyNegativeNode: '7',
+    },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date('2026-11-06T08:00:00Z'),
+  });
+  let submitted = null;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/prompt')) {
+      submitted = JSON.parse(String(init?.body ?? '{}'));
+      return new Response('stop-after-capture', { status: 500 });
+    }
+    return new Response('err', { status: 500 });
+  };
+  try {
+    await w.maybePhoto(cityById('chengdu'), 16, '2026-11-06', '宽窄巷子', null, true);
+    assert.ok(submitted?.prompt?.['7']?.inputs?.text?.includes('watermark, extra fingers'),
+      `提交给 ComfyUI 的负向节点里没有用户的负向提示词：${JSON.stringify(submitted?.prompt?.['7'])}`);
+  } finally {
+    globalThis.fetch = origFetch;
   }
 });
 

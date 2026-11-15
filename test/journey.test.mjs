@@ -7,10 +7,11 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 
 import { CITIES, cityById, cityByName, isForeign, expandSlots, spotDays, spotName } from '../src/geo/cities.ts';
-import { HOME_RADIUS_KM, JOURNEY_DESCRIBE, roadText, whoOf } from '../src/world.ts';
+import { HOME_RADIUS_KM, JOURNEY_DESCRIBE, JourneyWorld, roadText, whoOf } from '../src/world.ts';
+import { JOURNEY_DEFAULTS } from '../src/config.ts';
 import { actionsPrompt } from '../src/pet-vocab.ts';
 import { PILGRIMS, pilgrimAt, pilgrimsOf } from '../src/geo/pilgrim.ts';
 import { distanceKm, waypoints, haulOf, bearingDeg, angleBetween } from '../src/geo/distance.ts';
@@ -425,13 +426,30 @@ test('MODES：九种交通方式都在，参数合理', () => {
   assert.equal(modeById('plane').overhead, maxOverhead);
 });
 
-test('巡检有并发闸：tick 重叠时第二条直接返回', () => {
+test('巡检有并发闸：tick 重叠时第二条直接返回', async () => {
   // 2026-10-31 模拟里真实抓到：定时器与手动 tick 叠在一起，同一条「午饭」推了两遍。
-  // 这里直接读源码断言 —— 这是个结构性约束，跑不出来，只能盯住有没有被删。
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  assert.match(src, /if \(this\.ticking\) return;/, 'tick 没有并发闸');
-  assert.match(src, /this\.ticking = true;/, '并发闸没有上锁');
-  assert.match(src, /this\.ticking = false;/, '并发闸没有解锁（会永久卡死）');
+  // 行为断言：ticking 锁住时调用 tick() 立即返回，且正常巡检结束后必须解锁。
+  const dir = mkdtempSync(join(tmpdir(), 'jr-tick-gate-'));
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date('2026-11-08T04:00:00Z'),
+  });
+  w.host = {
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => ({ ...e, blobs: [] }),
+    pushDeferred() {},
+    store: {},
+    drainPendingEvents: async () => [],
+  };
+  w.ticking = true;
+  await w.tick();
+  assert.equal(w.st.clock, null, 'ticking=true 时 tick 应该直接返回，不建时钟基准');
+  w.ticking = false;
+  await w.tick();
+  assert.ok(w.st.clock, '解锁后 tick 应该正常执行');
+  assert.equal(w.ticking, false, 'tick 结束后必须解锁（否则会永久卡死）');
 });
 
 test('去重键落盘：lastBeatKey 在状态里，不是内存字段', () => {
@@ -441,25 +459,39 @@ test('去重键落盘：lastBeatKey 在状态里，不是内存字段', () => {
 });
 
 test('时钟只有一个入口：业务代码不许直接调 Date.now()', () => {
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  // 只看代码行 —— 注释里解释「为什么不用 Date.now()」是完全正常的，
-  // 上一版把注释也算进去，测出一个假阳性。
-  const hits = src
-    .split('\n')
-    .filter((l) => {
+  const srcDir = new URL('../src/', import.meta.url);
+  const files = readdirSync(srcDir).filter((f) => f.startsWith('world') && f.endsWith('.ts'));
+  const hits = [];
+  for (const f of files) {
+    const src = readFileSync(new URL(f, srcDir), 'utf8');
+    for (const l of src.split('\n')) {
       const t = l.trim();
-      return /Date\.now\(\)/.test(l) && !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
-    });
-  assert.equal(hits.length, 0, `world.ts 里有 ${hits.length} 处 Date.now()：\n${hits.join('\n')}`);
+      if (/Date\.now\(\)/.test(l) && !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')) {
+        hits.push(`${f}: ${t}`);
+      }
+    }
+  }
+  assert.equal(hits.length, 0, `world 模块里有 ${hits.length} 处 Date.now()：\n${hits.join('\n')}`);
 });
 
 test('时钟结算必须落盘：ensureClock 改完状态要 persist', () => {
   // 2026-10-31 真实踩到：日志打了「已连续结算」，但 state.json 里 speed 还是旧值。
   // 后果是每次重启都从同一个旧基准再结算一遍，世界时间被反复往前推。
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const body = src.slice(src.indexOf('private ensureClock()'), src.indexOf('private localClock('));
-  const stamps = [...body.matchAll(/this\.persist\(\)/g)].length;
-  assert.ok(stamps >= 2, `ensureClock 里只有 ${stamps} 处 persist，建基准和换挡都要写盘`);
+  const dir = mkdtempSync(join(tmpdir(), 'jr-clock-persist-'));
+  const cfg = { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', speed: 1 };
+  const w = new JourneyWorld({
+    cfg,
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date('2026-11-08T04:00:00Z'),
+  });
+  w.ensureClock();
+  const disk1 = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+  assert.equal(disk1.clock?.speed, 1, '建基准时没有写盘');
+  cfg.speed = 24;
+  w.ensureClock();
+  const disk2 = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8'));
+  assert.equal(disk2.clock?.speed, 24, '换挡结算后没有把新 speed 写进 state.json');
 });
 
 // ---- 天气约束 ----
@@ -936,9 +968,16 @@ test('体感：同一个气候档不硬找话说', () => {
 test('journey_now 带「身体感觉」：她随时说得出受不受得了', () => {
   // 气候偏好如果只影响选点、不进入她能看到的信息，她就只能说「到了某地」，
   // 说不了「这地方我待不住」。那这一整层就白做了。
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  assert.match(src, /`身体感觉：\$\{bodyFeeling/, 'nowSummary 里没有体感行');
-  assert.match(src, /家里这样：\$\{bodyFeeling/, '在家时没有体感行');
+  const dir = mkdtempSync(join(tmpdir(), 'jr-body-feel-'));
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date('2026-11-08T04:00:00Z'),
+  });
+  assert.match(w.nowSummary(), /家里这样：/, '在家时 nowSummary 没有体感行');
+  w.st = { ...w.st, phase: 'staying', hereId: 'nanning', stayStartedAt: '2026-11-07T04:00:00Z' };
+  assert.match(w.nowSummary(), /身体感觉：/, '在目的地时 nowSummary 没有体感行');
 });
 
 test('体感以家为基准：换个家，同一座城的话就变了', () => {
@@ -999,15 +1038,33 @@ test('回程：南宁回兰州，路上真的会经过西北', () => {
   assert.ok(distanceKm(cur, home) < 500, `回程走成了：南宁 → ${path.join(' → ')}，还没到家`);
 });
 
-test('回程：家里就在旁边时不再绕路', () => {
-  // 已经在西宁（离兰州 190 公里）时决定回家，不该再挑一个中间站。
-  const home = cityById('lanzhou');
-  const xining = cityById('xining');
-  assert.ok(distanceKm(xining, home) < 500, '测试前提不成立：西宁应该在家门口 500 公里内');
-  // pickDestination 带 toward 时仍然会给出更近的候选，但 world 里由 HOME_RADIUS_KM 拦掉，
-  // 这里验证的是「拦掉的判据存在」。
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  assert.match(src, /if \(km < HOME_RADIUS_KM\)/, 'goHome 里没有「够近就直接到」的短路');
+test('回程：家里就在旁边时不再绕路，隔着省则分段往回走', async () => {
+  // 2026-11-15 HOME_RADIUS_KM 从 500 收到 60：
+  // 1) 在天水（离兰州约 240km >= HOME_RADIUS_KM）决定回家，不能直接瞬移到家，要发车走回程；
+  // 2) 已经在同城圈内（< HOME_RADIUS_KM）时直接收尾到家，不再挑中间站。
+  const now = new Date('2026-11-08T04:00:00Z');
+  const dir = mkdtempSync(join(tmpdir(), 'jr-gohome-'));
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => now,
+  });
+  w.st = {
+    ...w.st,
+    phase: 'staying',
+    homeId: 'lanzhou',
+    hereId: 'tianshui',
+    tripStartedAt: '2026-11-01T00:00:00Z',
+    stayStartedAt: '2026-11-06T00:00:00Z',
+  };
+  await w.goHome(now, cityById('tianshui'), 'done');
+  assert.equal(w.st.returning, true, '三百公里外回家应该进入回程状态');
+  assert.notEqual(w.st.phase, 'home', '三百公里外不该一步瞬移到家');
+
+  w.st = { ...w.st, phase: 'staying', hereId: 'lanzhou', leg: null };
+  await w.goHome(now, LZ, 'done');
+  assert.equal(w.st.phase, 'home', '已经在同城圈内（< HOME_RADIUS_KM）应该直接到家收尾');
   assert.ok(Number.isFinite(HOME_RADIUS_KM) && HOME_RADIUS_KM > 0, '没有定义 HOME_RADIUS_KM');
 });
 

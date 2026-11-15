@@ -261,20 +261,32 @@ test('流速差太多：直接拒，而且**不许已经替她占了名额**', a
 
 /* ---------------- 接线 ---------------- */
 
-test('源码：发邀约必须把自己的流速带上，接约必须看对方的', () => {
+test('发邀约必须把自己的流速带上，接约必须看对方的', async () => {
   /*
    * 「可选参数 + 合法默认值 + 漏传不报错」这个病在这个仓库里已经犯过三次
    * （`negative`、`subject`、`subject` 的传递）。`pace` 是第四个有同样体质的东西，
-   * 所以这里直接盯接线，而不是等它下次再漏。
+   * 这里用行为断言验证 inviteSomeone 实发 payload 带上了 pace = speedNow()。
    */
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const at = src.indexOf('const r = await sendInvite(meet, {');
-  assert.ok(at > 0, '找不到发邀约的调用点 —— 改名了就把这条测试一起改');
-  const call = src.slice(at, at + 400);
-  assert.match(call, /pace: this\.speedNow\(\)/, `发邀约没带上自己的流速：${call.slice(0, 160)}`);
-
-  const take = src.indexOf('const gap = paceGap(');
-  assert.ok(take > 0, '接约时没有流速判断 —— 她会答应一桩兑现不了的事');
+  const { world, restore } = await boot(
+    { phase: 'staying', hereId: 'beijing', stayStartedAt: '2026-11-01T00:00:00Z' },
+    '2026-11-01T02:00:00Z',
+  );
+  try {
+    world.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    world.cfg.speed = 4;
+    let sentBody = null;
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.endsWith('/sight/invite') && init.method === 'POST') {
+        sentBody = JSON.parse(String(init.body || '{}'));
+        return new Response(JSON.stringify({ ok: true, id: 'abcdef0123456789' }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    };
+    const r = await world.inviteSomeone('成都', 3, '一起走');
+    assert.equal(!r.isError, true, r.text);
+    assert.equal(sentBody?.pace, 4, `发邀约没带上自己的流速：${JSON.stringify(sentBody)}`);
+  } finally { restore(); }
 });
 
 test('她人就在目的地：不做「先去别处碰头」这一级', async () => {

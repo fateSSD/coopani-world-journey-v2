@@ -48,15 +48,28 @@ test('没车就不提车，别硬凑一句', () => {
   assert.doesNotMatch(w.nowSummary(), /开着车|靠腿/, '没车还说车，等于替她编');
 });
 
-test('源码：住宿那一行必须用面板同一个函数', () => {
+test('住宿那一行与面板用同一个口径（含真店名与类别）', () => {
   /*
    * 这不是洁癖。`nowSummary` 用模板字符串手拼 `kind`，面板用 `lodgingLabel(l)` ——
    * 后者是「真名（类别）」，前者只有类别。两套措辞各长各的，用户一对比就发现
    * 「她说的和面板不一样」，而这类不一致每次都长得像数据出错。
    */
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const at = src.indexOf('private nowSummary');
-  assert.ok(at > 0, '找不到 nowSummary');
-  const body = src.slice(at, at + 6000);
-  assert.ok(body.includes('lodgingLabel('), '住宿那行又手拼 kind 了 —— 和面板不是同一句话');
+  const w = staying(null);
+  w.plan = {
+    dateKey: '2026-11-06',
+    sunriseHour: 7,
+    sunsetHour: 18,
+    weather: null,
+    lodging: { kind: '连锁商务酒店', name: '月牙酒店(成都春熙路店)', price: 240, feel: '干净，靠街有一点车声' },
+    nightOption: null,
+    beats: [],
+    neighbors: [],
+    invites: [],
+    takenCount: 0,
+  };
+  const summary = w.nowSummary();
+  const snap = w.uiSnapshot();
+  assert.match(summary, /月牙酒店\(成都春熙路店\)（连锁商务酒店）/, `nowSummary 没带真店名和类别：${summary}`);
+  assert.equal(snap.lodging?.name, '月牙酒店(成都春熙路店)');
+  assert.equal(snap.lodging?.kind, '连锁商务酒店');
 });

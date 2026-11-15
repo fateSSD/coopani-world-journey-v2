@@ -24,34 +24,42 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-const world = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
+const { JourneyWorld } = await import('../src/world.ts');
+const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+const world = readFileSync(new URL('../src/world-photo.ts', import.meta.url), 'utf8');
 
-/** 截出某个方法体：从签名到下一条同缩进的 `private ` 或结尾。 */
-function methodBody(src, signature) {
-  const at = src.indexOf(signature);
-  assert.ok(at >= 0, `源码里找不到 ${signature}`);
-  const rest = src.slice(at + signature.length);
-  const end = rest.search(/\n  (private|public|protected) /);
-  return end >= 0 ? rest.slice(0, end) : rest;
-}
-
-test('takePhotoForUser 把 subject 传给了 maybePhoto', () => {
+test('takePhotoForUser 把 subject 传给了 maybePhoto', async () => {
   /*
-   * 只认这一个方法体里的调用：另外三处 `maybePhoto(` 是自动拍照和面板
-   * 「补一张」，它们不带题材是对的（默认 ground 就是老行为）。
+   * 行为断言：调用 takePhotoForUser('ground', 'food', ...) 时，
+   * maybePhoto 收到的第 8 个参数（subject）必须是 'food'，而不是默认的 'ground'。
    */
-  const body = methodBody(world, 'private async takePhotoForUser(');
-  const call = body.indexOf('await this.maybePhoto(');
-  assert.ok(call >= 0, 'takePhotoForUser 里没有 maybePhoto 调用 —— 结构变了，改这条测试');
-  /* 取这次调用的参数段：到第一个 `);` 为止。 */
-  const args = body.slice(call, body.indexOf(');', call));
-  assert.ok(
-    /(^|[\s,(])subject,/.test(args),
-    'takePhotoForUser 没把 subject 传给 maybePhoto —— 六个题材模板全都用不上，'
-    + '「拍晚饭」出来的还是那处风景',
-  );
+  const dir = mkdtempSync(join(tmpdir(), 'jr-photo-wire-'));
+  const w = new JourneyWorld({
+    cfg: {
+      ...JOURNEY_DEFAULTS(),
+      enabled: true,
+      imageProtocol: 'openai',
+      imageApi: 'https://api.example.com/v1',
+      imageModel: 'flux',
+      imageKey: 'sk-test',
+    },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date('2026-11-06T12:00:00Z'),
+  });
+  w.st = { ...w.st, phase: 'staying', hereId: 'chengdu', stayStartedAt: '2026-11-06T00:00:00Z' };
+  let capturedSubject = null;
+  w.maybePhoto = async (_city, _hr, _dk, _spot, _weather, _replace, _onRoad, _mode, _view, subject) => {
+    capturedSubject = subject;
+    return { ok: true, title: '成都的晚饭' };
+  };
+  await w.takePhotoForUser('ground', 'food', '', '');
+  assert.equal(capturedSubject, 'food',
+    'takePhotoForUser 没把 subject 传给 maybePhoto —— 六个题材模板全都用不上，「拍晚饭」出来的还是那处风景');
 });
 
 test('photoTitle 的每一处调用都带题材', () => {

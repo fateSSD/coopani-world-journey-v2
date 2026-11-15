@@ -62,18 +62,34 @@ test('今天本来就没什么点了，要照实说', async () => {
   assert.match(r.text, /没什么点|早点歇/, `没点了还编一个数字：${r.text}`);
 });
 
-test('源码：作息推送必须跳过被歇掉的 activity', () => {
+test('作息推送必须跳过被歇掉的 activity，但晚饭照常推', async () => {
   /*
    * 只落一个状态是不够的 —— `advanceBeats` 不认这个标记，她照样会在
    * 「十五点 去宽窄巷子」那条事件里被叫出门。ro-berry 看到的就是这个。
    */
-  const src = readFileSyncSafe();
-  const at = src.indexOf('const due = plan.beats.filter');
-  assert.ok(at > 0, '找不到 advanceBeats 里那段过滤');
-  const seg = src.slice(at, at + 300);
-  assert.match(seg, /resting/, `过滤里没认「今天歇着」这个标记：${seg.slice(0, 120)}`);
-});
+  const { cityById } = await import('../src/geo/cities.ts');
+  const w = world();
+  const pushed = [];
+  w.host = {
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+    pushEvent: async (ev) => { pushed.push(ev); },
+  };
+  w.plan = {
+    sunriseHour: 7,
+    lodging: { price: 180, feel: '' },
+    beats: [
+      { kind: 'activity', at: 15, what: '去宽窄巷子' },
+      { kind: 'dinner', at: 18.5, what: '晚饭，红油抄手' },
+    ],
+  };
+  await w.restNow('走了两万步，脚起泡了');
 
-function readFileSyncSafe() {
-  return readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-}
+  // 15:30 巡检：15 点的宽窄巷子已被歇掉，不该推出去
+  await w.advanceBeats(new Date('2026-11-07T07:30:00Z'), cityById('chengdu'), 15.5, '2026-11-07');
+  assert.equal(pushed.length, 0, `歇着之后还是推了出门节点：${JSON.stringify(pushed)}`);
+
+  // 19:00 巡检：18:30 的晚饭不是景点，照常推
+  await w.advanceBeats(new Date('2026-11-07T11:00:00Z'), cityById('chengdu'), 19.0, '2026-11-07');
+  assert.equal(pushed.length, 1, '晚饭应该照常推');
+  assert.match(pushed[0].text, /红油抄手/, `推的不是晚饭：${pushed[0].text}`);
+});

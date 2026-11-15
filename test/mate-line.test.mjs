@@ -81,7 +81,7 @@ test('多个人一起时名字都要出现', () => {
   assert.match(line, /沃兔/, `同行的第三个人没出现：${line}`);
 });
 
-test('认领别人的邀约：按编号去重、途中不认领', () => {
+test('认领别人的邀约：按编号去重、途中不认领', async () => {
   /*
    * 两条都是 2026-11-06 的 144 天长跑抓出来的，而且**都不是报错**——
    * 跑得下去、不变量全绿，但状态是错的：
@@ -90,20 +90,34 @@ test('认领别人的邀约：按编号去重、途中不认领', () => {
    *      那 30 天里她一次都没机会去接别人的约。
    *   ② 途中认领别人接的邀约 → 面板上一边「在飞布宜诺斯艾利斯」
    *      一边「跟人说好去稻城亚丁」。飞机改不了航向，那份约定从建立起就兑现不了。
-   *
-   * 这两条只有跑长跑才看得见，单测造不出这个状态 —— 所以退一步，守住源码里的接线。
    */
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const at = src.indexOf('private async claimTakenInvite');
-  assert.ok(at > 0, '找不到 claimTakenInvite —— 改名了就把这条测试一起改');
-  const rest = src.slice(at + 10);
-  const end = rest.search(/\n  (private|public|protected) /);
-  const body = end > 0 ? rest.slice(0, end) : rest;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    ok: true,
+    list: [{ id: 'abcdef0123456789', pet: '小满', to: 'chengdu', days: 3, note: '一起吃火锅' }],
+  }), { status: 200 });
+  try {
+    const now = new Date('2026-11-06T12:00:00Z');
+    const meet = { url: 'https://x.app.tcloudbase.com', uid: '0123456789abcdef01234567', pet: '大肥鱼' };
 
-  assert.ok(body.includes('claimedInvites'),
-    '没按编号去重 —— 服务端会一直把同一条回给你，每轮认领一遍');
-  assert.ok(/this\.st\.phase === 'traveling'/.test(body),
-    '途中认领了 —— 那趟的去向已经定死，这份约定注定兑现不了');
+    const onRoad = bare();
+    onRoad.st = { ...onRoad.st, phase: 'traveling', hereId: 'lanzhou' };
+    await onRoad.claimTakenInvite(meet, now);
+    assert.equal(onRoad.st.pledge, null, '途中认领了 —— 那趟的去向已经定死，这份约定注定兑现不了');
+
+    const settled = bare();
+    settled.st = { ...settled.st, phase: 'staying', hereId: 'lanzhou' };
+    await settled.claimTakenInvite(meet, now);
+    assert.equal(settled.st.pledge?.inviteId, 'abcdef0123456789', '停留时应该正常认领');
+    assert.ok(settled.st.claimedInvites.includes('abcdef0123456789'), '认领后编号没记进 claimedInvites');
+
+    // 约定结束后服务端仍返回同一条，不能再认领第二遍
+    settled.st = { ...settled.st, pledge: null };
+    await settled.claimTakenInvite(meet, now);
+    assert.equal(settled.st.pledge, null, '没按编号去重 —— 同一条邀约被重复认领了');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
 });
 
 test('一起待着的日子里有「她做了什么」—— 不只是天数', () => {
