@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 
 import { CITIES, cityById, cityByName, isForeign, expandSlots, spotDays, spotName } from '../src/geo/cities.ts';
-import { JOURNEY_DESCRIBE, whoOf } from '../src/world.ts';
+import { HOME_RADIUS_KM, JOURNEY_DESCRIBE, whoOf } from '../src/world.ts';
 import { actionsPrompt } from '../src/pet-vocab.ts';
 import { PILGRIMS, pilgrimAt, pilgrimsOf } from '../src/geo/pilgrim.ts';
 import { distanceKm, waypoints, haulOf, bearingDeg, angleBetween } from '../src/geo/distance.ts';
@@ -1008,7 +1008,7 @@ test('回程：家里就在旁边时不再绕路', () => {
   // 这里验证的是「拦掉的判据存在」。
   const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
   assert.match(src, /if \(km < HOME_RADIUS_KM\)/, 'goHome 里没有「够近就直接到」的短路');
-  assert.match(src, /const HOME_RADIUS_KM = \d+/, '没有定义 HOME_RADIUS_KM');
+  assert.ok(Number.isFinite(HOME_RADIUS_KM) && HOME_RADIUS_KM > 0, '没有定义 HOME_RADIUS_KM');
 });
 
 test('回程：状态里存着 returning，重启不会把方向搞乱', () => {

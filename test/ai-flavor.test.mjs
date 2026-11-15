@@ -31,7 +31,7 @@ const { mkdtempSync } = await import('node:fs');
 const { tmpdir } = await import('node:os');
 const { join } = await import('node:path');
 
-const { JourneyWorld } = await import('../src/world.ts');
+const { JourneyWorld, JOURNEY_DESCRIBE } = await import('../src/world.ts');
 const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
 const { StateStore, initialState } = await import('../src/state.ts');
 
@@ -92,18 +92,18 @@ test('日记工具不再把「城市/路/吃了什么/房间」当写作清单',
    * what she ate, how the room was`，本意是「别写成功能总结」，
    * 实际效果是**给了一张四项清单**，模型照着挨个写一遍，一天的日记就成了流水。
    */
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const i = src.indexOf("name: 'journey_diary_write'");
-  const block = src.slice(i, src.indexOf('parameters', i));
+  const tool = JOURNEY_DESCRIBE.tools.find((t) => t.name === 'journey_diary_write');
+  assert.ok(tool, '找不到 journey_diary_write');
+  const block = tool.description;
   assert.doesNotMatch(block, /the city, the road, what she ate, how the room was/, '还是那张四项清单');
   assert.match(block, /not a checklist/, '没写明「这不是清单」');
   assert.match(block, /not as a report of the day/, '没说明不是流水账');
 });
 
 test('journey_now 说明这是背景，不是要转述的文本', async () => {
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  const i = src.indexOf("name: 'journey_now'");
-  const block = src.slice(i, src.indexOf('parameters', i));
+  const tool = JOURNEY_DESCRIBE.tools.find((t) => t.name === 'journey_now');
+  assert.ok(tool, '找不到 journey_now');
+  const block = tool.description;
   assert.match(block, /not text to hand back/, '没说「不要照念」');
   assert.match(block, /reading the fields out/, '没点出「逐条念」这个具体行为');
 });
