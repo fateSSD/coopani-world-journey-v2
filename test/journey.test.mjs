@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 
 import { CITIES, cityById, cityByName, isForeign, expandSlots, spotDays, spotName } from '../src/geo/cities.ts';
-import { HOME_RADIUS_KM, JOURNEY_DESCRIBE, whoOf } from '../src/world.ts';
+import { HOME_RADIUS_KM, JOURNEY_DESCRIBE, roadText, whoOf } from '../src/world.ts';
 import { actionsPrompt } from '../src/pet-vocab.ts';
 import { PILGRIMS, pilgrimAt, pilgrimsOf } from '../src/geo/pilgrim.ts';
 import { distanceKm, waypoints, haulOf, bearingDeg, angleBetween } from '../src/geo/distance.ts';
@@ -1126,8 +1126,8 @@ test('路上节奏：提示词里要让角色知道间隔是用户设的', () =>
 
 test('路上文案：剩余时间按真实进度算，不按节点序号反推', () => {
   // 短途只有一个节点（idx=1），用 idx 反推会算出「还有三小时」，而实际只还剩一小时。
-  const src = readFileSync(new URL('../src/world.ts', import.meta.url), 'utf8');
-  assert.match(src, /durationWorldHours \* \(1 - progress\)/, '剩余时间还在用 idx 反推');
+  const text = roadText('train', 1, { durationWorldHours: 4 }, LZ, cityById('tianshui'), 12, 0.75);
+  assert.match(text, /还有大约 1 小时/, `4 小时走完 75% 应该还剩 1 小时，实际：${text}`);
 });
 
 test('提示词：不许把自己当成「被通知的人」', () => {
