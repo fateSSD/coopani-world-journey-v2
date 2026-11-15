@@ -1887,6 +1887,24 @@ export class JourneyWorld implements World {
     // 决策点：当地早上八点到九点之间，一天只决定一次。
     // 放在早饭之后，这样「今天走不走」是在吃过饭、喘过气之后才想的。
     if (moment.decimal >= DECIDE_HOUR && this.st.decidedOn !== moment.dateKey) {
+      /*
+       * **她在睡 —— 今天不决定。**（2026-11-15 Mr.Q：「睡眠时禁止 journey 的出发」）
+       *
+       * ## 位置：`decidedOn` 赋值**之前**
+       *
+       * 第一版写在 `if (this.st.work)` 前面，看着也对，但端到端一跑就露馅：
+       * 那句话在 `decidedOn = 今天` **之后**，于是她睡着那天把「今天已经判过」
+       * 白白写掉了 —— 醒来当天再也走不了，要白等一整天。
+       *
+       * 端到端实测（`/tmp/e2e-sleep.mjs`）：睡着时 `decidedOn` 被置成当天，
+       * 八小时后窗口清空、再 tick，人还在原地，`announceDepartOn` 是 null。
+       *
+       * 现在的顺序：先问她醒着没有，醒着才占今天的决策额度。
+       *
+       * 为什么不是放进 `moveOn()`：那只拦得住「出发」，拦不住「睡着还在打工」。
+       */
+      if (this.asleepUntil() > this.realNow().getTime()) return;
+
       this.st = { ...this.st, decidedOn: moment.dateKey };
       this.persist();
       const startedDaysAgo = this.st.tripStartedAt
@@ -1908,18 +1926,6 @@ export class JourneyWorld implements World {
        *
        * 现在回程也会停一天打工，挣到路费再走。工钱还没结的时候谁都别放她走。
        */
-      /*
-       * **她在睡 —— 这一跳什么都不做。**（2026-11-15 Mr.Q：「睡眠时禁止 journey 的出发」）
-       *
-       * 位置选在这里是有讲究的：
-       * - 上面是跨天结算（房钱饭钱照扣 —— **睡觉不省房钱**，这是实话）；
-       * - 下面是打工、回家、赴约、待够，每一条都是「她醒着才会做的决定」。
-       *   人都睡了，这一天就不该有任何一个。
-       *
-       * 不放在 `moveOn()` 里：那只拦得住「出发」，拦不住「睡着还在打工」。
-       */
-      if (this.asleepUntil() > this.realNow().getTime()) return;
-
       if (this.st.work) {
         if (now.getTime() >= Date.parse(this.st.work.until)) await this.endWork(now, here);
         return;

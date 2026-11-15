@@ -100,3 +100,23 @@ test('没装 life / 文件坏了：当醒着，不能因为少一个文件就停
   const moved = w.st.phase !== 'staying' || !!w.st.announceDepartOn;
   assert.ok(moved, '坏文件也要照走');
 });
+
+test('睡着那天不占「今天已经判过」的额度 —— 醒来当天还能走', async () => {
+  /*
+   * 这条是端到端跑出来的回归（2026-11-15）。
+   *
+   * 第一版把睡眠判断写在 `decidedOn = 今天` 之后：睡着那天照样把额度写掉，
+   * 八小时后窗口清空、再 tick —— 人还在原地，`announceDepartOn` 是 null。
+   * 「睡一觉」于是变成了「白等一整天」。
+   */
+  const dir = seedStayed();
+  writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+    schema: 1, asleepUntil: '2026-10-31T03:00:00Z', updatedAt: NOW.toISOString(),
+  }));
+
+  const w = makeWorld(dir);
+  await w.start(fakeHost());
+  await w.stayTick(NOW);
+
+  assert.equal(w.st.decidedOn ?? null, null, '睡着那天不该占掉今天的决策额度');
+});
