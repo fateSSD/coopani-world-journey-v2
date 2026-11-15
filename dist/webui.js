@@ -180,6 +180,14 @@ const TEXT = {
     albumRegenFreshHint: '框里留空 = 按现在的规则重新生成一张；写点什么就用你写的这段。',
     albumPromptNote: '框里是这张当初用的提示词。想按现在的规则重新生成，把它清空再点。',
     /* ---- 反馈 ---- */
+    helpTitle: '扩展名旁边那四盏灯怎么看？',
+    helpOn: '绿',
+    helpOnDesc: '上一次是好的，正常。',
+    helpOff: '灰',
+    helpOffDesc: '没启用，不是坏了 —— 比如没装听歌扩展。不用管。',
+    helpErr: '红',
+    helpErrDesc: '配好了但用不了，要去处理。原因和怎么办，鼠标停在灯上能看到。',
+    helpWhich: '四盏灯分别是：天气（查得到天气吗）、日记（写得进去吗）、照片（拍得出来吗）、听歌（在放什么）。',
     fbLead: '有 bug，或者想让她去一个地方？',
     fbBug: '报个 bug',
     fbPlace: '想加个地点',
@@ -348,6 +356,14 @@ const TEXT = {
     albumRegenFreshHint: 'Leave the box empty to regenerate with the current rules; type anything to use your own wording.',
     albumPromptNote: 'This is the prompt this photo was made with. Clear the box and press the button to regenerate with the current rules.',
     /* ---- feedback ---- */
+    helpTitle: 'What do the four dots next to the extension name mean?',
+    helpOn: 'Green',
+    helpOnDesc: 'last time worked. Normal.',
+    helpOff: 'Grey',
+    helpOffDesc: 'not enabled — that is not a fault. Nothing to do.',
+    helpErr: 'Red',
+    helpErrDesc: 'configured but not working. Hover the dot for the reason and the fix.',
+    helpWhich: 'The four are: weather (can it fetch a forecast), journal (can it write), photos (can it take one), music (what is playing).',
     fbLead: 'A bug, or a place you want her to go?',
     fbBug: 'Report a bug',
     fbPlace: 'Suggest a place',
@@ -599,6 +615,36 @@ function rich(node, s) {
  * 1. 没配邮箱就整块不显示 —— 一个点了没反应的按钮比没有更糟。
  * 2. 地址必须明文露出来。宿主连 mailto 都不放行，用户手里总得有能复制的字符串。
  */
+/**
+ * 「灯怎么看」。
+ *
+ * 灯是宿主画在**扩展名旁边**的，不在这个面板里 —— 所以用户看到灰点、想知道
+ * 是什么意思时，得有个地方能查。而 hint 只在鼠标悬停时出现，**没人知道要悬停**。
+ *
+ * 默认折叠：一次看懂就够了，天天摆着占地方。
+ *
+ * 三个圆点是**图例**，不是真实状态，所以颜色可以固定。
+ */
+function lampsHelp(T) {
+  const box = el('details', 'jr-help');
+  box.append(el('summary', null, T.helpTitle));
+
+  const ul = el('ul');
+  for (const [color, k, d] of [
+    ['var(--jr-ok)', 'helpOn', 'helpOnDesc'],
+    ['var(--jr-soft)', 'helpOff', 'helpOffDesc'],
+    ['var(--jr-bad)', 'helpErr', 'helpErrDesc'],
+  ]) {
+    const li = el('li');
+    const dot = el('span', 'jr-help-dot');
+    dot.style.background = color;
+    li.append(dot, el('b', null, T[k]), document.createTextNode('　' + T[d]));
+    ul.append(li);
+  }
+  box.append(ul, el('p', 'jr-help-which', T.helpWhich));
+  return box;
+}
+
 function feedbackSection(T, s, ctx) {
   const mail = String(s.feedbackEmail || '').trim();
   if (!mail) return null;
@@ -730,8 +776,10 @@ export default {
         // 反馈那一栏单独一个插槽：配了邮箱才有内容，没配就是空的，
         // 不留一个点了没反应的按钮在那儿。
         const fbSlot = el('div', 'jr-fb-slot');
+        /* 灯说明放在最底下 —— 用户是「看到灰点、滚下来找答案」才需要它。 */
+        const helpBox = lampsHelp(T);
 
-        app.append(head, askBox, homeBox, rideBox, guide, legBox, facts, meetBox, nextBox, foot, fbSlot);
+        app.append(head, askBox, homeBox, rideBox, guide, legBox, facts, meetBox, nextBox, helpBox, foot, fbSlot);
 
         const render = (s) => {
           app.dataset.mode = s.mode;
