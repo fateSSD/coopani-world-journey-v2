@@ -420,6 +420,28 @@ export class JourneyWorld implements World {
    */
   private realNow(): Date { return this.opts.now ? this.opts.now() : new Date(); }
 
+  /**
+   * 她在不在睡 —— 读 life 广播的 `asleepUntil`（2026-11-15）。
+   *
+   * ## 三个边界
+   *
+   * 1. **用真实时间比**：`stayTick` 拿到的 `now` 是世界时钟，倍速下跑到未来，
+   *    拿它比会一行代码就判成「早醒了」。
+   * 2. **没有 life / 没有文件 / 格式坏了，一律当醒着**。判错的方向要是安全的：
+   *    少睡一次只是她多走一天，反过来是「世界停在那里等她」。
+   * 3. **只读不写**：`life-state.json` 和 `life-public.json` 都是她写的，
+   *    这边碰一下就是双写。
+   */
+  private asleepUntil(): number {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
+      const t = Date.parse(String(raw?.asleepUntil ?? ''));
+      return Number.isFinite(t) ? t : 0;
+    } catch {
+      return 0;
+    }
+  }
+
 
   /**
    * 世界时刻。**所有旅行相关的判断都用它**：现在几点、到没到站、待了几天。
@@ -1886,6 +1908,18 @@ export class JourneyWorld implements World {
        *
        * 现在回程也会停一天打工，挣到路费再走。工钱还没结的时候谁都别放她走。
        */
+      /*
+       * **她在睡 —— 这一跳什么都不做。**（2026-11-15 Mr.Q：「睡眠时禁止 journey 的出发」）
+       *
+       * 位置选在这里是有讲究的：
+       * - 上面是跨天结算（房钱饭钱照扣 —— **睡觉不省房钱**，这是实话）；
+       * - 下面是打工、回家、赴约、待够，每一条都是「她醒着才会做的决定」。
+       *   人都睡了，这一天就不该有任何一个。
+       *
+       * 不放在 `moveOn()` 里：那只拦得住「出发」，拦不住「睡着还在打工」。
+       */
+      if (this.asleepUntil() > this.realNow().getTime()) return;
+
       if (this.st.work) {
         if (now.getTime() >= Date.parse(this.st.work.until)) await this.endWork(now, here);
         return;
