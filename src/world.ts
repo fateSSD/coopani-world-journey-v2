@@ -12,7 +12,7 @@
  * 那样 Core 一关就断，而且醒来时会堆一堆过期事件一起推，她一口气说十条昨天的事。
  * 现在只在**该说的那一个节点**推一条；中间错过的，正文里明说「中间几件事已经过去了」。
  */
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -2115,6 +2115,48 @@ export class JourneyWorld implements World {
    *
    * 文件名也得跟宿主那边一致（`log:` 前缀去掉就是媒体库文件名），否则同样对不上。
    */
+  /**
+   * 报告用的照片列表：逐张算好 `src`（2026-11-15）。
+   *
+   * ## 为什么需要这个
+   *
+   * 报告搬进日记目录之后，引用的图默认走 `../media/<文件名>` —— 那是她自己的
+   * 照片副本，宿主清媒体库碰不到。但**历史照片未必有副本**：副本是 2026-11-12
+   * 修了 `archiveToJournal` 那条守卫之后才稳定写的，更早的照片只有宿主媒体库那份。
+   * 而宿主没有「读附件字节」的口子（`WorldContext` 只有 secret / persist / restart），
+   * 补不回来。
+   *
+   * 三档处理，不让它静默裂：
+   *   - 日记 media 有 → 留空，走相对路径（能跟着同步盘上另一台机器）
+   *   - 日记没有、宿主有 → 给 `file:///` 绝对路径（本机照常看，换机器看不到）
+   *   - 两边都没有 → 留空，把标题收进 `missing`，调用方打 warn
+   */
+  private reportPhotos(prefixKey: string): { photos: Record<string, unknown>[]; missing: string[] } {
+    const journalMedia = join(this.diary.current.dir, 'media');
+    const hostMedia = join(this.opts.dataDir, 'media');
+    const missing: string[] = [];
+    const photos = this.photos.list()
+      .filter((p) => p.dateKey.startsWith(prefixKey))
+      .map((p) => {
+        const base = {
+          dateKey: p.dateKey,
+          cityName: p.cityName,
+          title: p.title,
+          handle: p.handle,
+          // 封面上的大字要「中查沟」，不是「九寨沟」；路上那张要靠 cityId 认出来。
+          spot: p.spot,
+          cityId: p.cityId,
+        };
+        const name = String(p.handle ?? '').replace(/^log:/, '');
+        if (!name || existsSync(join(journalMedia, name))) return base;
+        const fromHost = join(hostMedia, name);
+        if (existsSync(fromHost)) return { ...base, src: pathToFileURL(fromHost).href };
+        missing.push(p.title || name);
+        return base;
+      });
+    return { photos, missing };
+  }
+
   private archiveToJournal(sub: 'media' | 'reports', name: string, body: Uint8Array | string): void {
     /*
      * ## 额外副本先做，而且**不依赖 memoryDir**（2026-11-12，用户实报）
@@ -2151,7 +2193,17 @@ export class JourneyWorld implements World {
       }
     }
 
-    if (!String(this.cfg.memoryDir ?? '').trim()) return;
+    /*
+     * **不再按「有没有配日记目录」提前返回**（2026-11-15）。
+     *
+     * 原来这里是 `if (!cfg.memoryDir) return;` —— 而 `diary.current.dir` 在
+     * 没配同步盘时是 `<dataDir>/diary`（`diary.ts:156` 的 `this.local`），
+     * 是个完全可写的目录。也就是说：**没配同步盘的人，照片一份副本都没有**，
+     * 只有宿主媒体库那份 —— 而媒体库是可以被一键清空的。
+     *
+     * 现在报告也搬进日记目录了（见 `writeMonthlyReport`），报告靠的正是这份
+     * 副本；守卫留着，对那批用户就是「月报里的图全是破图」。
+     */
     try {
       const dir = join(this.diary.current.dir, sub);
       mkdirSync(dir, { recursive: true });
@@ -5413,17 +5465,13 @@ export class JourneyWorld implements World {
       ? raw
       : (cur ? cur.dateKey.slice(0, 7) : new Date().toISOString().slice(0, 7));
 
-    const photos = this.photos.list()
-      .filter((p) => p.dateKey.startsWith(want))
-      .map((p) => ({
-        dateKey: p.dateKey,
-        cityName: p.cityName,
-        title: p.title,
-        handle: p.handle,
-        // 封面上的大字要「中查沟」，不是「九寨沟」；路上那张要靠 cityId 认出来。
-        spot: p.spot,
-        cityId: p.cityId,
-      }));
+    const { photos, missing } = this.reportPhotos(want);
+    if (missing.length) {
+      this.log?.warn(
+        `报告有 ${missing.length} 张照片两份都找不到（日记 media 与宿主 media），页面上会是裂图：`
+        + `${missing.slice(0, 3).join('、')}${missing.length > 3 ? ' 等' : ''}`,
+      );
+    }
     const entries = this.diary.month(want)
       .map((e) => ({ dateKey: e.dateKey, cityName: e.cityName, body: e.body }));
 
@@ -5459,15 +5507,25 @@ export class JourneyWorld implements World {
         file: `posters/${want}/${p.fileName}`,
       })),
     });
-    const dir = join(this.opts.dataDir, 'reports');
+    const dir = join(this.diary.current.dir, 'reports');
     const file = join(dir, `${want}.html`);
     try {
       mkdirSync(dir, { recursive: true });
       const tmp = `${file}.tmp`;
       writeFileSync(tmp, html, 'utf8');
       renameSync(tmp, file);
-      // 云盘用户：报告也跟过去，另一台电脑才翻得到。
-      this.archiveToJournal('reports', `${want}.html`, html);
+      /*
+       * **报告直接落在日记目录，不再另存一份到 `<dataDir>/reports/`**（2026-11-15）。
+       *
+       * 同一个 HTML 里的 `../media/` 只在一个目录下是对的：
+       *   - 报告在 `<dataDir>/reports/` → `../media/` 指向**宿主媒体库**，
+       *     那里跟签到截图、CUA 截图混着，宿主「清空媒体」一点就全没；
+       *   - 报告在日记目录 → `../media/` 指向**她自己的照片副本**，宿主碰不到。
+       *
+       * 原来两份都写，等于同一份报告在两个地方显示两套图，其中一套随时会裂。
+       * 现在只有一份，图和报告永远在同一棵树下。日记目录本身就在同步盘里时，
+       * 另一台电脑照样翻得到。
+       */
     } catch (e) {
       return {
         text: `月报没写成：${e instanceof Error ? e.message : String(e)}。`
@@ -5499,12 +5557,13 @@ export class JourneyWorld implements World {
       ? raw
       : (cur ? cur.dateKey.slice(0, 4) : new Date().toISOString().slice(0, 4));
 
-    const photos = this.photos.list()
-      .filter((p) => p.dateKey.startsWith(want))
-      .map((p) => ({
-        dateKey: p.dateKey, cityName: p.cityName, title: p.title,
-        handle: p.handle, spot: p.spot, cityId: p.cityId,
-      }));
+    const { photos, missing } = this.reportPhotos(want);
+    if (missing.length) {
+      this.log?.warn(
+        `报告有 ${missing.length} 张照片两份都找不到（日记 media 与宿主 media），页面上会是裂图：`
+        + `${missing.slice(0, 3).join('、')}${missing.length > 3 ? ' 等' : ''}`,
+      );
+    }
     const entries = [];
     for (let m = 1; m <= 12; m++) {
       const key = `${want}-${String(m).padStart(2, '0')}`;
@@ -5529,15 +5588,14 @@ export class JourneyWorld implements World {
       tastes,
       nowLine: here ? `写于 ${cur?.dateKey ?? '今天'}，${here.name}` : '',
     });
-    const dir = join(this.opts.dataDir, 'reports');
+    const dir = join(this.diary.current.dir, 'reports');
     const file = join(dir, `${want}.html`);
     try {
       mkdirSync(dir, { recursive: true });
       const tmp = `${file}.tmp`;
       writeFileSync(tmp, html, 'utf8');
       renameSync(tmp, file);
-      // 云盘用户：年报也跟过去。
-      this.archiveToJournal('reports', `${want}.html`, html);
+      // 同上：年报与它引用的 `../media/` 必须在同一个目录树下（2026-11-15）。
     } catch (e) {
       return {
         text: `年报没写成：${e instanceof Error ? e.message : String(e)}。跟他说一声，别假装写好了。`,
@@ -5575,7 +5633,7 @@ export class JourneyWorld implements World {
       return { posters: [], note: `封面没出：${problem} —— 月报里只有真照片那部分。` };
     }
 
-    const dir = join(this.opts.dataDir, 'reports', 'posters', month);
+    const dir = join(this.diary.current.dir, 'reports', 'posters', month);
     const posters: (MonthlyPoster & { fileName: string })[] = [];
     let failed = 0;
 
