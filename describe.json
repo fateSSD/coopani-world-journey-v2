@@ -121,7 +121,7 @@
     },
     {
       "name": "journey_return_home",
-      "description": "Turn her trip around and start home, because the person asked her to come back. She walks back stop by stop - arriving somewhere, spending a night, moving on - not a teleport; it can take days. Only call it when the person actually asks her back. Deciding to go home is otherwise hers alone, and leaving early costs her the part of the trip she has not seen.",
+      "description": "Bring her home right now because the person asked her to come back: she takes the next available flight and is home the same day, not a stop-by-stop walk. Only call it when the person actually asks her back. Deciding to go home is otherwise hers alone, and leaving early costs her the part of the trip she has not seen.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,

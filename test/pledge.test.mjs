@@ -605,24 +605,59 @@ test('待满之后却走不了（钱见底）：别一直说「还剩 0 天」',
   } finally { restore(); }
 });
 
-test('约定挡不住出门上限：到周数照样回家，约定一起清掉', async () => {
+test('约定挡得住出门上限：约没守完就先不走（2026-11-15 改）', async () => {
+  /*
+   * Mr.Q 定的顺序：「在外面接了别人的约，我设的时间到了，也该以守约为准，
+   * 守完这趟再往回赶。」
+   *
+   * 这条原来是反过来的 —— 到周数直接回家、顺手把约清掉：
+   * 「约定挡不住出门上限：到周数照样回家，约定一起清掉」。
+   * 11-15 佛山那次实测把这个顺序的代价演了一遍：13:17 刚订房，13:18 被上限掐走。
+   */
   const now = new Date('2026-11-04T00:30:00Z');
   const { world, events, restore } = await boot({
     phase: 'staying',
     hereId: 'lasa',
     // 这一趟已经走了 21 天，上限 2 周
     tripStartedAt: '2026-10-14T00:00:00Z',
-    stayStartedAt: '2026-11-02T00:00:00Z',
+    stayStartedAt: '2026-11-03T00:00:00Z',
     stayDateKey: '2026-11-04',
-    pledge: pledgeTo('lasa', 3, { arrivedAt: '2026-11-02T00:00:00Z' }),
+    // 约才守到第 1 天（3 天的约）
+    pledge: pledgeTo('lasa', 3, { arrivedAt: '2026-11-03T00:00:00Z' }),
   }, now.toISOString());
   try {
     world.cfg.maxTripWeeks = 2;
     await world.tick();
-    const home = events.filter((e) => e.type === 'journey.home');
-    assert.equal(home.length, 1, '到了出门上限却没回家');
-    assert.match(String(home[0].text), /上限/);
-    assert.equal(world.st.pledge, null, '回家之后约定还挂着');
+    assert.equal(events.filter((e) => e.type === 'journey.home').length, 0, '约还没守完就回家了');
+    assert.ok(world.st.pledge, '约被上限清掉了 —— 她连「跟谁说好的」都说不出来');
+    assert.equal(world.st.returning, false, '不该在路上，约还在进行中');
+  } finally { restore(); }
+});
+
+test('约守完了、上限也到了：直接往回走，不再挑下一站', async () => {
+  const now = new Date('2026-11-04T00:30:00Z');
+  const { world, events, restore } = await boot({
+    phase: 'staying',
+    hereId: 'lasa',
+    tripStartedAt: '2026-10-14T00:00:00Z',
+    stayStartedAt: '2026-11-01T00:00:00Z',
+    stayDateKey: '2026-11-04',
+    // 3 天的约已经守满
+    pledge: pledgeTo('lasa', 3, { arrivedAt: '2026-11-01T00:00:00Z' }),
+  }, now.toISOString());
+  try {
+    world.cfg.maxTripWeeks = 2;
+    await world.tick();
+    assert.equal(world.st.returning, true, '约守完了却没往回走');
+    assert.equal(world.st.pledge, null, '回家路上还挂着约');
+    /*
+     * 2026-11-15 起回家不再一步到家（拉萨离兰州两千公里），
+     * 所以这一拍只是「决定回家、动身」。`journey.home` 要等她真的走到家才推。
+     */
+    assert.equal(
+      events.filter((e) => e.type === 'journey.home').length, 0,
+      '一步就到家了 —— 那是瞬移',
+    );
   } finally { restore(); }
 });
 

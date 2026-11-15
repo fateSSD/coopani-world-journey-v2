@@ -80,6 +80,19 @@ export interface JourneyConfigSection extends WorldSection {
    */
   moneyEnabled: boolean;
   /**
+   * 这趟谁出钱（2026-11-15 Mr.Q）。
+   *
+   * 默认 **false = 你请**：旅行不花她的钱。这正是「journey 没开钱」那种用法的说法 ——
+   * 不是「不记账」，是「这笔我出」。
+   *
+   * 打开 = 每笔路费房费从**她那本账**里扣。前提是装了「模拟鱼生」（`life-state.json` 在场）：
+   * 没有那本账就没有可扣的地方，这时退回本扩展自己的 `budget`。
+   *
+   * ⚠ 账本只有一个写者：journey **不写** `life-state.json`，只往 `life-spend/<id>.json`
+   * 递条子，life 下次 tick 自己扣（见 `references/20-跨扩展联动.md` 的三条铁律）。
+   */
+  payFromLife: boolean;
+  /**
    * 预算。0 = 不限。
    *
    * 只在记账打开时有效。钱见底时她会**自己降级**（住便宜的、少坐飞机），
@@ -280,6 +293,7 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   meetUrl: '',
   withUser: false,
   moneyEnabled: false,
+  payFromLife: false,
   budget: 0,
   bridgeSpend: true,
   bridgeDiary: true,
@@ -418,6 +432,12 @@ export function journeyConfigGroups(): ConfigGroup[] {
             type: 'boolean',
             title: '她有驾照',
             description: '关掉之后她永远不会自驾，也不会租车 —— 城际和城里都只坐公共交通。',
+          },
+          'worlds.journey.payFromLife': {
+            type: 'boolean',
+            title: '旅行花她的钱',
+            description: '关着（默认）= 这趟你请：路费房费不算进她的钱包，「这趟花了多少」照记。'
+              + '打开 = 每笔从她那本账里扣。要装了「模拟鱼生」才生效；没装就走这里自己的预算。',
           },
           'worlds.journey.budget': {
             type: 'integer',

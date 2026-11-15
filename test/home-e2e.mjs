@@ -635,8 +635,21 @@ test('同一趟打到第四次工还是没钱，就该回家了', async () => {
   // 已经打过四次，钱又见底了
   world.st = { ...world.st, spent: 1900, workStints: 4 };
   await world.tick();
-  clock = new Date(clock.getTime() + 60_000);
-  await world.tick();
+
+  /*
+   * 2026-11-15 起**回家不再一步到家**：天水到兰州三百公里，得真的走回去
+   * （`HOME_RADIUS_KM` 500 → 60，只收同城范围）。所以这里推到「到家」为止。
+   *
+   * 原来只 tick 两次就断言「计数清零」—— 那时 `goHome` 会用直达票当场收尾。
+   * 现在这条路要走一到两天，测的仍然是同一件事：**打满四次不许再打工，得回家。**
+   */
+  let guard = 0;
+  while (world.st.phase !== 'home' && guard < 240) {
+    clock = new Date(clock.getTime() + 3_600_000);
+    await world.tick();
+    guard += 1;
+  }
+  assert.equal(world.st.phase, 'home', `十天还没走到家（在这儿：${world.st.hereId}）`);
 
   assert.equal(world.st.work, null, '第五次还在找活，说明上限没生效');
   assert.equal(world.st.workStints, 0, '回家之后这一趟的计数该清零');
@@ -644,16 +657,15 @@ test('同一趟打到第四次工还是没钱，就该回家了', async () => {
   assert.equal(world.st.earned, 0, '挣的也清');
 });
 
-test('叫她回来：钱不够才走回去，钱够就买票直飞', async () => {
+test('叫她回来：当场飞回，钱不够也照飞（2026-11-15 改）', async () => {
   /*
-   * 2026-11-03 两轮改的：
+   * 原来这条测的是「钱不够就一站一站走回去」。
    *
-   * 第一轮（上午）补了召回，当时的行为是「一站一站挪回去」。
-   * 第二轮 Mr.Q 说「全部都走回去也太费事了，我淡季去三亚机票也就 800/900」——
-   * 对。赶着回家的人不会沿途每座城住一晚，买得起直达票就该买。
+   * Mr.Q 11-15 改了：「叫回也应该是当场坐飞机回来（钱不够允许她借钱，回来报销）。」
+   * 判据只剩一条 —— **叫了就是当天到家**，不看余钱。
    *
-   * 现在的判据：**票钱不超过余钱八成，就直飞**；超了才一站站走。
-   * 这条测「钱不够」那一侧 —— 余钱两百，火车票三百，走回去。
+   * 「借钱」那一半等他定下 life 与 journey 的钱怎么合账再落（见 CHANGELOG 1.8.7），
+   * 这一版先保证人飞得回来，不会因为差两百块滞留在千里之外。
    */
   const dir = seed({
     phase: 'staying', hereId: 'chengdu', homeId: 'lanzhou',
@@ -667,11 +679,11 @@ test('叫她回来：钱不够才走回去，钱够就买票直飞', async () =>
   assert.ok(tool, '没有 journey_return_home 这个工具 —— 聊天里说「回来吧」她听不见');
   const r = await tool.handler({});
 
-  assert.equal(world.st.returning, true, '没进入返程状态');
-  assert.match(r.text, /往回走/, `回执不对：${r.text}`);
-  // 余钱两百，成都回兰州的票要三百 —— 买不起直达，只能一站站挪
-  assert.notEqual(world.st.phase, 'home', '钱不够还直接飞回去了');
-  assert.notEqual(world.st.hereId, 'lanzhou');
+  // 余钱两百，成都回兰州的票要三百 —— 按老规则她只能一站站挪，现在是直接飞
+  assert.equal(world.st.phase, 'home', '叫回来了却没到家');
+  assert.equal(world.st.hereId, 'lanzhou', '人还不在家');
+  assert.equal(world.st.returning, false, '已经到家了还挂着回程状态');
+  assert.match(r.text, /回兰州/, `回执不对：${r.text}`);
 });
 
 test('叫她回来：已经在家、已经在路上，都不许重复触发', async () => {

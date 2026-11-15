@@ -13,7 +13,7 @@
  * 现在只在**该说的那一个节点**推一条；中间错过的，正文里明说「中间几件事已经过去了」。
  */
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import type {
@@ -257,12 +257,17 @@ export function decisionCrossedWhileAway(
 }
 
 /**
- * 进了这个圈就一趟车到家，不再中途停。
+ * 进了这个圈才算「到家了」，直接收尾这一趟。
  *
- * 五百公里大约是「一天能到」的距离。太大会让最后一段仍然像瞬移，
- * 太小会让她在离家几百公里的地方还要再停一站，反而啰嗦。
+ * **2026-11-15 从 500 收到 60。** 五百公里大约是一天车程，但用户看到的仍然是瞬移：
+ * 上午还在邻省的城里，晚上人已经在家，中间那段路一个字都没有。
+ * 他定的是「不要瞬移」。
+ *
+ * 60 不是随手挑的：它和 `pickDestination` 的 `x.km >= 60`（「60 公里以内不算去旅行」）
+ * 是同一条线。圈外的城会作为回程下一站被选中，一步步逼近；只有进了同城范围才收尾。
+ * 这样最后一跳是「回自己那座城」，不是「跨省传送」。
  */
-const HOME_RADIUS_KM = 500;
+const HOME_RADIUS_KM = 60;
 
 /**
  * 事实清单末尾那一句（2026-11-08）。
@@ -512,10 +517,10 @@ const TOOL_DECLS = [
   {
     name: 'journey_return_home',
     description:
-      'Turn her trip around and start home, because the person asked her to come back. She walks back stop by stop - arriving somewhere, spending a night, moving on - not a teleport; it can take days. Only call it when the person actually asks her back. Deciding to go home is otherwise hers alone, and leaving early costs her the part of the trip she has not seen.',
+      'Bring her home right now because the person asked her to come back: she takes the next available flight and is home the same day, not a stop-by-stop walk. Only call it when the person actually asks her back. Deciding to go home is otherwise hers alone, and leaving early costs her the part of the trip she has not seen.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     tags: ['write'] as const,
-    summary: { zh: '他说回来吧，就结束这一趟往回走。', en: 'Starts her trip back home, because the person asked.' },
+    summary: { zh: '他说回来吧，就当场买票飞回来。', en: 'Brings her home today, because the person asked.' },
   },
   /*
    * 2026-11-04 加。起因是一位用户对她说「拍张照」，她回答
@@ -3254,7 +3259,7 @@ export class JourneyWorld implements World {
      */
     // 座位档要一起算：商务座那张票是三倍价，只记最低档等于让她白花钱。
     const fare = this.fareOf(leg.modeId, leg.km, this.legCrossBorder(leg), leg.seatMult ?? 1);
-    this.addSpent(fare);
+    this.addSpent(fare, '路费');
     // 到了 = 那个念头兑现了，从「想去」里划掉。
     if (this.st.wishes.includes(to.id)) {
       this.st = { ...this.st, wishes: this.st.wishes.filter((x) => x !== to.id) };
@@ -3383,7 +3388,7 @@ export class JourneyWorld implements World {
         + MEALS_PER_DAY
         + (this.plan?.commute.price ?? 0)
         + (this.plan?.extras.price ?? 0);
-      this.addSpent(this.st.work ? Math.round(dailyCost * WORK_COST_RATE) : dailyCost);
+      this.addSpent(this.st.work ? Math.round(dailyCost * WORK_COST_RATE) : dailyCost, '住宿和三餐');
       // 还在打工就先结今天的工钱，再谈省不省 —— 顺序反了会算成「穷到换房」.
       if (this.st.work) this.earn(this.st.work.pay);
       // 钱紧的时候**换一家**。原来 `rebuildPlan` 里是 `this.plan?.lodging ?? roll()`，
@@ -3485,6 +3490,23 @@ export class JourneyWorld implements World {
       const overWeeks = startedDaysAgo / 7 >= this.cfg.maxTripWeeks;
       const stayDays = this.stayDaysSoFar(now);
 
+      /*
+       * 打工期间：今天不走。到点了才收工。
+       *
+       * **顺序挪到「回家路上」之前了**（2026-11-15）。
+       *
+       * 原来写在后面，理由是「回家的路要一路走到底，不会在半路停下来打工」。
+       * 可 Mr.Q 那天定的是「钱不够你坐大巴也行，打工也行，瞬移也太出戏了」——
+       * 不让打工，回程买不起票就只有两条假路：瞬移，或者钉在原地每天试一次。
+       * 后者更糟：钱一分不涨，她会在同一座城里一直「准备回家」。
+       *
+       * 现在回程也会停一天打工，挣到路费再走。工钱还没结的时候谁都别放她走。
+       */
+      if (this.st.work) {
+        if (now.getTime() >= Date.parse(this.st.work.until)) await this.endWork(now, here);
+        return;
+      }
+
       // 回家路上：走得更急。每站住一晚就走，不看「待够没有」——
       // 赶路的人不会在途经的城市住三天。这个状态**不受出门月数限制**，
       // 否则到期那一刻会直接弹回家，前面走的几站全白算。
@@ -3494,18 +3516,6 @@ export class JourneyWorld implements World {
          * 走到家这一刻手上已经没有这个信息，不留这一笔就一律算成「待够了」。
          */
         if (stayDays >= 1) await this.goHome(now, here, this.st.returnReason ?? 'called');
-        return;
-      }
-
-      /*
-       * 打工期间：今天不走。到点了才收工。
-       *
-       * 放在「回家路上」之后、「待够没有」之前：
-       * 回家的路要一路走到底，不会在半路停下来打工；而只要还在打，
-       * 待够没待够都不该放她走 —— 工钱还没结呢。
-       */
-      if (this.st.work) {
-        if (now.getTime() >= Date.parse(this.st.work.until)) await this.endWork(now, here);
         return;
       }
 
@@ -3531,17 +3541,6 @@ export class JourneyWorld implements World {
 
       const stayedLongEnough = stayDays >= STAY_DAYS_MIN
         && (stayDays >= STAY_DAYS_MAX || Math.random() > STAY_ONE_MORE);
-
-      /*
-       * 出门到上限了 —— 这是硬上限，压过一切约定。
-       *
-       * 顺序放在赴约之前：一个说好了的行程不该让她在外面待到天荒地老；
-       * 而且这条一触发就是回家，和「回家路上」是同一个性质。
-       */
-      if (overWeeks) {
-        await this.goHome(now, here, 'limit');
-        return;
-      }
 
       /*
        * 手上有一份答应了要去的约定。
@@ -3600,10 +3599,37 @@ export class JourneyWorld implements World {
             + `\n（这一段到此为止 —— 接下来她自己往下走，对方走对方的。）`,
             'flush',
           );
+          /*
+           * 约守完了，但出门已经到上限 —— **直接往回走，不再挑下一站。**
+           *
+           * 2026-11-15 Mr.Q 定的顺序：「守完这趟约再不去下个地方，直接往回赶。」
+           * 所以这里不走 `moveOn(afterPledge)`（那是「接着玩下一站」），
+           * 而是交给 `goHome('limit')` 收尾。
+           */
+          if (overWeeks) {
+            await this.goHome(now, here, 'limit');
+            return;
+          }
           await this.moveOn(now, here, { afterPledge: pledge });
           return;
         }
         // 天数没满：今天不走，等它满。
+        return;
+      }
+
+      /*
+       * 出门到上限了 —— **但排在赴约之后**。
+       *
+       * 2026-11-15 Mr.Q 定的顺序：「在外面接了别人的约，我设的时间到了，
+       * 也该以守约为准，守完这趟再往回赶。」
+       *
+       * 原来这条压在赴约之前，于是她 13:17 在佛山住下、13:18 就被上限掐回家，
+       * 顺手把还在进行中的约定作废 —— 房钱白花，约也没守成。
+       *
+       * 没有约的时候它仍然是硬上限：一触发就回家，和「回家路上」同一个性质。
+       */
+      if (overWeeks) {
+        await this.goHome(now, here, 'limit');
         return;
       }
 
@@ -4716,8 +4742,11 @@ export class JourneyWorld implements World {
   /**
    * 让他把她叫回来。**面板按钮和聊天里的「回来吧」共用这一段。**
    *
-   * 走的是正常返程：还远就一站一站往回走、路上照写日记照花钱，近了才一趟车到家。
-   * 不是传送 —— 那样中间那几天就白过了，日记也没有。
+   * **2026-11-15 改：叫回来是当场买票飞回，不再一站一站走。**
+   *
+   * Mr.Q：「叫回也应该是当场坐飞机回来（钱不够允许她借钱，回来报销）。」
+   * 跟另外三种收场不是一回事 —— 上限、钱、待够都是她自己的节奏，走回去是给她留一段路；
+   * 被叫回来是「有人在等」，路上不该再耗几天。
    *
    * 打工中途叫回来：工先撂下。工钱是按天结过的，不会少，只是没干满。
    */
@@ -4736,8 +4765,7 @@ export class JourneyWorld implements World {
      * 留着它只会在面板上挂一句永远做不到的话，而 `moveOn` 在回程时本来也不看它。
      */
     if (this.st.pledge) {
-      this.st = { ...this.st, pledge: null };
-      this.log?.info('被叫回家，手上那份约定作废。');
+      this.dropPledge(now, `你叫我回来，跟${this.whoOfPledge(this.st.pledge)}说好的那趟只能算了。`);
     }
     /*
      * 记下「是他叫回来的」。回家要走几天，走到家那天靠这一笔才知道原因 ——
@@ -4771,11 +4799,26 @@ export class JourneyWorld implements World {
      */
     if (this.st.pledge) {
       const name = this.cityName(this.st.pledge.cityId);
-      this.st = { ...this.st, pledge: null };
-      this.log?.info(`开始回家，手上那份去${name}的约定作废。`);
+      // 走 `dropPledge` 而不是直接清 —— 它负责给对岸留那句话（2026-11-15）。
+      this.dropPledge(now, `开始往回走了，去${name}那趟去不成了。`);
     }
 
-    // 够近了就一趟车到家。五百公里差不多是一段能当天到的路。
+    /*
+     * **他叫她回来 —— 当场买最近一班飞回，不走回程。**（2026-11-15）
+     *
+     * Mr.Q：「叫回也应该是当场坐飞机回来（钱不够允许她借钱，回来报销）。」
+     *
+     * 「钱不够也飞」现在的落法是**不传 `afford`**：票照买。
+     * 真正的欠账要等「life 与 journey 共用一本账」的口径定下来才写得进去，
+     * 这一版只保证这一趟飞得回来 —— 别让她因为差两百块滞留在一千公里外。
+     */
+    if (reason === 'called') {
+      if (this.st.car) this.st = { ...this.st, car: null };
+      await this.settleHome(now, from, reason, km, { flyRegardless: true });
+      return;
+    }
+
+    // 进了同城范围（六十公里内）才算到家，收尾这一趟。
     if (km < HOME_RADIUS_KM) {
       // 到家就还车/停车：这趟结束了，车不该跟着进屋。
       if (this.st.car) this.st = { ...this.st, car: null };
@@ -4784,31 +4827,20 @@ export class JourneyWorld implements World {
     }
 
     /*
-     * **还远的时候，先问一句「买得起直达票吗」。**
+     * **回家一律走路上，不再有「一步到家」。**（2026-11-15 Mr.Q 定）
      *
-     * 2026-11-03 Mr.Q：「全部都走回去也太费事了，我淡季去三亚机票也就 800/900」。
-     * 他说得对 —— 赶着回家的人不会沿途每座城住一晚，有直达的票就买。
-     * 一站站挪是「穷得只能省路费」时的走法，不该是默认。
+     * 原来这里有一条捷径：买得起直达票（票钱不超过余钱八成）就当场 `settleHome`，
+     * `hereId` 一步改成家。它的理由是 2026-11-03 那句「全部都走回去也太费事了」——
+     * 站站挪确实啰嗦。
      *
-     * 判据是票钱不超过余钱的八成；钱不够就还是走回去 —— 那不是啰嗦，是真买不起。
+     * 但那条路在用户眼里是**瞬移**：13:17 还在佛山订房，13:18 就已经在兰州家里，
+     * 中间没有一段路、没有一晚、没有一句话。原话：
+     * 「直接坐飞机往回赶都行，钱不够你坐大巴也行，打工也行，瞬移也太出戏了。」
+     *
+     * 所以现在只留一条：`returning = true`，一步一步朝家走。
+     * 快慢交给 `pickMode` —— 钱够就坐飞机，钱紧就降级，买不起就地打工（见 `moveOn`）。
+     * **坐飞机也是「一段路」，不是传送。**
      */
-    /*
-     * **这里不自己判「买得起吗」。** 那道闸（`affordMode`）是给「中途选下一站」用的，
-     * 上限是余钱的一半；而回家是一次性的事，判据按「票钱不超过余钱的八成」——
-     * 两条判据打架的话，会出现「够钱回家却被拦下」。钱够不够统一由 `canAffordTrip` 说了算。
-     */
-    const direct = pickMode(from, home, km, Math.random, this.isTight(), this.noFly(), undefined, !this.cfg.hasLicense);
-    if (direct && this.canAffordTrip(km, from.country !== home.country)) {
-      await this.settleHome(now, from, reason, km);
-      return;
-    }
-
-    // 还远：**往回走，不瞬移**。
-    //
-    // 原来这里是直接把 hereId 改成家 —— 南宁回兰州两千里，一步就到，
-    // 中间的城市一个都不算去过、没有路上事件、没有日记、没有花费。
-    // 那一趟里如果出现「银川」，它是随机挑的另一个目的地，不是回程的一站。
-    // 现在改成一路朝家走，途经的城市就真的在「往家方向」上了。
     this.st = { ...this.st, returning: true };
     this.persist();
     this.log?.info(`决定回家了，还差 ${Math.round(km)} 公里，一路往回走。`);
@@ -4816,10 +4848,22 @@ export class JourneyWorld implements World {
   }
 
   /** 真正到家：结掉这一趟，进休息期。 */
-  private async settleHome(now: Date, from: City, reason: HomeReason, km: number): Promise<void> {
+  private async settleHome(
+    now: Date,
+    from: City,
+    reason: HomeReason,
+    km: number,
+    opts: { flyRegardless?: boolean } = {},
+  ): Promise<void> {
     const home = this.resolveHome().city;
     // 回家这一趟是一次性支出，钱的上限放宽到八成（`goHome` 已经先判过一遍）。
-    const mode = km < 30 ? null : pickMode(from, home, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.8, from.country !== home.country, { from, to: home }));
+    // `flyRegardless` = 被叫回来：票钱不够也照买（这一版还没落欠账，见 `goHome`）。
+    const mode = km < 30 ? null : pickMode(
+      from, home, km, Math.random, this.isTight(), this.noFly(),
+      opts.flyRegardless
+        ? undefined
+        : this.affordMode(km, 0.8, from.country !== home.country, { from, to: home }),
+    );
     const restUntil = new Date(now.getTime() + Math.max(0, this.cfg.restDays) * 86_400_000);
     const visited = this.st.everVisited.length;
     /*
@@ -5084,6 +5128,20 @@ export class JourneyWorld implements World {
       // 同上面那条：买不起票不等于没有路。只有真的没路才传送回家。
       if (target && !canTravel(from, target)) {
         await this.settleHome(now, from, false, distanceKm(from, target));
+        return;
+      }
+      /*
+       * 回程买不起票 —— **就地打一天工，明天再走。**（2026-11-15）
+       *
+       * Mr.Q 定：「钱不够你坐大巴也行，打工也行，瞬移也太出戏了。」
+       *
+       * 不打工会死锁：`returning` 每天早上重试一次、每天再失败一次，
+       * 钱一分不涨，人就钉在这座城里一直「准备回家」——
+       * 2026-11-05 那次曼谷死锁是同一个形状，只是当时坏在选城上。
+       * 打工是这条路唯一能自己走出去的口子。
+       */
+      if (this.st.returning && this.st.workStints < MAX_WORK_STINTS) {
+        await this.startWork(now, from);
       }
       return;
     }
@@ -5264,9 +5322,100 @@ export class JourneyWorld implements World {
     );
   }
 
-  private addSpent(n: number): void {
-    if (!this.cfg.moneyEnabled || !(n > 0)) return;
-    this.st = { ...this.st, spent: this.st.spent + Math.round(n) };
+  /**
+   * 记一笔花销。
+   *
+   * ## 两本账，分开判（2026-11-15）
+   *
+   * 一笔钱可能同时要记两处，而且**两处的开关是分开的**：
+   *
+   * | 账 | 开关 | 记什么 |
+   * |---|---|---|
+   * | 这一趟花了多少 | `moneyEnabled` | 面板、日记、「这趟花了三万」那句话 |
+   * | 从她的钱包里扣 | `payFromLife` | 递一张条子给「模拟鱼生」，由它自己扣 |
+   *
+   * Mr.Q 的话：「journey 没开钱（无上限）鱼生这边的钱该怎么算」——
+   * 答案不是二选一，是分清「这趟花了多少」和「这钱谁出」。
+   *
+   * ## 为什么不直接扣
+   *
+   * `life-state.json` 只有一个写者（life 自己）。两个进程同时写同一个文件，
+   * 迟早写坏一次，而那次一定是她的账 —— 所以这里只递条子（`life-spend/<id>.json`），
+   * 由 life 下次 tick 消费、去重、落盘。见 `references/20-跨扩展联动.md`。
+   */
+  private addSpent(n: number, note = ''): void {
+    if (!(n > 0)) return;
+    const amount = Math.round(n);
+    if (this.cfg.moneyEnabled) this.st = { ...this.st, spent: this.st.spent + amount };
+    if (this.cfg.payFromLife) this.queueLifeSpend(amount, note);
+  }
+
+  /**
+   * 给她那边递一张「这一笔该扣我的」条子。
+   *
+   * 三条边界：
+   * - **没装 life 就不写**：`life-state.json` 不在，说明没有那本账（只有 journey 的用户）；
+   * - **文件名就是 id**：life 处理不过来时要能用文件名回一条 `rejected`；
+   * - **写不进去只记日志**：不能因为递不出条子把行程搞挂 —— 那会变成「她因为磁盘满而不走了」。
+   */
+  private queueLifeSpend(amount: number, note: string): void {
+    try {
+      if (!existsSync(join(this.opts.dataDir, 'life-state.json'))) return;
+      /*
+       * 递条子之前顺手清一次旧的 —— **不另起一个轮询**。
+       * 她那边处理完会把 id 写进 `life-spend-settled.json`；这份回执是我们读的、
+       * 条子是我们自己的文件，所以也由我们删（谁的文件谁删）。
+       */
+      this.cleanupSpendTickets();
+      const dir = join(this.opts.dataDir, 'life-spend');
+      const stamp = this.realNow().getTime().toString(36);
+      const id = `sp-${stamp}-${Math.random().toString(36).slice(2, 6)}`;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, `${id}.json`),
+        JSON.stringify({
+          id,
+          at: this.realNow().toISOString(),
+          amount,
+          note: String(note || '').slice(0, 60),
+        }, null, 2),
+      );
+    } catch (e) {
+      this.log?.warn(`这一笔没能递给她那边：${(e as Error)?.message ?? e}`);
+    }
+  }
+
+  /**
+   * 清掉她那边已经处理过的条子。
+   *
+   * 回执在 `life-spend-settled.json`（她写的，我们只读）。**没有回执也别留无限久** ——
+   * 超过 30 天的直接丢：那时候钱早就扣过了，留着一张旧条子只会在下一次
+   * 重装 life 之后被再扣一遍。
+   */
+  private cleanupSpendTickets(): void {
+    const dir = join(this.opts.dataDir, 'life-spend');
+    let names: string[] = [];
+    try { names = readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return; }
+    if (!names.length) return;
+
+    const done = new Set<string>();
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-spend-settled.json'), 'utf8'));
+      for (const x of (raw?.settled ?? []) as { id?: string }[]) {
+        if (x?.id) done.add(String(x.id));
+      }
+    } catch { /* 还没回执 —— 那就只按天数清 */ }
+
+    const nowMs = this.realNow().getTime();
+    for (const name of names) {
+      const full = join(dir, name);
+      const id = name.replace(/\.json$/, '');
+      let drop = done.has(id);
+      if (!drop) {
+        try { drop = nowMs - statSync(full).mtimeMs > 30 * 86_400_000; } catch { drop = false; }
+      }
+      if (drop) { try { unlinkSync(full); } catch { /* 删不掉就留着，下次再说 */ } }
+    }
   }
 
   /** 现在手头紧不紧。记账关着或没设预算，永远不紧。 */
@@ -8391,6 +8540,49 @@ export class JourneyWorld implements World {
       ask ? `${why}\n${ask}` : why,
       'flush',
     );
+    /*
+     * **打断一份约，得跟对方说一声。**（2026-11-15 Mr.Q）
+     *
+     * 原话：「钱是比约定重要啊，这种情况最好给约定对方反馈一下。」
+     *
+     * 原来只在自己这边推一条事件，对方那边什么都不知道 —— 人家可能还在那座城里等。
+     * 走的是 `/card` 留言板（服务端本来就有，不用改接口），40 字上限。
+     */
+    void this.tellTheOtherSide(p, why);
+  }
+
+  /**
+   * 约作废时，给对岸留一句话。
+   *
+   * ## 为什么只写「哪一趟、去不成」，不写细节
+   *
+   * 服务端的卡是 40 个字，而 `why` 是我们这边的整句（「成都从这儿去不了，
+   * 跟小满说好的那趟只能算了。」）。整句塞进去会从半截断掉，比不写还难看。
+   * 所以只挑一个短原因：钱、被叫回、还是别的。
+   *
+   * 对方要的是「这事儿黄了」，不是我们这边的账目。
+   */
+  private async tellTheOtherSide(p: Pledge, why: string): Promise<void> {
+    const meet = this.meetOptions();
+    if (!meet) return;
+    const id = String(p.inviteId ?? '');
+    if (!/^[a-f0-9]{16}$/.test(id)) return;
+    const city = this.cityName(p.cityId);
+    const short = why.includes('钱')
+      ? '钱不够了'
+      : why.includes('叫')
+        ? '得先回家'
+        : why.includes('上限')
+          ? '出门时间到了'
+          : '临时出了岔子';
+    try {
+      await putCard(meet, id, `${city}那趟我去不成了：${short}。`.slice(0, 40), '');
+    } catch {
+      /*
+       * 留不成就算了。**不能因为通知不到对方，把「回家」这件事也卡住** ——
+       * 那会变成「因为她没网，所以必须继续在外面走」。
+       */
+    }
   }
 
   /**
