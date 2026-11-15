@@ -163,8 +163,21 @@ test('在路上 / 在家休息不许出发；手上有约定时，他开口了�
     }, NOW);
     try {
       const out = await goTo(world)({ city: '上海' });
-      assert.equal(out.isError, true, '在路上还能再出发');
-      assert.match(String(out.text), /路上/, `没说清在路上：${out.text}`);
+      /*
+       * 契约 2026-11-15 变了：在路上**不新建一段**，但也不再一句硬拒绝把他
+       * 的话丢掉 —— 来信原话是「刚跟她说要不要去西安，她就被拉到去西双版纳
+       * 的车上」，硬拒绝让她对他的目的地完全失明。现在记进 `wishes`，
+       * 到站排下一站时权重更高。
+       *
+       * 所以这里守的是两件事：**没出发**，以及**话被记下了**。
+       */
+      assert.equal(world.st.phase, 'traveling', '在路上还能再出发');
+      assert.equal(world.st.leg?.toId, 'chengdu', '原来那一段被改掉了');
+      assert.ok(
+        world.st.wishes.includes('shanghai'),
+        `「上海」没记进想去：${JSON.stringify(world.st.wishes)}`,
+      );
+      assert.match(String(out.text), /下一站|记下/, `没说清记下了：${out.text}`);
     } finally { restore(); }
   }
 

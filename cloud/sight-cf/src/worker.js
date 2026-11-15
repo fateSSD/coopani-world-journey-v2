@@ -400,6 +400,118 @@ function safeDoing(raw, extra) {
   return looksBad(s, extra) ? '' : s;
 }
 
+/* ------------------------------------------------------------------
+ * 本城设定（2026-11-15）
+ *
+ * ## 为什么这件事在服务器上，而别的都在客户端
+ *
+ * 前面所有东西都是「每只鱼自己的」—— 行踪、名片、足迹、路标。
+ * 唯独「这座城叫什么、有哪几条街、守哪几条城规」不属于任何一只鱼，
+ * 它属于**这台服务器**。放进某只鱼的客户端，它就成了她的私人设定，
+ * 而它明明是大家共用的那个地方。
+ *
+ * ## 默认值只写这一份
+ *
+ * 服务端没被设过时返回它，管理页首次打开也从它开始填。
+ * 客户端不许各自写一份 —— 改默认值要改三处就是 bug 的温床。
+ * ------------------------------------------------------------------ */
+
+const TOWN_DEFAULTS = {
+  id: 'luhuatang',
+  name: '芦花塘',
+  /*
+   * 来历。**要说成她讲得出来的话**（方案 §4.17）：
+   * 不是宣传文案，是一段有因果的旧事 —— 为什么是「埠」而不是「城」。
+   */
+  /*
+   * 2026-11-15 改名：原「浅水埠」→「芦花塘」。
+   * 用户说不好听。不只是音的问题 —— 「浅」是自贬，「埠」是货的落脚点不是活物待的地方。
+   * ⚠ 这份要和客户端 `coopani-world-life/src/bridge.ts` 的 `BUILTIN_TOWN` 一致，
+   * 两边都改才不漂。
+   */
+  origin: '这一片是活水，不深，长着芦苇。每年秋天芦花一开，整片塘白得像落了雪。'
+    + '塘边最早只有两户人家，一户在浅滩上种藕，一户磨豆腐。后来人多了，就有了街。'
+    + '住在这儿的人出门回来，望见那片白，就知道到家了。',
+  /* 三条街各对应一个地方：市集 / 厨房 / 高处。她住其中一条。 */
+  streets: ['早市街', '灶前巷', '望水坡'],
+  /*
+   * 三条城规 —— **它们各自就是一条机制的另一种说法**，不是装饰：
+   *   货不过夜              → stalls 3 天过期、qty 会坏
+   *   价自己定              → 回执不带金额，定价权在卖方
+   *   赊账记在心里不记账上  → 货跨机、钱本地、不设中心账本
+   * 改文案可以，别改意思 —— 改了意思，她按城规过日子就不再等于按规则过日子。
+   */
+  /*
+   * 2026-11-15 补第一条。Mr.Q：「这是肥鱼们住的地方，你在这杀鱼卖鱼，这合理嘛」。
+   *
+   * 那一问点破了整个方案最难看的一处：住的是鱼，卖的是鱼，腌的是鱼。
+   * 前三条各自对一条机制；**第一条不对应机制，它对应这个世界的底线。**
+   */
+  rules: ['塘里的不吃塘里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
+};
+
+/**
+ * 城名 / 街名 / 城规都要给别人看，和宠物名同一套判断，只是长度不同。
+ * 被判定有问题就留空，由调用方退默认 —— **不把脏字替换成「某城」那种假名**，
+ * 城名和宠物名不一样：宠物名换掉她还在，城名换掉整座城都叫错了。
+ */
+function safeText(raw, max, extra) {
+  const s = clean(raw, max);
+  if (!s) return '';
+  return looksBad(s, extra) ? '' : s;
+}
+
+/** 把库里那一行（或者没有）整理成一份能用的设定：缺的补默认，脏的整条丢掉。 */
+function normTown(row, env) {
+  const extra = bannedExtra(env);
+  const d = TOWN_DEFAULTS;
+  const arr = (v, max, n) => {
+    let list = [];
+    try {
+      const parsed = JSON.parse(String(v || '[]'));
+      if (Array.isArray(parsed)) list = parsed;
+    } catch { /* 存坏了就当没有 —— 退默认比抛出去好，这是展示用的数据 */ }
+    return list.map((x) => safeText(x, max, extra)).filter(Boolean).slice(0, n);
+  };
+  const id = okCity(row?.id) ? clean(row.id, 40) : d.id;
+  const name = safeText(row?.name, 24, extra) || d.name;
+  const streets = arr(row?.streets, 12, 5);
+  const rules = arr(row?.rules, 60, 5);
+  return {
+    id,
+    name,
+    origin: safeText(row?.origin, 400, extra) || d.origin,
+    streets: streets.length ? streets : d.streets.slice(),
+    rules: rules.length ? rules : d.rules.slice(),
+    at: row?.at || '',
+    /*
+     * `custom` = 表里真有这一行。
+     * 没有的时候页面要明说「现在看到的是默认值，还没存过」——
+     * 不然服务器主会以为自己早就设过了。
+     */
+    custom: !!row,
+  };
+}
+
+/**
+ * 读本城设定。
+ *
+ * **三种失败都退默认，不报错**：表没建、库没连、行没了。
+ * 理由是它的用途是「显示这座城叫什么」—— 显示不出城名比显示一个默认城名更糟，
+ * 而 `custom: false` 已经诚实说明了「这不是你设的那个」。
+ */
+async function readTown(db, env) {
+  if (!db) return normTown(null, env);
+  try {
+    const row = await db.prepare(
+      'SELECT id, name, origin, streets, rules, at FROM town_meta LIMIT 1',
+    ).first();
+    return normTown(row, env);
+  } catch {
+    return normTown(null, env);
+  }
+}
+
 /** 一个宠物一天最多发几条邀约。正常人一周也发不了一条，3 是给调试留的。 */
 const INVITE_PER_DAY = 3;
 /** 一天最多接几条。接多了等于把行程排满，那不是「一起玩」，是赶场。 */
@@ -1114,6 +1226,37 @@ async function footprintRoute(request, env, url, method) {
 const SIGNPOST_MAX = 20;
 const SIGNPOST_TTL_DAYS = 7;
 
+/**
+ * `GET /town/info` —— **公开，不要 key**（2026-11-15）。
+ *
+ * 这是方案 §4.18 里那个「一台城服务器想被别人找到」的接口：
+ * 城 id、城名、设定、接口版本。别的城拿它拼目录、做健康检查；
+ * 自己的客户端拿它显示「本城：浅水埠」。
+ *
+ * **只回这座城的设定，不回任何一只鱼的东西。** 城名不是秘密 ——
+ * 它本来就会出现在市集货架和她的对话里。而「谁住在这儿」是另一件事，
+ * 那走 `town` 表，且要经过 §4.17 那套口径。
+ */
+async function townInfoRoute(env) {
+  const town = await readTown(env.DB, env);
+  return reply(200, {
+    ok: true,
+    town: town.id,
+    name: town.name,
+    origin: town.origin,
+    streets: town.streets,
+    rules: town.rules,
+    /*
+     * 接口版本。将来加了字段，别的服务器按这个数字判断能不能用 ——
+     * 没有版本号的跨机接口，第一次改结构就会把所有老客户端弄坏。
+     */
+    api: 1,
+    /* 设定的最后修改时刻。目录那边用它判断「这条还新吗」。 */
+    at: town.at,
+    custom: town.custom,
+  });
+}
+
 async function signpostRoute(request, env, url, method) {
   const db = env?.DB;
   if (!db) return reply(500, { ok: false, error: 'server error' });
@@ -1573,6 +1716,15 @@ async function adminRoute(request, env, url, method) {
    */
   if (url.pathname === '/admin/flag') {
     if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+  } else if (url.pathname === '/admin/town') {
+    /*
+     * 读写同一个口：GET 读、POST 写。
+     * **不能漏掉这一支** —— 漏了它，POST /admin/town 会掉进下面那句
+     * `method !== 'GET'` 直接 405，而报错长得像「接口没实现」。
+     */
+    if (method !== 'GET' && method !== 'POST') {
+      return reply(405, { ok: false, error: 'method not allowed' });
+    }
   } else if (method !== 'GET') {
     return reply(405, { ok: false, error: 'method not allowed' });
   }
@@ -1801,6 +1953,84 @@ async function adminRoute(request, env, url, method) {
       return reply(200, { ok: true, flags: results ?? [] });
     }
 
+    /*
+     * 本城设定（2026-11-15）。
+     *
+     * 这一支是整套「服务器主」概念的唯一落点：**有 ADMIN_KEY 的人就是服务器主**，
+     * 不另外存一份「谁是主」。再存一份等于给同一件事造两个真相。
+     */
+    if (url.pathname === '/admin/town' && method === 'GET') {
+      return reply(200, { ok: true, town: await readTown(db, env) });
+    }
+
+    if (url.pathname === '/admin/town' && method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+      const extra = bannedExtra(env);
+
+      /*
+       * 城 id 用的是 `okCity` 那一套格式，**不是随便起名**：
+       * 它会被当成 `city` 写进 presence，journey 的 `/sight?city=` 会读它。
+       * 带空格、带中文的 id 会让那边整条路 400，而报错只说 bad query。
+       */
+      /*
+       * **这里不能先 `clean(id, 40)` 再校验。**
+       *
+       * `clean` 会把超长的值截到 40 位 —— 一个 41 位的 id 截完就变合法了，
+       * 于是「填了 41 位」被静默存成「前 40 位」。而 id 会被写进 `city`，
+       * 存成的东西和填进去的不一样，将来对不上要查很久。
+       *
+       * 所以先 trim 掉首尾空白（这个可以有），然后交给 `okCity` 验原值 ——
+       * 它的字符集本来就排除了空格和控制字符，不需要 `clean` 帮忙。
+       * 超长就明说太长，不替人做减法。
+       */
+      const id = String(body?.id ?? '').trim();
+      if (!okCity(id)) {
+        return reply(400, { ok: false, error: 'bad id' });
+      }
+      const name = safeText(body?.name, 24, extra);
+      if (!name) {
+        return reply(400, { ok: false, error: 'bad name' });
+      }
+      /* 空串允许：来历可以不写，读的时候会退默认。 */
+      const origin = safeText(body?.origin, 400, extra);
+
+      const list = (v, max, n) => (Array.isArray(v) ? v : [])
+        .map((x) => safeText(x, max, extra))
+        .filter(Boolean)
+        .slice(0, n);
+      const streets = list(body?.streets, 12, 5);
+      const rules = list(body?.rules, 60, 5);
+      /*
+       * 两条都不能空 —— **空街名等于她没地方住，空城规等于没有城规**。
+       * 允许清空会让「她住在一条没有名字的街上」这种状态合法化，
+       * 而那不是设定，是没设完。
+       */
+      if (!streets.length || !rules.length) {
+        return reply(400, { ok: false, error: 'bad lists' });
+      }
+
+      const nowIso = new Date().toISOString();
+      try {
+        await db.prepare(
+          `INSERT INTO town_meta (id, name, origin, streets, rules, at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+           ON CONFLICT(id) DO UPDATE SET
+             name = ?2, origin = ?3, streets = ?4, rules = ?5, at = ?6`,
+        ).bind(id, name, origin, JSON.stringify(streets), JSON.stringify(rules), nowIso).run();
+      } catch {
+        /*
+         * 表没建时的错要能看懂。默认那句 `D1_ERROR: no such table` 会让
+         * 服务器主以为是自己填错了 —— 其实是迁移脚本没跑。
+         */
+        return reply(500, {
+          ok: false,
+          error: '写不进去：town_meta 表可能不存在，先跑 migrate-2026-11-15-town-meta.sql。',
+        });
+      }
+      return reply(200, { ok: true, town: await readTown(db, env) });
+    }
+
     if (url.pathname === '/admin/flag' && method === 'POST') {
       let body;
       try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
@@ -1925,7 +2155,8 @@ export default {
     if (url.pathname === '/admin/stats' || url.pathname === '/admin/list'
         || url.pathname === '/admin/live'
         || url.pathname === '/admin/pets' || url.pathname === '/admin/flags'
-        || url.pathname === '/admin/flag') {
+        || url.pathname === '/admin/flag'
+        || url.pathname === '/admin/town') {
       return adminRoute(request, env, url, method);
     }
 
@@ -1948,6 +2179,8 @@ export default {
     if (path === '/sight/profile') return profileRoute(request, env, url, method);
     if (path === '/sight/footprints') return footprintRoute(request, env, url, method);
     if (path === '/sight/signposts') return signpostRoute(request, env, url, method);
+    /* 本城设定：公开只读。给目录、健康检查、别的城用（§4.18）。 */
+    if (path === '/town/info') return townInfoRoute(env);
     // 根路径给人看（浏览器里打开的那种），别回一句 not found。
     if (path === '/' && (method === 'GET' || method === 'HEAD')) return landingPage(env, url);
     // 管鱼页：同一个域名发出去，国内能打开；页面里地址栏会自动填成它自己。
@@ -2141,6 +2374,21 @@ export default {
          * 语义一点没变（城市跟着最后一次上报走）。
          */
         await db.prepare(
+          /*
+           * **内容没变就别写**（2026-11-15）。
+           *
+           * 心跳一天上万次，而 `doing` 一小时未必变一次 —— 每次心跳都原样写一遍，
+           * 代价是 1 行表 + 5 个索引（实测平均 4.3 行/次），换来的只是 `at` 挪一格。
+           *
+           * ## 为什么不能把 `at` 一起省掉
+           *
+           * `online`（此刻在线多少只）按「最近 30 分钟有上报」算（`ONLINE_WINDOW_MS`）。
+           * `at` 不刷就会把在线的人判成离线。所以留一道**兜底**：内容没变时，
+           * 最多 25 分钟也要写一次 —— 比窗口短 5 分钟，留出时钟漂移和请求排队。
+           *
+           * 用 `julianday` 而不是 `datetime(...)` 比较：后者吐出 `YYYY-MM-DD HH:MM:SS`，
+           * 跟 `excluded.at` 那个带 T/Z 的 ISO 串格式不同，比大小会出错。
+           */
           `INSERT INTO presence (uid, pet, city, date_key, slot, doing, at, ip_hash)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
            ON CONFLICT(uid, date_key, slot) DO UPDATE SET
@@ -2148,7 +2396,12 @@ export default {
              city = excluded.city,
              doing = excluded.doing,
              at = excluded.at,
-             ip_hash = excluded.ip_hash`,
+             ip_hash = excluded.ip_hash
+           WHERE presence.pet <> excluded.pet
+              OR presence.city <> excluded.city
+              OR presence.doing <> excluded.doing
+              OR presence.ip_hash <> excluded.ip_hash
+              OR (julianday(excluded.at) - julianday(presence.at)) * 1440 >= 25`,
         ).bind(uid, pet, city, date, slot, doing, nowIso, ip).run();
 
         /*

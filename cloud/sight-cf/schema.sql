@@ -327,3 +327,41 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE INDEX IF NOT EXISTS idx_cards_exp ON party_cards (exp);
 CREATE INDEX IF NOT EXISTS idx_cards_id ON party_cards (id);
 CREATE INDEX IF NOT EXISTS idx_profiles_exp ON profiles (exp);
+
+
+-- ------------------------------------------------------------------
+-- 本城设定：这台服务器是哪一座城（2026-11-15）
+--
+-- ## 为什么这件事该存在服务器上，而不是客户端
+--
+-- 前面所有东西都是「每只鱼自己的」——行踪、名片、足迹、路标。
+-- 唯独「这座城叫什么、有哪几条街、守哪几条城规」不是任何一只鱼的，
+-- 是**这台服务器的**。放在某只鱼的客户端里，就成了她的私人设定，
+-- 而它明明是大家共用的那个地方。
+--
+-- ## 一行，不是多行
+--
+-- 一台城服务器 = 一座城（§4.18 的定案）。所以这张表**正常情况下只有一行**，
+-- 用 `id` 做键是为了将来真出现「一服多城」时不至于要改主键。
+-- 现在写的时候按 `id` upsert，读的时候只管取第一行。
+--
+-- ## 为什么不存「谁是服务器主」
+--
+-- 因为不需要。写入由 `ADMIN_KEY` 挡着 —— 有那个 key 的人就是服务器主。
+-- 再存一份「主」的身份，等于给同一件事造两个真相。
+-- ------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS town_meta (
+  -- 城 id。格式与 journey 的 `okCity` 同一套（`/^[a-z0-9_-]{1,40}$/i`），
+  -- 因为它会被当成 `city` 写进 presence —— 两边必须能互相认。
+  id     TEXT PRIMARY KEY,
+  -- 中文城名。显示用，也给她在提示词里说得出「我从浅水埠出发」。
+  name   TEXT NOT NULL,
+  -- 一句话来历。她讲得出来的那种，不是宣传文案。
+  origin TEXT NOT NULL DEFAULT '',
+  -- 有哪几条街。JSON 数组字符串，最多 5 条 —— 她住其中一条。
+  streets TEXT NOT NULL DEFAULT '[]',
+  -- 守哪几条城规。JSON 数组字符串，最多 5 条。
+  -- **这几条不是装饰**：它们各自对应一条机制（§4.17），改文案可以，别改意思。
+  rules   TEXT NOT NULL DEFAULT '[]',
+  at      TEXT NOT NULL
+);

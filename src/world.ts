@@ -628,7 +628,9 @@ const TOOL_DECLS = [
   {
     name: 'journey_go_to',
     description:
-      'Set off for a named city, optionally by a stated means of transport. Use it when the person says where to go and/or how - "take the high-speed rail to Shanghai", "fly to Lhasa". With no mode it picks one itself, weighted by distance; with a mode it uses exactly that one, and if that one is impossible (too far, no airport, no rail link, no money) it says why instead of silently substituting another. Only when she is settled in a city or at home: not while travelling, not while heading home, not during a short-term job, and not once the trip has hit its length limit - it will say which of those it is. Going home has its own tool.',
+      'Set off for a named city, optionally by a stated means of transport. Use it when the person says where to go and/or how - "take the high-speed rail to Shanghai", "fly to Lhasa". With no mode it picks one itself, weighted by distance; with a mode it uses exactly that one, and if that one is impossible (too far, no airport, no rail link, no money) it says why instead of silently substituting another. '
+      + 'Only when she is settled in a city or at home. While she is already on a leg it cannot turn around, but it still records the city as a wish for the next leg and says so - call it anyway when he names a place while she is travelling, and tell him it is meant for the next leg, not this one. '
+      + 'Not while heading home, not during a short-term job, and not once the trip has hit its length limit - it will say which of those it is. Going home has its own tool.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -4449,10 +4451,22 @@ export class JourneyWorld implements World {
           name: `${sceneId}-${dateKey}.png`,
           fallbackText: `（一张${title}的照片）`,
         }],
+        // 同一天同一个场景再拍一张是**合法操作**（重拍、被他要求再拍），不是重放。
+        { dedupe: false },
       );
       const handle = env?.blobs?.[0]?.handle;
       this.photoOutcome = handle ? 'ok' : 'fail';
-      if (!handle) return { ok: false, reason: '宿主没返回图片句柄' };
+      /*
+       * 两种失败要分开说。「事件压根没发出去」和「发出去了但附件没落库」
+       * 是两条不同的排查路径，混成一句「宿主没返回图片句柄」会让人去查错地方
+       * —— 2026-11-15 那位就是被这句话带偏的，真正原因是事件被去重吞了。
+       */
+      if (!handle) {
+        return {
+          ok: false,
+          reason: env ? '宿主没返回图片句柄' : '照片事件没发出去（扩展没挂上宿主）',
+        };
+      }
       this.photoError = null;
       // 云盘用户：再存一份到日记目录下，另一台电脑才看得到这张图。
       // **文件名必须和宿主那边一致** —— 报告里的 `<img src="../media/…">` 是按它拼的。
@@ -4896,14 +4910,26 @@ export class JourneyWorld implements World {
     text: string,
     trigger: TriggerMode,
     blobs?: BlobInput[],
+    /**
+     * `dedupe: false` = 这条不参与去重。
+     *
+     * 只给**带副作用、且「重复」本身是合法操作**的事件用 —— 目前只有照片：
+     * 他点了「重拍」、或者让她「再拍一张」，两次的 key 都是
+     * `photo-<日期>-<场景>`，去重会把它当成重放吞掉，而用户看到的是
+     * 「宿主没返回图片句柄」—— 一个和真正原因毫无关系的报错
+     * （2026-11-15，GitHub Discussion #586）。
+     */
+    opts?: { dedupe?: boolean },
   ): Promise<EventEnvelope | null> {
     const host = this.host;
     if (!host) return null;
-    if (this.pushedKeys.has(senderKey)) {
-      this.log?.info(`跳过重复事件：${type} ${senderKey}`);
-      return null;
+    if (opts?.dedupe !== false) {
+      if (this.pushedKeys.has(senderKey)) {
+        this.log?.info(`跳过重复事件：${type} ${senderKey}`);
+        return null;
+      }
+      this.pushedKeys.add(senderKey);
     }
-    this.pushedKeys.add(senderKey);
     return await host.pushEvent({
       type,
       source: this.id,
@@ -7224,7 +7250,32 @@ export class JourneyWorld implements World {
     }
 
     if (this.st.phase === 'traveling') {
-      return { text: '她已经在路上了。到了再安排下一段。', isError: true };
+      /*
+       * 在路上他点了名 —— **不能掉头，但也不能把他的话丢掉**（2026-11-15）。
+       *
+       * 起因是一封来信：「将『回家后歇几天』设为 0 后，我刚跟她说要不要去西安，
+       * 她就被拉到去西双版纳的车上」。歇 0 天意味着她到家就能立刻出发，
+       * 于是他的那句话和她自己的出发撞在同一分钟 —— 原来的实现是一句硬拒绝
+       * 「她已经在路上了」，他的目的地就此蒸发，他看到的只有「她去了别处」。
+       *
+       * 掉头的代价是真的（车上、票已买、`moveOn` 那条路会把钱烧掉），
+       * 但**「听不见」不是掉头**。记进 `wishes`：到站之后排下一站时它权重更高。
+       */
+      const next = this.st.leg?.toId ?? '';
+      const nextName = next ? (cityById(next)?.name ?? next) : '下一站';
+      if (this.st.wishes.includes(dest.id)) {
+        return {
+          text: `她正往${nextName}走，这一段停不下来；${dest.name}她本来就记着，`
+            + '到了那边会优先排上。跟他说清楚：不是不去，是这一程改不了。',
+          isError: true,
+        };
+      }
+      this.st = { ...this.st, wishes: [...this.st.wishes, dest.id] };
+      this.persist();
+      return {
+        text: `她正往${nextName}走，这一段掉不了头。但「${dest.name}」记下了 —— `
+          + '到了那边排下一站时会优先考虑。**跟他说清楚**：这一程去不了，下一程去。',
+      };
     }
 
     const from = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;

@@ -1296,3 +1296,49 @@ test('同类错误落一行，后到的累加 count 并更新 last_msg', async (
   assert.equal(rows[0].count, 3, 'count 没累加');
   assert.equal(rows[0].last_msg, 'msg3', 'last_msg 没更新成最新那条');
 });
+
+/* ---------------- 条件写入（2026-11-15） ---------------- */
+
+test('内容没变就不写，变了必须写', async () => {
+  /*
+   * 2026-11-15：D1 一天 18,776 次写查询、80,141 行写入，而 presence 只有 1,351 行。
+   * 差在「每次心跳都原样写一遍」—— 1 行表 + 5 个索引，平均 4.3 行/次。
+   *
+   * 加 WHERE 之后：内容变了立刻写；没变就等 25 分钟兜底（`online` 判定窗口是 30 分钟，
+   * 25 分钟留 5 分钟余量给时钟漂移和请求排队）。
+   */
+  const db = makeDB();
+  const env = { DB: db };
+  assert.equal((await worker.fetch(post(rec({ doing: '吃面' })), env)).status, 200);
+  const first = db.query('SELECT at, doing FROM presence')[0];
+
+  // 同一内容再报一次：被 WHERE 挡掉，at 不该动
+  assert.equal((await worker.fetch(post(rec({ doing: '吃面' })), env)).status, 200);
+  const second = db.query('SELECT at, doing FROM presence')[0];
+  assert.equal(second.at, first.at, '内容一个字没变，却又写了一次');
+
+  // 内容变了：必须写，否则「她在干嘛」就永远停在旧的那句
+  assert.equal((await worker.fetch(post(rec({ doing: '还在回民街' })), env)).status, 200);
+  const third = db.query('SELECT at, doing FROM presence')[0];
+  assert.equal(third.doing, '还在回民街', '内容变了却没写进去');
+});
+
+test('内容没变也要在 25 分钟内写一次 —— 否则在线会被判成离线', async () => {
+  /*
+   * `online`（此刻在线多少只）按「最近 30 分钟有上报」算。
+   * 如果内容没变就永远不写，`at` 会一直停在第一次，人就"永远在线"或"突然全部离线"。
+   *
+   * 这里把 at 往前拨 30 分钟再报一次同样的内容，应该被兜底条件放行。
+   */
+  const db = makeDB();
+  const env = { DB: db };
+  assert.equal((await worker.fetch(post(rec({ doing: '吃面' })), env)).status, 200);
+
+  // 手动把 at 拨回 30 分钟前，模拟"内容没变但过了很久"
+  db.exec(`UPDATE presence SET at = datetime('now', '-30 minutes')`);
+  const old = db.query('SELECT at FROM presence')[0].at;
+
+  assert.equal((await worker.fetch(post(rec({ doing: '吃面' })), env)).status, 200);
+  const now = db.query('SELECT at FROM presence')[0].at;
+  assert.notEqual(now, old, '超过 25 分钟了还不写，online 会算错');
+});
