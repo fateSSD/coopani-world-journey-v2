@@ -1,0 +1,92 @@
+#!/bin/sh
+# post-commit —— commit 之后自动推送。
+#
+# ## 为什么在 .githooks/ 而不是 .git/hooks/
+#
+# .git/hooks/ 不进版本库，每个新 clone 都没有这个钩子。
+# 2026-10-21 在技能仓库实查过：文档写着「配了自动推送」，换了台机器就没有 ——
+# 根因就是这个目录不被跟踪。这里用被跟踪的 .githooks/ + `core.hooksPath`，
+# 一次提交，所有 clone 立刻生效。
+#
+# ## 为什么只推 sync 分支
+#
+# 这个仓库有三条线：sync（当前开发，对应远端 main）、master、public（公开镜像）。
+# 自动推送如果对所有分支生效，一次误操作就会把 public 镜像推上去。
+# 所以**只认 sync → main 这一条映射**，其余分支一律跳过，由人手动推。
+#
+# ## 为什么是同步推而不是后台
+#
+# 技能仓库那边 2026-10-21 试过后台（`( ... ) & disown`），两次都没跑完，
+# 进程被环境清理掉，日志只留开始行没有退出行，失败也不通知。
+# 同步 + 超时（90 秒）虽然慢一点，但「当场知道推没推上去」值这个时间。
+#
+# ## 行为约定
+#
+# ① 钩子会推，commit 之后不要再手动 git push。
+# ② 远程领先时跳过并提示，不硬推、不留 rebase 中间态。
+# ③ 失败只提示，**绝不挡住 commit**（commit 本身已经成功）。
+# ④ 对账：`git fetch -q origin && git rev-list --left-right --count HEAD...origin/main`
+#    输出 "0 0" = 已同步。
+
+trap 'exit 0' EXIT
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+GITDIR="$(git rev-parse --git-dir 2>/dev/null)" || exit 0
+
+git remote get-url origin >/dev/null 2>&1 || exit 0
+
+# merge / rebase / cherry-pick 中间态不推，避免推出半成品
+for f in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply; do
+    [ -e "$GITDIR/$f" ] && exit 0
+done
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+[ -z "$BRANCH" ] && exit 0
+[ "$BRANCH" = "HEAD" ] && exit 0
+
+# 本地分支 → 远端分支。没在上面的一律不自动推。
+case "$BRANCH" in
+    sync) REMOTE_BRANCH=main ;;
+    *) exit 0 ;;
+esac
+
+LOG="$GITDIR/push.log"
+printf '\n===== %s  push %s -> origin/%s =====\n' \
+    "$(date '+%Y-%m-%d %H:%M:%S')" "$BRANCH" "$REMOTE_BRANCH" >> "$LOG" 2>/dev/null
+
+# 推之前先比一次远程：落后就跳过。
+# 技能仓库 76 次推送里 18 次失败，其中 15 次（88%）是同一个原因 ——
+# 只 push 不 fetch，远程有新提交就 non-fast-forward。
+# fetch 失败（断网等）不阻断，继续往下让 git 自己报错。
+if GIT_TERMINAL_PROMPT=0 timeout 30 git fetch -q origin "$REMOTE_BRANCH" 2>/dev/null; then
+    BEHIND="$(git rev-list --count "HEAD..origin/$REMOTE_BRANCH" 2>/dev/null || echo 0)"
+    if [ "${BEHIND:-0}" -gt 0 ]; then
+        echo "" >&2
+        echo "[post-commit] 远程 $REMOTE_BRANCH 领先本地 $BEHIND 个提交，已跳过推送。" >&2
+        echo "[post-commit] 先同步：git pull --rebase origin $REMOTE_BRANCH，再手动推。" >&2
+        printf '跳过推送：远程领先 %s 个提交\n----- exit=skip\n' "$BEHIND" >> "$LOG" 2>/dev/null
+        exit 0
+    fi
+fi
+
+if command -v timeout >/dev/null 2>&1; then
+    OUT="$(cd "$ROOT" && GIT_TERMINAL_PROMPT=0 timeout 90 git push origin "$BRANCH:$REMOTE_BRANCH" 2>&1)"
+    RC=$?
+else
+    OUT="$(cd "$ROOT" && GIT_TERMINAL_PROMPT=0 git push origin "$BRANCH:$REMOTE_BRANCH" 2>&1)"
+    RC=$?
+fi
+
+printf '%s\n----- exit=%s\n' "$OUT" "$RC" >> "$LOG" 2>/dev/null
+
+if [ "$RC" -ne 0 ]; then
+    echo "" >&2
+    echo "[post-commit] 自动推送未成功（exit=$RC），提交已保存在本地，没推上去。" >&2
+    printf '%s\n' "$OUT" | sed 's/^/    /' >&2
+    echo "[post-commit] 手动补推：git push origin $BRANCH:$REMOTE_BRANCH" >&2
+    echo "[post-commit] 完整日志：$LOG" >&2
+else
+    echo "[post-commit] 已推送到 origin/$REMOTE_BRANCH" >&2
+fi
+
+exit 0
