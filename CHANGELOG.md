@@ -1,5 +1,19 @@
 # 更新日志
 
+## 1.8.13 — 2026-11-16（describe.json 补同步：市集读的是它，不是代码）
+
+1.8.12 发出去之后自查发现的：`journey_go_to` 的两处描述（「一调就动身」+ 两个不动身的例外）
+和 `journey_return_home`、`journey.photo` 的文案，**代码里改了、`describe.json` 里没跟**。
+
+**为什么这条不能留**：宿主的 `src/extensions/describe.ts` 写得很清楚 ——
+「索引仓的 Action 与 WebUI 的扩展市场**只读这个文件，不执行扩展代码**」。
+所以漂移在运行时不报错（模型拿的是代码里那张表），但**市场页面上写的还是旧规矩**：
+「While she is already on a leg it cannot turn around」—— 正是 1.8.12 要推翻的那句话。
+
+- `describe.json` 从 `src/describe.ts` 重新生成（工具 24 条、事件 19 条，全部一致）。
+- `test/journey.test.mjs` 加一条：工具名单 / description / summary / parameters 必须一字不差。
+  事件那张表 2026-11-01 就钉过，工具这张一直没人钉 —— 这次漏的就是它。
+
 ## 1.8.12 — 2026-11-16（改签：目的地没变就不出发；退票全额）
 
 1.8.11 只做到「同城不作废约定」，人还是照样当场出发。读者来信第 1 条要的是**改签**，

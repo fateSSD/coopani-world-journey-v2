@@ -2237,6 +2237,30 @@ test('事件声明：describe.json 和运行时的表必须一致', () => {
   }
 });
 
+test('工具声明：describe.json 里的说明必须和代码一字不差', () => {
+  /*
+   * 2026-11-16 的真实故障：`journey_go_to` 的描述在 1.8.12 里改了两处（「一调就动身」+
+   * 两个不动身的例外），代码改了、describe.json 没跟 —— 而**市集和索引仓只读 describe.json，
+   * 不执行代码**（宿主 `src/extensions/describe.ts` 的注释原话）。
+   *
+   * 所以这种漂移在运行时不报错、模型也照新描述走，但市场页面上写的还是旧规矩：
+   * 「在路上不能掉头」——正好把这次要修的那件事写成反的。
+   * 事件那张表早有断言，工具这张没有，于是漏在这里。
+   */
+  const onDisk = JSON.parse(readFileSync(new URL('../describe.json', import.meta.url), 'utf8'));
+  assert.deepEqual(
+    onDisk.tools.map((t) => t.name).sort(),
+    JOURNEY_DESCRIBE.tools.map((t) => t.name).sort(),
+    '工具名单两边不一致',
+  );
+  for (const t of JOURNEY_DESCRIBE.tools) {
+    const mirror = onDisk.tools.find((x) => x.name === t.name);
+    assert.equal(mirror.description, t.description, `${t.name} 的 description 漂了（改一边忘了另一边）`);
+    assert.deepEqual(mirror.summary, t.summary, `${t.name} 的 summary 漂了`);
+    assert.deepEqual(mirror.parameters, t.parameters, `${t.name} 的 parameters 漂了`);
+  }
+});
+
 test('拍照：她人在哪一处，相册里就该是哪一处', () => {
   /*
    * 用户的原话：「她去的伏羲庙啊」。
