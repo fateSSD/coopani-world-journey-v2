@@ -810,6 +810,26 @@ export class JourneyWorld implements World {
     return a.country !== b.country;
   }
 
+  /**
+   * 买票 —— **出发那一刻就付**（2026-11-16）。
+   *
+   * 原来在到站时结算，注释理由是「票是出发前买的，但花了多少到站才成事实」。
+   * 那句话在没有改签的世界里自洽；加上退票就崩了 —— 旧票从没记过账，
+   * 退的时候没得退，账面上只剩一笔凭空多出来的钱。
+   *
+   * 顺带修好一个老漏洞：她坐了一段被中途打断的腿（他叫回家、或者改签），
+   * 到站结算永远等不到，这一趟的票钱就**从来没扣过**。
+   *
+   * 返回带 `fare` 的腿 —— 那张票的凭据，退票按它退。
+   */
+  private buyTicket(leg: Journey): Journey {
+    // 取整之后才记账：`addSpent` 内部也会 `Math.round`，凭据必须等于**实扣的钱**，
+    // 否则退票按未取整的价退，一趟改签能差出一块钱（2026-11-16 测试抓到 0.4）。
+    const fare = Math.round(this.fareOfLeg(leg, this.legCrossBorder(leg)));
+    if (fare > 0) this.addSpent(fare, '路费');
+    return { ...leg, fare };
+  }
+
 
   private cityName(id: string): string {
     return cityById(id)?.name ?? id;
@@ -1171,6 +1191,9 @@ export class JourneyWorld implements World {
       km = picked.km;
     }
     const mode = opts.mode
+      // 约定里点过走法就照它 —— 那是他自己说的「买机票吧」，不该被掷骰子盖掉。
+      // 他这次又点了名（`opts.to`）但没再说方式时，`pledged` 是 null，要靠 `pledgeFor` 找回来。
+      ?? this.pledgedMode(pledged ?? this.pledgeFor(to), from, to, km)
       ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.cfg.hasLicense);
     if (!mode) {
       /*
@@ -1190,7 +1213,7 @@ export class JourneyWorld implements World {
     }
 
     const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey));
-    const leg = buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade });
+    const leg = this.buyTicket(buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade }));
     // 记下这一趟是从哪个家出发的 —— 用户途中改家时，面板要靠它说清「人没跟家一起搬」。
     this.st = { ...this.st, tripHomeId: home.id };
     /*
@@ -1253,7 +1276,12 @@ export class JourneyWorld implements World {
     await this.push(
       'journey.depart',
       `depart-${leg.id}`,
-      `她出发了。${from.name}当地 ${fmtHour(departLocal.decimal)}，`
+      /*
+       * 事件正文不用「她」自称（2026-11-16 读者报告，见 world-photo.ts 的 journey.photo）。
+       * 这条事件经 external_event_frame 投递，那一区的语义是「别人的话」——
+       * 里面出现「她」，模型会拿它当第三方，同一段 reasoning 里人称来回跳。
+       */
+      `出发了。${from.name}当地 ${fmtHour(departLocal.decimal)}，`
       + `${from.name} → ${to.name}，${how}，直线约 ${leg.km} 公里，`
       + `这一趟要走 ${humanHours(leg.durationWorldHours)}${viaText}。`
       + `\n${mode.feel}`
@@ -1353,8 +1381,8 @@ export class JourneyWorld implements World {
 
     /* 赴约和「想出门」不是一件事，措辞分开 —— 他要批的也不一样。 */
     const why = pledged
-      ? `她要赴约（跟${this.whoOfPledge(pledged)}约在${this.cityName(this.pledgeStop(pledged))}）`
-      : '她想出门';
+      ? `要去赴约（跟${this.whoOfPledge(pledged)}约在${this.cityName(this.pledgeStop(pledged))}）`
+      : '想出门';
     await this.push(
       'journey.ask',
       `ask-${ask.askedAt}`,
@@ -1492,9 +1520,9 @@ export class JourneyWorld implements World {
     await this.push(
       'journey.mishap',
       `miss-${leg.id}`,
-      `她坐过站了。本来该在${to?.name ?? leg.toId}下车，一走神没留意，反应过来车已经开了。`
+      `坐过站了。本来该在${to?.name ?? leg.toId}下车，一走神没留意，反应过来车已经开了。`
       + `
-只能在下一站下来再折回去，到站顺延 ${extra} 分钟 —— 她自己也觉得丢人，但这事谁都碰上过。`
+只能在下一站下来再折回去，到站顺延 ${extra} 分钟 —— 自己也觉得丢人，但这事谁都碰上过。`
       + `
 （这不用他出手，别说成求救。）`,
       'flush',
@@ -1653,20 +1681,36 @@ export class JourneyWorld implements World {
      * 叫这串名字的假人，而真正的三个人一个都没记上。见 `namesIn`。
      */
     if (atDest) for (const who of namesIn(atDest)) this.rememberPet(who, 6);
-    if (stray) this.log?.info(`到了${to.name}，手上那份去${this.cityName(stray.cityId)}的约定作废。`);
-    await this.rebuildPlan(now, 'arrival', moment.decimal, to);
-    // 交通费在到站时结算 —— 票是出发前买的，但"花了多少"到站才成事实。
     /*
-     * **必须和 `fareOf` 用同一个算式。**
-     *
-     * 原来是这里自己乘一遍 `FARE_PER_KM`：判断买不买得起走 `fareOf`（分段 + 跨国加价），
-     * 实际扣钱走这一行（单价 × 距离）—— 两个数从改价那一天起就不一样了。
-     * 表面看只是账不平，实际后果是「判她买不起、真扣的时候又没扣那么多」，
-     * 预算约束整个偏掉。
+     * **约定作废必须说出来**（2026-11-16 读者报告）。
+     * 原来只有一行 `log.info` —— 面板照旧挂着那句话，模型也当她还在守约，
+     * 直到下一次她跟人提起才发现那趟早没了。用户看不到日志，等于静默丢约定。
      */
-    // 座位档要一起算：商务座那张票是三倍价，只记最低档等于让她白花钱。
-    const fare = this.fareOf(leg.modeId, leg.km, this.legCrossBorder(leg), leg.seatMult ?? 1);
-    this.addSpent(fare, '路费');
+    if (stray) {
+      const gone = this.cityName(stray.cityId);
+      this.log?.info(`到了${to.name}，手上那份去${gone}的约定作废。`);
+      await this.push(
+        'journey.pledge',
+        `pledge-stray-${stray.inviteId}`,
+        `到了${to.name}，和${this.whoOfPledge(stray)}约好去${gone}那趟作废了。`,
+        'debounce',
+      );
+    }
+    await this.rebuildPlan(now, 'arrival', moment.decimal, to);
+    /*
+     * 票钱**在出发时已经付了**（`buyTicket`，2026-11-16）。
+     *
+     * 这里只剩一种情况要动账：**老存档**。`fare` 是这一版才有的字段，
+     * 升级前就上路的那条腿没有它 —— 不补的话，那一趟等于白坐。
+     * 判据只能是 `leg.fare === undefined`，不能用 `0`：走路、骑车的票钱真是 0，
+     * 那样会在每次免费走一程时都判成「老数据」，然后按算式补扣一笔不该有的钱。
+     *
+     * 算式必须和 `fareOf` 一致（座位档一起算）—— 原来这里自己乘一遍单价，
+     * 从改价那天起就和「买不买得起」用的数不一样了。
+     */
+    if (leg.fare === undefined) {
+      this.addSpent(this.fareOfLeg(leg, this.legCrossBorder(leg)), '路费');
+    }
     // 到了 = 那个念头兑现了，从「想去」里划掉。
     if (this.st.wishes.includes(to.id)) {
       this.st = { ...this.st, wishes: this.st.wishes.filter((x) => x !== to.id) };
@@ -1710,7 +1754,7 @@ export class JourneyWorld implements World {
       `arrive-${leg.id}`,
       `到了。${to.name}，当地 ${fmtHour(moment.decimal)}。`
       + `这一趟 ${leg.km} 公里走了 ${humanHours(leg.durationWorldHours)}。`
-      + `${beenBefore ? '这地方她以前来过，' : ''}${bodyFeeling(to, this.resolveHome().city)}`
+      + `${beenBefore ? '这地方以前来过，' : ''}${bodyFeeling(to, this.resolveHome().city)}`
       /*
        * 赴约到了：这一趟不是随便来的，得说出来是冲着谁来的。
        *
@@ -2022,7 +2066,7 @@ export class JourneyWorld implements World {
             `part-${pledge.inviteId}-${pledge.arrivedAt}`,
             `跟${this.whoOfPledge(pledge)}在${here.name}待满 ${pledge.days} 天，今天各走各的。`
             + `\n${partWith(this.whoOfPledge(pledge), seedOf(`${pledge.inviteId}|part`), this.warmthOf(pledge))}`
-            + `\n（这一段到此为止 —— 接下来她自己往下走，对方走对方的。）`,
+            + `\n（这一段到此为止 —— 接下来自己往下走，对方走对方的。）`,
             'flush',
           );
           /*
@@ -2347,7 +2391,7 @@ export class JourneyWorld implements World {
     await this.push(
       'journey.departing',
       `depart-plan-${local.dateKey}-${picked.city.id}`,
-      `她打算走了。${here.name}待够了，下一站${picked.city.name}，直线约 ${picked.km} 公里，明天早上动身。`
+      `打算走了。${here.name}待够了，下一站${picked.city.name}，直线约 ${picked.km} 公里，明天早上动身。`
       + '\n（还没上车。她要是不想走，说一声就留下 —— 不说的话，明天这个点照原计划走。）',
       'flush',
     );
@@ -2379,8 +2423,8 @@ export class JourneyWorld implements World {
     await this.push(
       'journey.stay',
       `stay-${now.getTime().toString(36)}`,
-      `她把那一趟撤了：不去${destName}了，在${where}再待一天。`
-      + `\n她自己的说法：${why}`
+      `那一趟撤了：不去${destName}了，在${where}再待一天。`
+      + `\n自己的说法：${why}`
       + '\n（明天早上会重新想一次 —— 到时候可能还是走。）',
       'debounce',
     );
@@ -2475,8 +2519,9 @@ export class JourneyWorld implements World {
       to = picked.city;
       km = picked.km;
     }
-    // 他点名了怎么去就用那个；没说就照旧掷骰子。
+    // 他点名了怎么去就用那个；约定里点过也照它；都没说才照旧掷骰子。
     const mode = opts.mode
+      ?? this.pledgedMode(target ? null : (pledge ?? this.pledgeFor(to)), from, to, km)
       ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }));
     if (!mode) {
       /*
@@ -2508,7 +2553,7 @@ export class JourneyWorld implements World {
       return;
     }
     const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey));
-    const leg = buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade });
+    const leg = this.buyTicket(buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade }));
 
     this.st = {
       ...this.st,
@@ -2984,6 +3029,17 @@ export class JourneyWorld implements World {
       };
     }
 
+    if (this.st.phase === 'traveling' && this.st.leg && this.st.leg.toId === dest.id) {
+      /*
+       * **改签，不是掉头**（2026-11-16 读者报告第 1 条）。
+       *
+       * 他说的那座城就是她这一段的目的地，那这句「买机票吧」根本没有改变去向 ——
+       * 改变的是走法。原来这种情况会落到下面那条「在路上点了名」的分支：
+       * 记进 `wishes`，回一句「掉不了头」，用户要的改签就此消失。
+       */
+      return await this.rebookLeg(now, dest, modeWord);
+    }
+
     if (this.st.phase === 'traveling') {
       /*
        * 在路上他点了名 —— **不能掉头，但也不能把他的话丢掉**（2026-11-15）。
@@ -3050,21 +3106,6 @@ export class JourneyWorld implements World {
       };
     }
     /*
-     * **正在打短工：不走。**
-     *
-     * `stayTick` 里「打工期间」那一支排在「走不走」之前，到点才收工。这会儿放她走：
-     * `work` 留在状态里带去了下一座城 —— 每天照旧记员工餐、照旧领那笔工钱（钱是白发的），
-     * 而新的那座城里她六天动不了。宁可让她把工做完。
-     */
-    if (this.st.work) {
-      const left = Math.max(1, Math.ceil((Date.parse(this.st.work.until) - now.getTime()) / 86_400_000));
-      return {
-        text: `她在${this.cityName(this.st.work.cityId)}打短工（${this.st.work.gig}），还有 ${left} 天，`
-          + '工钱是按天结的 —— 半路走了这几天白干。跟他说：等工做完再动身。',
-        isError: true,
-      };
-    }
-    /*
      * **出门到上限了：不开新的一趟。**
      *
      * `stayTick` 里 `overWeeks` 排在约定之前，是最硬的一条：下一个决策点她一定回家。
@@ -3083,11 +3124,51 @@ export class JourneyWorld implements World {
       }
     }
     /*
+     * **人还没动身，而他说的地方正是她本来就答应要去的 —— 那他在改走法。**
+     *
+     * 读者报告里的真实场景：她答应和小岸去苏州（`phase: staying`，人在成都，
+     * 下午的日程都排好了），用户说「买机票吧，别再坐大半天火车」。
+     * 原来唯一能表达「飞机」的入口是 `journey_go_to`，而它一调就动身 ——
+     * 于是「改走法」只能被理解成「立刻出发」，她当场宣布登机。
+     *
+     * 现在：只把走法记进约定（`Pledge.modeId`），动身时按它走。
+     * 判据是**下一段的目标**（有见面城时是见面城）+ **点名了方式**；没点名就正常出发。
+     *
+     * **排在「打工」之前**（2026-11-16 长跑抓到的）：打工期间她走不了，
+     * 但「他说要坐飞机」这句话不该连同打工一起被挡回来 —— 排在后面的结果是
+     * 工做完她按自己挑的方式走，用户的要求凭空消失。约定还在，走法记下来不冲突。
+     */
+    if (modeWord.trim()) {
+      const planned = this.activePledge(now);
+      const stop = planned ? this.pledgeStop(planned) : '';
+      if (planned && stop === dest.id) {
+        const r = await this.rebookMode(now, planned, dest, modeWord.trim());
+        if (r) return r;
+      }
+    }
+    /*
+     * **正在打短工：不走。**
+     *
+     * `stayTick` 里「打工期间」那一支排在「走不走」之前，到点才收工。这会儿放她走：
+     * `work` 留在状态里带去了下一座城 —— 每天照旧记员工餐、照旧领那笔工钱（钱是白发的），
+     * 而新的那座城里她六天动不了。宁可让她把工做完。
+     */
+    if (this.st.work) {
+      const left = Math.max(1, Math.ceil((Date.parse(this.st.work.until) - now.getTime()) / 86_400_000));
+      return {
+        text: `她在${this.cityName(this.st.work.cityId)}打短工（${this.st.work.gig}），还有 ${left} 天，`
+          + '工钱是按天结的 —— 半路走了这几天白干。跟他说：等工做完再动身。',
+        isError: true,
+      };
+    }
+    /*
      * 手上有约定。用 `activePledge` 而不是裸的 `st.pledge`：
      * 超过寻人窗口的那份约定别的分支一律当它不存在（`moveOn` 也不看），
      * 只有这里还认它的话，她就永远走不了 —— 一份早该作废的约定把她钉在原地。
      */
     const holdingPledge = this.activePledge(now);
+    /** 目的地跟她答应过的是同一座城：约定不动，出发后推一条说清「只是换了走法」。 */
+    let keptPledge: typeof holdingPledge = null;
     if (holdingPledge) {
       /*
        * **他开口了，约定让位**（2026-11-06 长跑抓到的）。
@@ -3098,17 +3179,35 @@ export class JourneyWorld implements World {
        *
        * 和 `beginReturn` 同一条道理：陌生人的邀约没有他的话重要。
        * 作废时推一条事件说清，免得面板上还挂着那句做不到的话。
+       *
+       * **但「目的地没变」不算改去别处**（2026-11-16 读者报告的真实案例）：
+       * 她答应和小岸一起去苏州，用户只是说「买机票吧，别再坐大半天火车」，
+       * 模型调 `go_to { 苏州, 飞机 }` —— 目的地一模一样，这里却把她和小岸的约定
+       * 无条件清了，还推一条「他叫她改去别处」的事件。模型拿到这条跟自己对话
+       * 对不上的事件，花了一整轮去判断它是不是噪音。
+       * 判据只能是城市：同一座城，就当她只是换了走法。
        */
-      const who = this.whoOfPledge(holdingPledge);
       const where = this.cityName(holdingPledge.cityId);
-      this.st = { ...this.st, pledge: null };
-      this.persist();
-      await this.push(
-        'journey.pledge',
-        `pledge-yield-${holdingPledge.inviteId}`,
-        `他叫她改去别处，和${who}约好去${where}那趟只能推了。`,
-        'debounce',
-      );
+      /*
+       * 「同一趟」有两种：去最终那座城，或者去**见面城**会合。
+       * 只比 `cityId` 会漏掉后者 —— 她答应先在成都碰头再去苏州，他说「去成都」，
+       * 那份约定会被当成「改去别处」推掉，而人其实正走在约定的路上。
+       */
+      const sameTrip = dest.id === holdingPledge.cityId
+        || (holdingPledge.meetCityId !== undefined && dest.id === holdingPledge.meetCityId);
+      if (sameTrip) {
+        keptPledge = holdingPledge;
+      } else {
+        const who = this.whoOfPledge(holdingPledge);
+        this.st = { ...this.st, pledge: null };
+        this.persist();
+        await this.push(
+          'journey.pledge',
+          `pledge-yield-${holdingPledge.inviteId}`,
+          `他改了目的地，和${who}约好去${where}那趟只能推了。`,
+          'debounce',
+        );
+      }
     }
 
     const km = Math.round(distanceKm(from, dest));
@@ -3177,12 +3276,207 @@ export class JourneyWorld implements World {
 
     const leg = this.st.leg;
     const real = modeById(leg.modeId);
+    /*
+     * 同一座城、只换了走法：约定留着，但要留一条痕迹。
+     * 不推的话，面板和模型都以为「什么都没发生」，而同行那条线其实还在。
+     * 只在点明了交通方式时推 —— 没点名就只是又去了一趟同一座城，说它没意义。
+     */
+    if (keptPledge && wanted) {
+      await this.push(
+        'journey.pledge',
+        `pledge-keep-${keptPledge.inviteId}`,
+        `目的地没变，还是${dest.name}；改坐${real?.name ?? leg.modeId}去，`
+          + `和${this.whoOfPledge(keptPledge)}的同行还作数。`,
+        'debounce',
+      );
+    }
     return {
       text: `出发了：${from.name} → ${dest.name}，${real?.name ?? leg.modeId}，${leg.km} 公里，`
         + `${humanHours(leg.durationWorldHours)}。`
         + (wanted && leg.modeId !== modeIdOf(wanted) ? '（他要的那种走法用不了，已换成这种，记得说一声。）' : '')
         + '这件事该跟他说一句 —— 说清去哪、怎么去、大概多久。',
     };
+  }
+
+
+  /**
+   * 改签 —— 她已经在这段路上，目的地不变，换一种走法（2026-11-16）。
+   *
+   * ## 为什么这件事必须有退票
+   *
+   * 票在出发时买了（`buyTicket`）。改签意味着**旧票作废、新票另买**，
+   * 所以这一路必然一次 `refundFare` + 一次 `buyTicket`。
+   * 退多少由 `refundFare` 定：全额，不扣手续费（Mr.Q：「全退吧，这个不必模仿现实」）。
+   *
+   * ## 新腿按此刻重算
+   *
+   * `arriveAt` 会跟着走法变（成都→苏州高铁 11 小时、飞机 2.5 小时）——
+   * 沿用旧腿的到达时刻就是「换了飞机却还按火车的时刻到」。
+   * 人还在出发地，所以 `departedAt = now` 不违和：她的新车就是这时候开的。
+   */
+  private async rebookLeg(
+    now: Date,
+    dest: City,
+    modeWord: string,
+  ): Promise<{ text: string; isError?: boolean }> {
+    const leg = this.st.leg;
+    const from = leg ? this.cityOrNull(leg.fromId) : null;
+    if (!leg || !from) {
+      return { text: '她这一段的起点认不出来了，改不了 —— 跟他说一声。', isError: true };
+    }
+    const here = modeById(leg.modeId)?.name ?? leg.modeId;
+    const wanted = modeWord.trim();
+    if (!wanted) {
+      /*
+       * 只报了一次同一座城、没说要换走法。
+       * 这里**不能默默什么都不做** —— 她会以为「他知道我在路上了」，而用户以为改签生效了。
+       */
+      return {
+        text: `她正在往${dest.name}的路上（${here}），这一段本来就是去那儿。`
+          + '要换走法就把方式说出来（`mode`），不说就这一程不动。',
+        isError: true,
+      };
+    }
+    const id = modeIdOf(wanted);
+    if (!id) {
+      return { text: `「${wanted}」不是她认得的交通方式。`, isError: true };
+    }
+    if (id === leg.modeId) {
+      return { text: `这一程本来就是${here}，不用改签。`, isError: true };
+    }
+    const usable = usableModesFor(from, dest, leg.km);
+    const mode = usable.find((m) => m.id === id);
+    if (!mode) {
+      const why = modeById(id);
+      const reason = why?.maxKm && leg.km > why.maxKm
+        ? `${leg.km} 公里，${why.name}跑不了这么远（上限 ${why.maxKm} 公里）`
+        : why?.needs === 'air'
+          ? `${from.name}或${dest.name}没有机场`
+          : why?.needs === 'rail'
+            ? `${from.name}或${dest.name}不通铁路`
+            : why?.needs === 'port'
+              ? `${from.name}或${dest.name}没有码头`
+              : '这一对城市之间这种走法不成立';
+      return {
+        text: `这段改不了${why?.name ?? wanted}：${reason}。`
+          + `这一程能用的：${usable.map((m) => m.name).join('、')}。跟他说清楚，别自己换个方式。`,
+        isError: true,
+      };
+    }
+    /*
+     * 买不买得起新票 —— 按**现价**判，不是按旧票抵完之后的余钱。
+     * 退款是结果，不是筹码：先看这一张买不买得起，买不起就别退旧票。
+     */
+    const afford = this.affordMode(leg.km, 0.5, from.country !== dest.country, { from, to: dest });
+    if (afford && !afford(mode)) {
+      return {
+        text: `改签的钱不够：这一段${mode.name}要 `
+          + `${Math.round(this.fareOf(mode.id, leg.km, from.country !== dest.country))} 块，`
+          + '眼下账上不够。跟他说一声 —— 原来那张票她先留着。',
+        isError: true,
+      };
+    }
+
+    const refund = this.refundFare(leg);
+    const grade = this.pickSeatFor(mode.id, leg.km, this.legCrossBorder({ fromId: from.id, toId: dest.id } as Journey));
+    const fresh = this.buyTicket(buildJourney({
+      from, to: dest, mode, km: leg.km, at: now, speed: this.speedNow(), grade,
+    }));
+    this.st = { ...this.st, leg: fresh };
+    this.persist();
+
+    const left = humanHours(fresh.durationWorldHours);
+    await this.push(
+      'journey.rebook',
+      `rebook-${fresh.id}`,
+      `改签了：${from.name} → ${dest.name} 从${here}换成${mode.name}。`
+        + (refund > 0 ? `原来那张票退了 ${refund} 块，退的全额。` : '')
+        + `剩下的路 ${left}。`,
+      'flush',
+    );
+    return {
+      text: `改签好了：${from.name} → ${dest.name}，${here} → ${mode.name}，`
+        + (refund > 0 ? `旧票退了 ${refund} 块（全额），` : '')
+        + `新票 ${Math.round(fresh.fare ?? 0)} 块，还要 ${left}。`
+        + '跟他说一句：换成了什么、什么时候到。',
+    };
+  }
+
+  /**
+   * 只记走法，不动身 —— 他还说了要不要走，只是把「怎么去」定下来。
+   *
+   * 返回 `null` 表示这次记不下来（走法不可用 / 买不起），由调用方按正常出发处理 ——
+   * 不在这里替她决定，也不静默吞掉他的话。
+   */
+  private async rebookMode(
+    now: Date,
+    pledge: Pledge,
+    dest: City,
+    modeWord: string,
+  ): Promise<{ text: string; isError?: boolean } | null> {
+    const from = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
+    const km = Math.round(distanceKm(from, dest));
+    const id = modeIdOf(modeWord);
+    if (!id) return { text: `「${modeWord}」不是她认得的交通方式。`, isError: true };
+    const usable = usableModesFor(from, dest, km);
+    const mode = usable.find((m) => m.id === id);
+    if (!mode) {
+      const why = modeById(id);
+      return {
+        text: `去${dest.name}坐不了${why?.name ?? modeWord}：`
+          + `这一程能用的有 ${usable.map((m) => m.name).join('、')}。`
+          + '他只是说走法，那就把能用的告诉他 —— **别改成立刻出发**。',
+        isError: true,
+      };
+    }
+    const afford = this.affordMode(km, 0.5, from.country !== dest.country, { from, to: dest });
+    if (afford && !afford(mode)) {
+      return {
+        text: `${mode.name}这一程要 ${Math.round(this.fareOf(mode.id, km, from.country !== dest.country))} 块，`
+          + '账上不够。跟他说实话，别答应下来。',
+        isError: true,
+      };
+    }
+    this.st = { ...this.st, pledge: { ...pledge, modeId: mode.id } };
+    this.persist();
+    return {
+      text: `记下了：去${dest.name}那一趟按${mode.name}走，跟${this.whoOfPledge(pledge)}的约定还作数。`
+        + `**她还没动身** —— 别顺口说她已经在路上了。`,
+    };
+  }
+
+  /**
+   * 某一趟的目标正好就是约定里那一站 → 返回那份约定。
+   *
+   * 为什么需要它：`depart` / `moveOn` 里那个 `pledged` 变量在**他点了名**时是 `null`
+   * （`opts.to ? null : activePledge(...)`）。于是「他先说过坐飞机、后来又点了同一座城
+   * 但没再提方式」时，记下的走法就丢了（2026-11-16 自查）。
+   */
+  private pledgeFor(to: City): Pledge | null {
+    const p = this.activePledge(this.worldNow());
+    if (!p) return null;
+    return this.pledgeStop(p) === to.id ? p : null;
+  }
+
+  /**
+   * 约定里点名的走法，可用就照它走。
+   *
+   * 为什么还要校验：约定可能是几天前记下的，中间城市数据或钱都变了。
+   * 不可用就退回 `null`，让 `pickMode` 正常挑 —— 计划落空不该卡住整趟行程。
+   */
+  private pledgedMode(
+    pledge: Pledge | null,
+    from: City,
+    to: City,
+    km: number,
+  ): TravelMode | null {
+    if (!pledge?.modeId) return null;
+    const usable = usableModesFor(from, to, km);
+    const mode = usable.find((m) => m.id === pledge.modeId);
+    if (!mode) return null;
+    const afford = this.affordMode(km, 0.5, from.country !== to.country, { from, to });
+    if (afford && !afford(mode)) return null;
+    return mode;
   }
 
 

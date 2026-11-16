@@ -354,6 +354,54 @@ export const purseMethods: Record<string, any> = {
     return km * (FARE_PER_KM[modeId as ModeId] ?? 0) * seatMult;
   },
 
+  /**
+   * 这一段的票钱 —— **按腿上年份的那张票算**，不是按「现在重算一遍」。
+   *
+   * 为什么要单独一个函数：改签和到站补记（老存档）都得拿到「这张票当时花了多少」。
+   * 重算一遍会跟着费率表变，而这条腿是几天前买的。
+   */
+  fareOfLeg(leg: { modeId: string; km: number; seatMult?: number }, crossBorder: boolean): number {
+    return this.fareOf(leg.modeId, leg.km, crossBorder, leg.seatMult ?? 1);
+  },
+
+  /**
+   * 退票 —— **全额退回，不扣手续费**。
+   *
+   * 2026-11-16，Mr.Q 定的规则：「全退吧，这个不必模仿现实。」
+   * 现实里改签有手续费、退票按梯度扣，那是铁路和航司的定价策略；
+   * 在这里它只会变成一条用户永远猜不到的钱窟窿 —— 而她改签的理由通常是
+   * 「他刚说买机票吧」，不是她自己反悔。所以全退。
+   *
+   * ## 为什么是减 `spent` 而不是加 `earned`
+   *
+   * `earned` 的语义是「打工挣的」，退款既不是挣也不是花，是**那笔钱没花出去**。
+   * 减 `spent` 之后，日记里「这趟花了多少」也跟着少 —— 这才是对的：
+   * 那张票退了，这一趟确实没花这笔。
+   *
+   * ## `payFromLife` 那一头退不回来
+   *
+   * 递条子是**单向**的（`life-spend/<id>.json` 只表达「该扣我多少」），
+   * 没有负数条子这种约定。所以这一笔在 life 那本账上仍然算花掉了。
+   * 不假装能退 —— 记一条日志，等两本账合并的口径定了再说。
+   */
+  refundFare(leg: { fare?: number }): number {
+    /*
+     * **只退真付过的那一笔。** `fare` 是 1.8.12 才有的字段，升级前就在路上的腿没有它 ——
+     * 那一代是到站才结算，也就是**根本没付**。这时候按算式退一笔出去，
+     * 等于凭空给她钱（2026-11-16 自查时抓到的）。判据用 `undefined`，不用 0：
+     * 走路骑车真是 0 元票，那种票没有可退的，也没什么可错的。
+     */
+    const fare = leg.fare;
+    if (!(typeof fare === 'number' && fare > 0)) return 0;
+    if (this.cfg.moneyEnabled) {
+      this.st = { ...this.st, spent: Math.max(0, this.st.spent - Math.round(fare)) };
+    }
+    if (this.cfg.payFromLife) {
+      this.log?.info(`退了 ${Math.round(fare)} 块票钱，但这笔在 life 那本账上退不回来（递条子是单向的）。`);
+    }
+    return Math.round(fare);
+  },
+
 
   /**
    * 这一趟买哪个座位档 —— **她自己判断**，见 `journey.ts` 的 `pickGrade`。

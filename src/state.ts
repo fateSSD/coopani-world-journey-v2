@@ -22,6 +22,8 @@ import {
 import { join } from 'node:path';
 import type { Journey } from './plan/journey.ts';
 import { cityById } from './geo/cities.ts';
+import type { ModeId } from './geo/modes.ts';
+import { modeById } from './geo/modes.ts';
 import { APPLIED_KEEP, type RideApplied } from './bridge.ts';
 // 伙伴记忆跟着人走，和「去过 / 想去 / 花销」同一份文件。
 import {
@@ -153,6 +155,19 @@ export interface Pledge {
    * 人可能在 M 等三天，那三天里 `arrivedAt` 还是 null。
    */
   readonly meetArrivedAt?: string | null;
+  /**
+   * 他点名要的走法（缺省 = 动身时她自己挑）。
+   *
+   * 2026-11-16 读者报告引出来的。原来约定里**完全没有交通方式**：
+   * 她答应和小岸一起去苏州，用户说「买机票吧，别再坐大半天火车」，
+   * 唯一能表达的入口是 `journey_go_to`，而那玩意儿一调就动身 ——
+   * 于是「改走法」只能被理解成「立刻出发」，人在成都安排好的下午全作废。
+   *
+   * 有了这一格，「同城 + 点名方式」才能落成「记下来，动身时按这个走」。
+   * **它只是偏好，不是票**：动身时若那种走法不可用或买不起，仍按 `pickMode` 挑，
+   * 并在回执里说清换了什么。
+   */
+  readonly modeId?: ModeId;
 }
 
 /**
@@ -727,7 +742,17 @@ export class StateStore {
         && typeof L.toId === 'string' && cityById(L.toId)
         && typeof L.departedAt === 'string' && Number.isFinite(Date.parse(L.departedAt))
         && typeof L.arriveAt === 'string' && Date.parse(L.arriveAt) > Date.parse(L.departedAt);
-      if (ok) leg = L as unknown as Journey;
+      if (ok) {
+        /*
+         * `fare` 单独验一遍（2026-11-16）。
+         *
+         * 上面是整体强转 —— 老状态里根本没有这一格，而新状态里它是一笔真钱。
+         * 强转意味着一个手改过的存档能塞进任意值，而 `refundFare` 会照着退。
+         * 认不出就当没有（`undefined`），到站时补记一次，不静默吞掉这一趟的票钱。
+         */
+        const fare = Number((L as Record<string, unknown>).fare);
+        leg = { ...(L as unknown as Journey), fare: Number.isFinite(fare) && fare > 0 ? Math.round(fare) : undefined };
+      }
     }
 
     const arr = (v: unknown): string[] =>
@@ -803,6 +828,8 @@ export class StateStore {
         const meetArrived = typeof o.meetArrivedAt === 'string' && Number.isFinite(Date.parse(o.meetArrivedAt))
           ? o.meetArrivedAt
           : null;
+        // 认不出的走法当「没点名」—— 动身时她自己挑，比卡在一个已删掉的 modeId 上好。
+        const modeId = typeof o.modeId === 'string' && modeById(o.modeId as ModeId) ? o.modeId as ModeId : undefined;
         return {
           cityId: o.cityId,
           days: Number.isFinite(Number(o.days)) ? Math.min(30, Math.max(1, Math.round(Number(o.days)))) : 1,
@@ -816,6 +843,7 @@ export class StateStore {
           acceptedAt: o.acceptedAt,
           arrivedAt: arrived,
           ...(meetCityId ? { meetCityId, meetArrivedAt: meetArrived } : {}),
+          ...(modeId ? { modeId } : {}),
         };
       })(),
       spent: Number.isFinite(Number(r.spent)) && Number(r.spent) >= 0 ? Math.round(Number(r.spent)) : 0,

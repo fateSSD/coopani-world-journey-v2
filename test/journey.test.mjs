@@ -2997,12 +2997,17 @@ test('节日和「没逛完」都让她更愿意再来一次，而且节日压�
   /*
    * 这两条是权重，不是硬规则，所以只能比频率。
    * 随机源固定成一个可重复的序列 —— 换台机器跑出来的数要一样。
+   *
+   * 2026-11-16：抽样 400 次时命中武汉的只有 2 次（0.5%），
+   * `plain` 与 `unfinished` 撞成 2:2 —— 不是权重坏了，是基数太小没有统计意义。
+   * 放大到 2000 后稳定：plain 0.40% / 没逛完 0.75% / 节日 1.35%。
+   * 城市表从 186 涨到 188 会继续稀释命中率，所以余量留得比「刚好够」宽。
    */
   const from = cityById('xian');
   const home = cityById('lanzhou');
   const visited = ['chengdu', 'chongqing', 'wuhan', 'xian', 'zhengzhou', 'lanzhou'];
 
-  const hits = (extra, n = 400) => {
+  const hits = (extra, n = 2000) => {
     let hit = 0;
     for (let i = 0; i < n; i++) {
       let s = i * 7919 + 13;

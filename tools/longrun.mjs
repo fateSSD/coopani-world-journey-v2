@@ -263,7 +263,16 @@ const setSlotTool = tool('journey_set_slot');
 let rentOk = 0, rentTries = 0;
 const rentFail = [];
 let gotoTries = 0, gotoOk = 0, gotoRej = 0;
+/*
+ * 2026-11-16 新行为：目的地本来就是她要去的那一座 + 他点名了走法
+ * → **只记走法、不动身**（或者已在路上就改签）。这两种都不出发，
+ * 原来那套「要 X 却去了 undefined」的断言会把正确行为判成 bug。
+ */
+let gotoKept = 0, gotoKeptTries = 0, gotoRebooked = 0, gotoRebookTries = 0;
+const gotoKeptWhy = [];
 const gotoBad = [];
+/** 中文走法 → mode id。长跑里两处要用（出发那一支和「只记走法」那一支）。 */
+const MODE_IDS = { 高铁: 'train', 飞机: 'plane', 自驾: 'car', 大巴: 'bus', 轮船: 'ship', 自行车: 'bike', 步行: 'walk' };
 const st = () => world.st;
 
 /* ---------------- set 档（2026-11-10 的 journey_set_slot） ---------------- */
@@ -292,12 +301,32 @@ const phaseCount = { home: 0, staying: 0, traveling: 0 };
 let stuckLeg = 0;
 let maxStuckLeg = 0;
 let pledgeAges = [];
+/** 这些趟里花得最多的一次（spent 会按趟清零，所以只记峰值）。 */
+let maxSpent = 0;
 let pledgeMismatch = 0;
 const pledgeMismatchSample = [];
 
 for (let i = 0; i < ticks; i++) {
   clock = new Date(clock.getTime() + STEP_MS);
   await world.tick();
+  /*
+   * 花销的峰值。
+   *
+   * `spent` 是**这一趟**的账，`settleHome` 会把它清零（账在回家时结清，见 world.ts）。
+   * 所以「跑完时 spent 是多少」取决于最后一天是不是刚好在家 —— 那是随机量。
+   * 2026-11-16 实测：同一份代码连跑，一次结尾在某座城（spent 两万多），
+   * 一次结尾刚回家（spent 0），而那条断言写的是 `spent > 1000`。
+   * 判据按技能里的老规矩来：**断言「出现过」，不断言「出现时是多少」。**
+   */
+  if (st().spent > maxSpent) maxSpent = st().spent;
+  /*
+   * 不变量：退款不能把账退成负数（2026-11-16）。
+   *
+   * `refundFare` 扣的是 `spent` 而不是加 `earned`，所以它天生有个下限问题：
+   * 一趟账被清过（回家）、又退一张几天前的票，就会退出一笔从来没有过的钱。
+   * 那里已经 clamp 到 0，这条盯的是「别处又写坏一次」。
+   */
+  if (st().spent < 0) throw new Error(`账被退成负数了：${st().spent}`);
   phaseCount[st().phase] = (phaseCount[st().phase] ?? 0) + 1;
 
   // 不变量：leg 早该到站却没到（等一个巡检周期不算，超 2 小时算卡住）
@@ -466,6 +495,16 @@ for (let i = 0; i < ticks; i++) {
       gotoRej++;
       if (before.phase !== st().phase) gotoBad.push(`被拒却动了身：${String(r.text).slice(0, 40)}`);
       if (depAfter !== depBefore) gotoBad.push(`被拒却推了「出发了」：${String(r.text).slice(0, 40)}`);
+    } else if (want && before.phase !== 'traveling' && st().phase !== 'traveling') {
+      /*
+       * **只记走法**：他说的是她本来就答应要去的那座城，这一调只改「怎么去」。
+       * （`rebookMode`，2026-11-16。用户来信里的「买机票吧，别再坐大半天火车」。）
+       */
+      gotoKept++;
+      const m = MODE_IDS[want];
+      if (!st().pledge) gotoBad.push('只记走法却把约定弄没了');
+      else if (m && st().pledge.modeId !== m) gotoBad.push(`记下的走法不是${want}（${st().pledge.modeId}）`);
+      if (depAfter !== depBefore) gotoBad.push(`只是改走法，却推了「出发了」：${String(r.text).slice(0, 40)}`);
     } else {
       gotoOk++;
       if (st().leg?.toId !== dest.id) gotoBad.push(`要${dest.name}却去了${st().leg?.toId}`);
@@ -473,8 +512,71 @@ for (let i = 0; i < ticks; i++) {
       if (st().returning) gotoBad.push('回程里还开了新的一趟');
       if (!(st().leg?.km > 0)) gotoBad.push(`公里数是 ${st().leg?.km}`);
       if (want && want !== '坐火箭') {
-        const m = { 高铁: 'train', 飞机: 'plane', 自驾: 'car', 大巴: 'bus', 轮船: 'ship', 自行车: 'bike', 步行: 'walk' }[want];
+        const m = MODE_IDS[want];
         if (st().leg?.modeId !== m) gotoBad.push(`说了${want}却安排了${st().leg?.modeId}`);
+      }
+      /*
+       * 票钱必须在腿上留凭据 —— 出发即付款（`buyTicket`）。
+       * 没有凭据就退不了票，而账面上那笔钱已经花掉了。
+       */
+      if (!(st().leg?.fare > 0) && st().leg?.modeId !== 'walk' && st().leg?.modeId !== 'bike') {
+        gotoBad.push(`坐了${st().leg?.modeId}却没有票价凭据`);
+      }
+    }
+  }
+
+  /*
+   * 只记走法（2026-11-16 的新路径：`rebookMode`）。
+   *
+   * 触发条件是「他点名的城 = 她本来就答应要去的那座」+ 点名了走法。
+   * 随机点名的命中率太低（全表 188 座城），所以要**照着约定点** ——
+   * 不然这条路径在长跑里是 0 次，绿得没有意义。
+   */
+  if (MODE === 'goto' && st().pledge && st().phase !== 'traveling' && i % 137 === 0) {
+    /*
+     * 点的是**下一段的目标**，不是最终那座城。
+     *
+     * 代码里的判据是 `pledgeStop`：有见面城且还没会合时，那是见面城。
+     * 驱动拿 `cityId` 去点，撞上有见面城的约定就会「点最终城 → 判成换地方 → 直接出发」，
+     * 然后把正确行为记成「只是改走法，人却动了身」（2026-11-16 长跑抓到的假红）。
+     */
+    const p0 = st().pledge;
+    const stopId = p0.meetCityId && !p0.meetArrivedAt ? p0.meetCityId : p0.cityId;
+    const c = cityById(stopId);
+    if (c) {
+      const depBefore = events.filter((e) => e.type === 'journey.depart').length;
+      const r = await goToTool.handler({ city: c.name, mode: '高铁' });
+      gotoKeptTries++;
+      const depAfter = events.filter((e) => e.type === 'journey.depart').length;
+      if (!r.isError) {
+        gotoKept++;
+        if (st().phase === 'traveling') gotoBad.push('只是改走法，人却动了身');
+        if (depAfter !== depBefore) gotoBad.push('只是改走法，却推了「出发了」');
+        if (st().pledge?.modeId !== 'train') gotoBad.push(`记下的走法不是高铁（${st().pledge?.modeId}）`);
+      } else if (gotoKeptWhy.length < 6) {
+        // 没记下来是哪种原因：见面城、买不起、还是真的换了地方
+        gotoKeptWhy.push(`${st().pledge?.meetCityId ? '有两段' : '单段'}：${String(r.text).slice(0, 46)}`);
+      }
+    }
+  }
+
+  /*
+   * 在路上改签（2026-11-16 的新路径：`rebookLeg`）。
+   *
+   * 目的不是「一定成功」，是压那条最容易出错的链：退旧票 → 买新票 → 重算到达时刻。
+   * 判据用「说成功了就必须真变了」：走法得换、新票得有凭据、目的地不许动。
+   */
+  if (MODE === 'goto' && st().phase === 'traveling' && st().leg && i % 211 === 0) {
+    const dest = cityById(st().leg.toId);
+    const wasMode = st().leg.modeId;
+    if (dest) {
+      const r = await goToTool.handler({ city: dest.name, mode: '飞机' });
+      gotoRebookTries++;
+      if (!r.isError) {
+        gotoRebooked++;
+        if (st().leg?.toId !== dest.id) gotoBad.push('改签把目的地改了');
+        if (st().leg?.modeId === wasMode) gotoBad.push(`改签说成功，走法还是${wasMode}`);
+        if (!(st().leg?.fare > 0)) gotoBad.push('改签后的新票没有凭据 —— 下次退不了');
       }
     }
   }
@@ -679,7 +781,7 @@ ok(homeTexts.every((t) => /待够|上限|短工|叫/.test(t)), '回家原因都�
 // 10. 记账：花销与收入非负，且不是 0（钱真的在动）
 if (MODE === 'money') {
   ok(st().spent >= 0 && st().earned >= 0, '账目非负', `spent ${st().spent} earned ${st().earned}`);
-  ok(st().spent > 1000, '钱真的在流动', `spent ${st().spent}`);
+  ok(maxSpent > 1000, '钱真的在流动', `这一趟最多花到 ${maxSpent}（跑完时 ${st().spent}）`);
 }
 
 // 11. 状态文件不膨胀
@@ -775,8 +877,10 @@ if (MODE !== 'plain') {
   console.log(`journey.invite 事件 ${inv.length} 条`);
 }
 if (MODE === 'goto') {
-  console.log(`点名去哪：走成 ${gotoOk} 次，被拒 ${gotoRej} 次（共 ${gotoTries} 次）｜租车 ${rentOk}/${rentTries} 次`);
+  console.log(`点名去哪：走成 ${gotoOk} 次｜只记走法 ${gotoKept}/${gotoKeptTries} 次｜被拒 ${gotoRej} 次（共 ${gotoTries} 次）`
+    + `｜改签 ${gotoRebooked}/${gotoRebookTries} 次｜租车 ${rentOk}/${rentTries} 次`);
   if (gotoBad.length) console.log('不合规样本', gotoBad.slice(0, 6));
+  if (gotoKeptWhy.length) console.log('只记走法没成的样本', gotoKeptWhy);
 }
 if (MODE === 'set') {
   console.log(`改作息：成功 ${setOk} / 被拒 ${setRej}（共 ${setTries} 次）｜受保护格挡回 ${lockedRej}/${lockedTries}`);

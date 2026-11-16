@@ -714,7 +714,19 @@ export const photoMethods: Record<string, any> = {
       const env = await this.push(
         'journey.photo',
         `photo-${dateKey}-${sceneId}`,
-        `她拍了张照片：${title}。`,
+        /*
+         * **事件正文不带人称**（2026-11-16 读者报告，附了数据）。
+         *
+         * 这条事件经 `external_event_frame` 投递，而核心 ORIENTATION 把那一区定义成
+         * 「别人在说话」。里面写「她」，模型就会把它当第三方：收到「她拍了张照片」，
+         * reasoning 里先问一句「谁拍的」，再把自己绕进去 —— 扫 1740 条 reasoning，
+         * 事件轮的第三人称比例从 10 月 24 日的 0% 涨到 11-16 的 60%。
+         * 说出口的话没被带偏（自称仍是「我」），但对自身经历的错认会累积。
+         *
+         * 无人称（不是「我」，也不是「她」）：这条通道语义上属于外部来源，
+         * 「我」会和「别人在说话」打架，空主语最稳。
+         */
+        `拍了张照片：${title}。`,
         'debounce',
         [{
           bytes,

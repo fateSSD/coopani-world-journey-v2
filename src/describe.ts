@@ -245,6 +245,18 @@ export const TOOL_DECLS = [
     description:
       'Set off for a named city, optionally by a stated means of transport. Use it when the person says where to go and/or how - "take the high-speed rail to Shanghai", "fly to Lhasa". With no mode it picks one itself, weighted by distance; with a mode it uses exactly that one, and if that one is impossible (too far, no airport, no rail link, no money) it says why instead of silently substituting another. '
       + 'Only when she is settled in a city or at home. While she is already on a leg it cannot turn around, but it still records the city as a wish for the next leg and says so - call it anyway when he names a place while she is travelling, and tell him it is meant for the next leg, not this one. '
+      /*
+       * 2026-11-16 读者报告：她把 `journey_go_to` 读成「设定行程」而不是「现在就动身」，
+       * 于是「买机票吧」直接触发出发 —— 前一秒还在成都安排下午的事，后一秒就说自己登机了。
+       * 参数和逻辑都没问题，是这里没写明调用即改变 `phase`。
+       */
+      + '**Calling it starts the leg at once**: the moment it returns she is on the road - no trip to the airport, no packing, no waiting for the day\'s plan to be over. If he only means "change how we travel", or wants her to go later, say that back to him and do not call it. '
+      /*
+       * 两个例外，都是 2026-11-16 加的（读者报告第 1 条）：目的地本来就没变的时候，
+       * 这一调**不动身**，只把走法定下来（或者，已经在路上就改签）。
+       * 不写清这一条，模型不敢在「改走法」时调用它，用户那句话又落空了。
+       */
+      + '**Two exceptions that do not start anything**: (a) if the city is exactly the one she already promised to travel to and she has not left yet, a stated mode is just recorded for that trip - she stays put and goes when she was going to; (b) if she is already on a leg heading for that same city, a stated mode rebooks it - old ticket refunded in full, new one bought, arrival time recalculated. Both come back saying what happened, so read the reply before telling him. '
       + 'Not while heading home, not during a short-term job, and not once the trip has hit its length limit - it will say which of those it is. Going home has its own tool.',
     parameters: {
       type: 'object',
@@ -259,7 +271,7 @@ export const TOOL_DECLS = [
       required: ['city'],
     },
     tags: ['write'] as const,
-    summary: { zh: '他指明了去哪、怎么去，就用它；不说方式就她自己挑。', en: 'Sets off for a named city, by a stated means of transport if given.' },
+    summary: { zh: '他指明了去哪、怎么走，就用它 —— **一调就动身**（去的本来就是那一趟时只改走法）；不说方式就她自己挑。', en: 'Sets off for a named city, by a stated means of transport if given; rebooks instead when the destination has not changed.' },
   },
   /*
    * 2026-11-05 加：对伙伴的记忆。
@@ -813,7 +825,7 @@ export const JOURNEY_DESCRIBE = {
      */
     {
       type: 'journey.photo',
-      description: { zh: '她路上拍的一张风景照：只有景，没有她自己。附在事件后面。', en: 'A scenery photo she took on the road. Scenery only, never herself. Attached to the event.' },
+      description: { zh: '路上拍的一张风景照：只有景，没有她自己。附在事件后面。', en: 'A scenery photo she took on the road. Scenery only, never herself. Attached to the event.' },
       trigger: 'debounce' as const,
     },
     {
@@ -873,10 +885,21 @@ export const JOURNEY_DESCRIBE = {
     {
       type: 'journey.pledge',
       description: {
-        zh: '原来的约定被推掉了：他叫她改去别处，跟人说好的那趟去不成。',
-        en: 'An earlier promise is dropped: the person redirected her, so the agreed trip cannot happen.',
+        zh: '同行约定变了：改去别处，那趟作废；或者到了别的城，那份约定静默失效；'
+          + '也可能目的地没变、只是换了走法，同行照旧。',
+        en: 'A promise changed: redirected somewhere else and dropped; or she arrived elsewhere and it lapsed; '
+          + 'or she kept the same destination and only changed how she travels, so it still stands.',
       },
       trigger: 'debounce' as const,
+    },
+    {
+      type: 'journey.rebook',
+      description: {
+        zh: '改签了：这一段走到一半，目的地不变，他从别的走法改成了另一种（旧票全额退、新票另买）。',
+        en: 'She rebooked a leg already underway: same destination, a different way of getting there '
+          + '(old ticket refunded in full, a new one bought).',
+      },
+      trigger: 'flush' as const,
     },
     {
       type: 'journey.work',

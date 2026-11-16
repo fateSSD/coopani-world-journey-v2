@@ -616,16 +616,16 @@ export const socialMethods: Record<string, any> = {
     await this.push(
       'journey.invite',
       `invite-taken-${one.id}`,
-      `${names.join('、')}接了她说的话：`
+      `${names.join('、')}接了话：`
       + (useMeet ? `先在${useMeet.name}碰头，再一起去${dest.name}，在那儿待 ${one.days} 天。` : `一起去${dest.name}，在那儿待 ${one.days} 天。`)
       + (one.note ? `对方留的话是「${one.note}」。` : '')
       + (useMeet
         ? (here && here.id === useMeet.id
-          ? `\n她本来就在${useMeet.name}，从这会儿起就在这儿等人 —— 人露面了再一起走。`
-          : `\n她也得先往${useMeet.name}去会合，见上了再一起往${dest.name}走。`)
+          ? `\n本来就在${useMeet.name}，从这会儿起就在这儿等人 —— 人露面了再一起走。`
+          : `\n也得先往${useMeet.name}去会合，见上了再一起往${dest.name}走。`)
         : (here && here.id === dest.id
-          ? `\n她本来就在${dest.name}，这几天就按这个过。`
-          : `\n她也得真的往${dest.name}走 —— 路上该多久是多久，不是明天就到。`))
+          ? `\n本来就在${dest.name}，这几天就按这个过。`
+          : `\n也得真的往${dest.name}走 —— 路上该多久是多久，不是明天就到。`))
       + `\n（那边也是这么走的：${useMeet ? `先在${useMeet.name}碰头，` : ''}到了各待 ${one.days} 天，谁先到谁等。）`,
       'flush',
     );
@@ -1055,7 +1055,7 @@ export const socialMethods: Record<string, any> = {
       await this.push(
         'journey.ask',
         `ask-invite-${id}`,
-        `她想接${this.nameOf(one.pet)}那条：`
+        `想接${this.nameOf(one.pet)}那条：`
         + (useMeet ? `先在${useMeet.name}碰头，再一起去${dest.name}，待 ${one.days} 天。` : `一起去${dest.name}，待 ${one.days} 天。`)
         + '在等他点头。'
         + '\n（他答「好」之前她没有答应任何人；答了才算。）',
@@ -1122,7 +1122,7 @@ export const socialMethods: Record<string, any> = {
     await this.push(
       'journey.invite',
       `invite-${id}`,
-      `她答应了${this.nameOf(r.withPet)}：`
+      `答应了${this.nameOf(r.withPet)}：`
       + (useMeet ? `先在${useMeet.name}碰头，再一起去${dest.name}，在那儿待 ${r.days} 天。` : `一起去${dest.name}，在那儿待 ${r.days} 天。`)
       + (r.note ? `对方留的话是「${r.note}」。` : '')
       + (useMeet

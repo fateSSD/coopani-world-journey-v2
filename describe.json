@@ -795,10 +795,18 @@
     {
       "type": "journey.pledge",
       "description": {
-        "zh": "原来的约定被推掉了：他叫她改去别处，跟人说好的那趟去不成。",
-        "en": "An earlier promise is dropped: the person redirected her, so the agreed trip cannot happen."
+        "zh": "同行约定变了：改去别处，那趟作废；或者到了别的城，那份约定静默失效；也可能目的地没变、只是换了走法，同行照旧。",
+        "en": "A promise changed: redirected somewhere else and dropped; or she arrived elsewhere and it lapsed; or she kept the same destination and only changed how she travels, so it still stands."
       },
       "trigger": "debounce"
+    },
+    {
+      "type": "journey.rebook",
+      "description": {
+        "zh": "改签了：这一段走到一半，目的地不变，他从别的走法改成了另一种（旧票全额退、新票另买）。",
+        "en": "She rebooked a leg already underway: same destination, a different way of getting there (old ticket refunded in full, a new one bought)."
+      },
+      "trigger": "flush"
     },
     {
       "type": "journey.work",
