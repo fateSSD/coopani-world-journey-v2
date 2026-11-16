@@ -257,8 +257,51 @@ export const purseMethods: Record<string, any> = {
    * `ok` 正常走 / `tight` 住便宜的坐慢车 / `low` 只走近处且不坐飞机 / `empty` 停下打工。
    * 记账关着、预算填 0（不限），永远是 `ok` —— 没记账就别替用户省钱。
    */
+  /**
+   * 模拟鱼生广播的「这趟能动用的钱」。
+   *
+   * 读不到返回 `null` —— **不是 0**。那边现金耗尽时广播的就是 0，
+   * 0 是「没钱了」，跟「没装生活层」是两回事，不能混（混了的后果见 `purseStage`）。
+   */
+  lifeAllowance(): number | null {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
+      const allowance = Number(raw?.ledger?.travelAllowance);
+      if (Number.isFinite(allowance)) return Math.max(0, Math.round(allowance));
+    } catch { /* 没装生活层或文件坏了，退回手填预算 */ }
+    return null;
+  },
+
+  /**
+   * 现在还能花多少（绝对额）。`null` = 没有钱这个概念（记账关着 / 手填预算 0 = 不限）。
+   *
+   * **生活层优先，而且不再减 `spent`**：那边广播的现金已经把旅行条子扣过了，
+   * 再减一次等于同一笔路费扣两回 —— 2026-11-16 审查查出：现金 7000、已花 3000 时
+   * 余钱被算成 500，实际能动的是 3500。
+   */
+  purseLeft(): number | null {
+    if (!this.cfg.moneyEnabled) return null;
+    const life = this.lifeAllowance();
+    if (life !== null) return life;
+    if (this.cfg.budget <= 0) return null;
+    return this.cfg.budget - (this.st.spent - this.st.earned);
+  },
+
   purseStage(): 'ok' | 'tight' | 'low' | 'empty' {
-    if (!this.cfg.moneyEnabled || this.cfg.budget <= 0) return 'ok';
+    if (!this.cfg.moneyEnabled) return 'ok';
+    const life = this.lifeAllowance();
+    if (life !== null) {
+      /*
+       * 生活层给的是实时余额：**只按绝对地板降档**，没有「预算的百分之几」可算。
+       * 而且**广播 0 = 没钱了**，要落到 `empty` 停下打工 ——
+       * 不能走下面那句 `budget <= 0 → ok`，那句的意思是「用户手填 0 = 不记账、别替她省」。
+       */
+      if (life < PURSE_EMPTY.floor) return 'empty';
+      if (life < PURSE_LOW.floor) return 'low';
+      if (life < PURSE_TIGHT.floor) return 'tight';
+      return 'ok';
+    }
+    if (this.cfg.budget <= 0) return 'ok';
     // 净值 = 花掉的 - 挣到的。打工收入不该让「已经花了多少」这个数字变小。
     const left = this.cfg.budget - (this.st.spent - this.st.earned);
     const under = (t: { pct: number; floor: number }): boolean =>
@@ -289,8 +332,8 @@ export const purseMethods: Record<string, any> = {
    * 剩一半留给到了之后的住和吃，和 `affordMode` 的判据保持一致。
    */
   purseRangeKm(): number {
-    if (!this.cfg.moneyEnabled || this.cfg.budget <= 0) return Infinity;
-    const left = this.cfg.budget - (this.st.spent - this.st.earned);
+    const left = this.purseLeft();
+    if (left === null) return Infinity;
     if (left <= 0) return LOW_KM;
     return Math.max(200, (left * 0.5) / 0.4);
   },
@@ -422,8 +465,9 @@ export const purseMethods: Record<string, any> = {
    * 那时钱是抽象的，凭空让她住五星反而假。
    */
   purseRich(): boolean {
-    if (!this.cfg.moneyEnabled || this.cfg.budget <= 0) return false;
-    return this.cfg.budget - (this.st.spent - this.st.earned) > 2500;
+    const left = this.purseLeft();
+    if (left === null) return false;
+    return left > 2500;
   },
 
 
@@ -442,8 +486,9 @@ export const purseMethods: Record<string, any> = {
    * 有钱的概念时，看余额够不够坐一趟（三百块以下就不坐索道了）。
    */
   spotSpendOk(): boolean {
-    if (!this.cfg.moneyEnabled || this.cfg.budget <= 0) return true;
-    return this.cfg.budget - (this.st.spent - this.st.earned) > 300;
+    const left = this.purseLeft();
+    if (left === null) return true;
+    return left > 300;
   },
 
 
@@ -451,11 +496,8 @@ export const purseMethods: Record<string, any> = {
     const mode = modeById(modeId);
     if (!mode) return undefined;
     const cheapest = this.fareOf(modeId, km, crossBorder);
-    let purse: number | null = null;
-    if (this.cfg.moneyEnabled && this.cfg.budget > 0) {
-      const left = this.cfg.budget - (this.st.spent - this.st.earned);
-      purse = left / Math.max(1, cheapest);
-    }
+    const left = this.purseLeft();
+    const purse = left === null ? null : left / Math.max(1, cheapest);
     return pickGrade(mode, km, purse);
   },
 
@@ -471,8 +513,8 @@ export const purseMethods: Record<string, any> = {
    * 没记账、预算填 0 时一律算回得去。
    */
   canAffordTrip(km: number, crossBorder = false): boolean {
-    if (!this.cfg.moneyEnabled || this.cfg.budget <= 0) return true;
-    const left = this.cfg.budget - (this.st.spent - this.st.earned);
+    const left = this.purseLeft();
+    if (left === null) return true;
     if (left <= 0) return false;
     const cheapest = Math.min(...(['bus', 'train', 'plane', 'ship', 'car'] as const)
       .map((id) => this.fareOf(id, km, crossBorder)));
@@ -502,8 +544,8 @@ export const purseMethods: Record<string, any> = {
      */
     pair?: { from: City; to: City },
   ): ((m: TravelMode) => boolean) | undefined {
-    if (!this.cfg.moneyEnabled || this.cfg.budget <= 0) return undefined;
-    const left = this.cfg.budget - (this.st.spent - this.st.earned);
+    const left = this.purseLeft();
+    if (left === null) return undefined;
 
     /*
      * **一分钱都不剩的时候，什么票都买不起。**
@@ -569,6 +611,13 @@ export const purseMethods: Record<string, any> = {
     if (!this.cfg.moneyEnabled) return '';
     const { spent, earned } = this.st;
     const tail = earned > 0 ? `，打工挣了 ${earned} 块` : '';
+    const life = this.lifeAllowance();
+    if (life !== null) {
+      /* 生活层是实时余额，没有「预算」这个数可报 —— 说还能动用多少，别说预算多少。 */
+      if (life <= 0) return `这一趟花了 ${spent} 块${tail}，手头的钱已经见底了。`;
+      if (life < TIGHT_THRESHOLD) return `这一趟花了 ${spent} 块${tail}，还能动用 ${life} 块，得省着来。`;
+      return `这一趟花了 ${spent} 块${tail}，还能动用 ${life} 块。`;
+    }
     if (this.cfg.budget <= 0) return `这一趟已经花了 ${spent} 块${tail}。`;
     // 还剩多少按净值算：挣的钱确实能花。
     const left = this.cfg.budget - (spent - earned);
