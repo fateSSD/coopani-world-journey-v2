@@ -2515,6 +2515,23 @@ export default {
         `DELETE FROM profiles WHERE rowid IN
            (SELECT rowid FROM profiles WHERE exp < ?1 LIMIT ${PURGE_BATCH})`,
       ).bind(nowIso).run();
+      /*
+       * **路标和错误表原来没进这里**（2026-11-16 补）。
+       *
+       * 路标的过期只在「同一座城发新路标」时才顺手裁一次 —— 冷门城市没人再发，
+       * 那些过期条目就一直躺着。`signposts` 是永久累积的表，不清会无限增长。
+       *
+       * `errors` 是诊断用的，留 7 天足够回看一次事故；再久也不会有人翻。
+       */
+      const sp = await db.prepare(
+        `DELETE FROM signposts WHERE rowid IN
+           (SELECT rowid FROM signposts WHERE expires_at < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso).run();
+      const errCutoff = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+      const er = await db.prepare(
+        `DELETE FROM errors WHERE rowid IN
+           (SELECT rowid FROM errors WHERE day < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(errCutoff).run();
       console.log(
         '[sight] purge', cutoffIso,
         'presence', p?.meta?.changes ?? '?',
@@ -2523,6 +2540,8 @@ export default {
         'cards', c?.meta?.changes ?? '?',
         'profiles', pf?.meta?.changes ?? '?',
         'takers', t?.meta?.changes ?? '?',
+        'signposts', sp?.meta?.changes ?? '?',
+        'errors', er?.meta?.changes ?? '?',
       );
     } catch (e) {
       console.error('[sight] purge failed', e && e.message ? e.message : e);
