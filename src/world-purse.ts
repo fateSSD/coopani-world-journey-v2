@@ -1242,7 +1242,23 @@ export const purseMethods: Record<string, any> = {
    * **只报「今天」和「昨天」。** 再往前翻会变成一张待办清单，
    * 而且那些天她本来也补不回来了。
    */
+  /**
+   * 模拟鱼生扩展是否正在运行（根据 life-public.json 的真实更新时间判，30 分钟内有效）。
+   */
+  lifeActive(): boolean {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
+      const at = Date.parse(typeof raw?.updatedAt === 'string' ? raw.updatedAt : '');
+      return Number.isFinite(at) && Math.abs(this.realNow().getTime() - at) <= 30 * 60_000;
+    } catch {
+      return false;
+    }
+  },
+
   diaryLine(now: Date, here: City): string {
+    if (this.st.phase === 'home' && this.lifeActive()) {
+      return '日记：这会儿在家过日子，日记写到生活那边去（life_diary_write）。';
+    }
     const moment = localMoment(now, here.tz);
     const today = moment.dateKey;
     if (this.diary.read(today)) return '日记：今天已经写过了。';
@@ -1330,6 +1346,12 @@ export const purseMethods: Record<string, any> = {
 
 
   writeDiary(body: string, dateKey?: string): { text: string; isError?: boolean } {
+    if (this.st.phase === 'home' && this.lifeActive()) {
+      return {
+        text: '你现在在家过日子，生活和旅行两个扩展都开着时，在家期间请用 life_diary_write 写生活日记；出门旅行再用旅行日记。',
+        isError: true,
+      };
+    }
     const text = body.trim();
     if (!text) return { text: '正文是空的，没写。', isError: true };
     const here = this.cityOrNull(this.st.hereId) ?? this.cityOrNull(this.resolveHome().city.id);
