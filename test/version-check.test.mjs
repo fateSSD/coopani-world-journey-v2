@@ -121,9 +121,9 @@ test('启动检查：缓存刚查过才跳过，隔一会儿就必须重查', as
   assert.equal(calls, 1, '十五分钟内又查了一遍');
 
   /* 第三次：换一个实例，模拟「过了一阵子重启」—— 缓存里的时间很旧，必须重查。 */
-  const raw = JSON.parse(readFileSync(join(dir, 'version-check.json'), 'utf8'));
+  const raw = JSON.parse(readFileSync(join(dir, 'version-check-coopani-world-journey.json'), 'utf8'));
   raw.checkedAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
-  writeFileSync(join(dir, 'version-check.json'), JSON.stringify(raw), 'utf8');
+  writeFileSync(join(dir, 'version-check-coopani-world-journey.json'), JSON.stringify(raw), 'utf8');
 
   const b = new VersionCheck({ dataDir: dir, current: '1.0.0', fetchImpl });
   await b.startupRefresh();
@@ -137,7 +137,7 @@ test('启动检查：缓存里的版本已经过时，也必须重查（这正�
    */
   const dir = mkdtempSync(join(tmpdir(), 'ver2-'));
   /* 造一份「半小时前查过、结论是 1.0.2」的缓存。 */
-  writeFileSync(join(dir, 'version-check.json'), JSON.stringify({
+  writeFileSync(join(dir, 'version-check-coopani-world-journey.json'), JSON.stringify({
     latest: '1.0.2',
     checkedAt: new Date(Date.now() - 30 * 60_000).toISOString(),
   }), 'utf8');
@@ -168,4 +168,55 @@ test('面板：版本徽章挂在标题上，不在页脚', () => {
   /* 页脚不许再画一次 —— 两处都显示，用户会以为版本对不上。 */
   assert.doesNotMatch(js, /foot\.append\(el\(\s*'p',\s*s\.versionOutdated/, '页脚还在画版本行');
   assert.match(js, /ver\.dataset\.new/, '没有给徽章打「有新版」的标记，样式挂不上');
+});
+
+/* ---------------- 2026-11-17：两个包共用 data 目录，缓存不许撞 ---------------- */
+
+test('两个包共用 dataDir，缓存文件是两份', async () => {
+  /*
+   * Mr.Q 抓到的现场：模拟鱼生的面板角标显示「v0.16.5 → v1.12.3」——
+   * 右边那个 1.12.3 是**环游世界**的版本号，而 life 从来没有 1.12.x。
+   *
+   * `data` 目录是所有扩展共用的，两边各自实现了一份版本检查、缓存都写死成
+   * `version-check.json`，谁最后查谁覆盖。不只是显示错版本 ——
+   * 「要不要更新」的判断整个失真，一个包会提示用户升级到另一个包的版本。
+   */
+  const { readdirSync, existsSync } = await import('node:fs');
+  const d = mkdtempSync(join(tmpdir(), 'vc-share-'));
+  const fake = async () => new Response(JSON.stringify({ latest: '1.0.0' }), { status: 200 });
+
+  const journey = new VersionCheck({ dataDir: d, current: '1.0.0', pkg: 'coopani-world-journey', fetchImpl: fake });
+  const life = new VersionCheck({ dataDir: d, current: '1.0.0', pkg: 'coopani-world-life', fetchImpl: fake });
+  await journey.refresh(true);
+  await life.refresh(true);
+
+  const files = readdirSync(d).filter((f) => f.startsWith('version-check'));
+  assert.equal(files.length, 2, `两个包写了同一份缓存（只有 ${files.length} 个：${files.join(', ')}）`);
+  assert.equal(existsSync(join(d, 'version-check.json')), false, '还在写老的共用文件名');
+  rmSync(d, { recursive: true, force: true });
+});
+
+test('两个包的缓存互不覆盖', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'vc-share2-'));
+  const journey = new VersionCheck({
+    dataDir: d, current: '1.0.0', pkg: 'coopani-world-journey',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ latest: '9.9.9' }) }),
+  });
+  await journey.refresh(true);
+
+  const life = new VersionCheck({
+    dataDir: d, current: '1.0.0', pkg: 'coopani-world-life',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ latest: '1.0.0' }) }),
+  });
+  await life.refresh(true);
+
+  assert.equal(journey.state().latest, '9.9.9', 'journey 的缓存被 life 覆盖了');
+  assert.equal(life.state().latest, '1.0.0');
+
+  /* 重启后（新实例）两边读回来还是各自的。 */
+  const j2 = new VersionCheck({ dataDir: d, current: '1.0.0', pkg: 'coopani-world-journey' });
+  const l2 = new VersionCheck({ dataDir: d, current: '1.0.0', pkg: 'coopani-world-life' });
+  assert.equal(j2.state().latest, '9.9.9');
+  assert.equal(l2.state().latest, '1.0.0');
+  rmSync(d, { recursive: true, force: true });
 });

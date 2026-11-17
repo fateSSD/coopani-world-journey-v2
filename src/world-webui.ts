@@ -463,7 +463,10 @@ export const webUiMethods: Record<string, any> = {
       throw new Error(`生图设置没有这个方法：${method}`);
     }
     if (panel === 'now') {
-      if (method === 'snapshot') return this.uiSnapshot();
+      if (method === 'snapshot') {
+        if (!this.plan) await this.refreshHomeWeather(this.worldNow()).catch(() => {});
+        return this.uiSnapshot();
+      }
       if (method === 'dismissGuide') {
         this.uiStore.markGuideSeen(this.realNow());
         return this.uiSnapshot();

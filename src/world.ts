@@ -874,18 +874,18 @@ export class JourneyWorld implements World {
    * 不因为一个天气接口把巡检打成半瘫。
    */
   private async refreshHomeWeather(now: Date): Promise<void> {
-    if (this.st.phase !== 'home') return;
-    const home = this.resolveHome().city;
-    const m = localMoment(now, home.tz);
-    /* 已经有今天这一份了就不查。`w === null` 也认 —— 否则查失败的每一拍都要重试。 */
-    if (this.homeWeather?.dateKey === m.dateKey && this.homeWeather.cityId === home.id) return;
-    /* 半小时一次。日切那一拍之后要等半小时才重查，别拿它当心跳。 */
+    if (this.plan) return;
+    const city = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
+    const m = localMoment(now, city.tz);
+    /* 只有今天这一份且真的查到了（w 非空）才跳过；失败的 null 不锁死全天，3 分钟后可重试。 */
+    if (this.homeWeather?.w && this.homeWeather.dateKey === m.dateKey && this.homeWeather.cityId === city.id) return;
     const realMs = this.realNow().getTime();
-    if (realMs - this.homeWeatherAt < 30 * 60_000) return;
+    const cooldown = this.homeWeather?.w === null ? 3 * 60_000 : 30 * 60_000;
+    if (realMs - this.homeWeatherAt < cooldown) return;
     this.homeWeatherAt = realMs;
     this.weather.setKey(this.amapKey());
-    const w = await this.weather.forecast(home, m.dateKey).catch(() => null);
-    this.homeWeather = { dateKey: m.dateKey, cityId: home.id, w };
+    const w = await this.weather.forecast(city, m.dateKey).catch(() => null);
+    this.homeWeather = { dateKey: m.dateKey, cityId: city.id, w };
   }
 
   private async tick(): Promise<void> {

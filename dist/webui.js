@@ -746,9 +746,13 @@ export default {
          */
         const ver = el('span', 'jr-ver-tag', '');
         eyebrow.append(ver);
+        const cityRow = el('div', 'jr-city-row');
         const city = el('h1', 'jr-city', '—');
+        const cityWeather = el('span', 'jr-city-weather', '');
+        cityWeather.hidden = true;
+        cityRow.append(city, cityWeather);
         const sub = el('p', 'jr-sub', '');
-        left.append(eyebrow, city, sub);
+        left.append(eyebrow, cityRow, sub);
         const right = el('div', 'jr-head-right');
         const status = el('span', 'jr-pill', '');
         const clock = el('div', 'jr-clock', '--:--');
@@ -807,6 +811,16 @@ export default {
           /* title 里也有占位符，要一起替换 —— 直接塞 `T.verHint` 出来是「本机 {v}」。 */
           ver.title = hasNew ? fmt2(T.verHint, s.version, s.latestVersion) : '';
           city.textContent = s.place.name;
+          if (s.weather) {
+            cityWeather.textContent = s.weather.trim().replace(/^天气：/, '');
+            cityWeather.hidden = false;
+          } else if (s.weatherOutOfRange) {
+            cityWeather.textContent = T.weatherOut;
+            cityWeather.hidden = false;
+          } else {
+            cityWeather.textContent = '';
+            cityWeather.hidden = true;
+          }
           // 「兰州 · 家在石家庄」是对的，「兰州 · 从石家庄出发」读起来就是矛盾 ——
           // 前者说的是「她人在哪儿 + 家在哪」，后者听起来像「她从石家庄走过来」。
           sub.textContent = [s.place.region, fmt(T.homeAt, s.home), fmt(T.speed, s.speed)]

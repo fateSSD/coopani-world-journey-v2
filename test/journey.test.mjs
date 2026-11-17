@@ -1333,7 +1333,12 @@ test('身份按出发地渲染，不写死某座城市', () => {
   const en = pkg.cortico.locales.en.description;
   assert.equal(zh.includes('兰州'), false, '中文市场描述里写死了兰州');
   assert.equal(en.includes('Lanzhou'), false, '英文市场描述里写死了 Lanzhou');
-  assert.match(zh, /从你家出发/, '没把来历表述成「从你家出发」');
+  /*
+   * 2026-11-17：文案从「从你家出发」改成了「从你所在城市出发」——
+   * 「家」在这个扩展里是 `homeCity` 这个配置项，而用户在界面上根本找不到它
+   * （面板上叫「从哪儿出发」），写「从你家」等于让他去猜。断言跟着改。
+   */
+  assert.match(zh, /从你所在城市出发/, '来历没按「你所在城市」表述');
 
   const p = readFileSync(new URL('../ENV_PROMPT.md', import.meta.url), 'utf8');
   assert.match(p, /\{\{journey\.home\}\}/, '身份段没用出发地变量');
