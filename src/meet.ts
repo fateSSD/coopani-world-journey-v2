@@ -274,6 +274,16 @@ export interface NeighborBoard {
    * 所以别拿它说「这城一个人都没有」。
    */
   readonly here: number;
+  /**
+   * **这次到底查成了没有**（2026-11-17，zzy1053 报的）。
+   *
+   * 原来「断连」和「查到了、确实没人」返回的东西一模一样（都是空 `list`），
+   * 于是他 11-16 那天全天连不上，早上那次判定被当成「人没露面」——
+   * 他自己拿着日志都分不出来，普通用户更没戏。
+   *
+   * `false` 的含义是「不知道」，不是「没人」。**任何时候都不该把它读成「没人」。**
+   */
+  readonly ok: boolean;
 }
 
 export async function findNeighbors(
@@ -294,7 +304,7 @@ export async function findNeighbors(
   limit = MEET_MAX - 1,
 ): Promise<NeighborBoard> {
   const url = clean(opt.url);
-  if (!url || !clean(opt.uid)) return { list: [], pool: 0, here: 0 };
+  if (!url || !clean(opt.uid)) return { list: [], pool: 0, here: 0, ok: false };
   /*
    * **不再传 `date`（2026-11-10）。**
    *
@@ -313,9 +323,9 @@ export async function findNeighbors(
     const res = await fetch(`${endpointOf(url)}?${q}`, {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) return { list: [], pool: 0, here: 0 };
+    if (!res.ok) return { list: [], pool: 0, here: 0, ok: false };
     const body = (await res.json()) as { list?: unknown; pool?: unknown; here?: unknown };
-    if (!Array.isArray(body.list)) return { list: [], pool: 0, here: 0 };
+    if (!Array.isArray(body.list)) return { list: [], pool: 0, here: 0, ok: false };
     const pool = typeof body.pool === 'number' && body.pool > 0 ? Math.floor(body.pool) : 0;
     const here = typeof body.here === 'number' && body.here > 0 ? Math.floor(body.here) : 0;
     /*
@@ -332,9 +342,10 @@ export async function findNeighbors(
         .slice(0, limit),
       pool,
       here,
+      ok: true,
     };
   } catch {
-    return { list: [], pool: 0, here: 0 };
+    return { list: [], pool: 0, here: 0, ok: false };
   }
 }
 

@@ -519,8 +519,19 @@ export const photoMethods: Record<string, any> = {
         mode,
         hour,
         weather: weather?.dayWeather,
-        // 体感参与提示词：高原和湿热拍出来的调子不一样，那是她眼睛看到的东西。
-        feel: bodyFeeling(city, this.resolveHome().city),
+        /*
+         * 体感参与提示词：高原和湿热拍出来的调子不一样，那是她眼睛看到的东西。
+         *
+         * **路上那张不传**（2026-11-17，读者实测指出）。路上 `this.plan` 是 null，
+         * `weather` 跟着是 null —— 于是 1.10.1 那个「有天气就以天气为准」的修法
+         * 在路上一律走 else 分支，照样把「冷得不像话」拼成「画面能看出这一点」。
+         * 而他报的那张「哈尔滨一带的路上」**正是路上自动拍的**。
+         *
+         * 两个理由不传，不只是为了绕开：
+         * ① 路上那张的 city 是「XX 一带」，不是真城 —— 按那座城算体感本来就不准；
+         * ② 没有天气数据时再拼体感，等于让模型自己编天气。
+         */
+        feel: onRoad ? '' : bodyFeeling(city, this.resolveHome().city),
         // 风格交给用户：接本地模型的人要能盖掉「胶片质感」这种写实指令。
         style: shootStyle,
         /*

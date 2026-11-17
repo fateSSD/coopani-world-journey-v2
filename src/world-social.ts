@@ -1198,11 +1198,11 @@ export const socialMethods: Record<string, any> = {
    * 代价是**只在早上问一次**（调用点在每天那个决策点）。
    * 对方当天下午才到的，她第二天早上才看见 —— 这就是「等一天」，可以接受。
    */
-  async matesHere(p: Pledge, here: City, now: Date): Promise<string[]> {
+  async matesHere(p: Pledge, here: City, now: Date): Promise<{ names: string[]; ok: boolean }> {
     const meet = this.meetOptions();
-    if (!meet) return [];
+    if (!meet) return { names: [], ok: false };
     const names = (p.withPets ?? [p.withPet]).map((x) => x.trim()).filter(Boolean);
-    if (!names.length) return [];
+    if (!names.length) return { names: [], ok: true };
     /*
      * 只问「此刻在这座城的有谁」，不问日期 —— 服务端按真实写入时刻划窗口。
      * 约好的人在不在这儿，是个当下的事，跟她的游戏内日历无关。
@@ -1228,7 +1228,12 @@ export const socialMethods: Record<string, any> = {
     for (const b of boards) {
       for (const x of b?.list ?? []) have.add(x.pet.trim());
     }
-    return names.filter((n) => have.has(n));
+    /*
+     * 四个时段里**只要有一个查成了**就算查过。全都没成 = 不知道，
+     * 调用方不能把它当成「没人」—— 这正是 11-16 那天被误判成「人没露面」的原因。
+     */
+    const ok = boards.some((b) => b?.ok);
+    return { names: names.filter((n) => have.has(n)), ok };
   },
 
 

@@ -2081,8 +2081,20 @@ export class JourneyWorld implements World {
          */
         if (pledge.meetCityId && !pledge.arrivedAt && pledge.meetArrivedAt) {
           const mates = await this.matesHere(pledge, here, now);
-          if (!mates.length) return;   // 人还没露面，今天不动
-          this.log?.info(`在${here.name}见着${mates.join('、')}了，一起往${this.cityName(pledge.cityId)}走。`);
+          if (!mates.names.length) {
+            /*
+             * **查不成和没人要分开说**（2026-11-17，zzy1053 报的）。
+             *
+             * 原来这两种情况返回的东西一模一样，他 11-16 全天断连，
+             * 早上那次判定被当成「人没露面」—— 他自己翻日志都分不出来。
+             * 现在至少日志里留一句，用户按时间对得上。
+             */
+            if (!mates.ok) {
+              this.log?.warn(`在${here.name}没查成碰面名单（碰面服务器连不上），今天先不动。`);
+            }
+            return;   // 人还没露面（或者没查成），今天不动
+          }
+          this.log?.info(`在${here.name}见着${mates.names.join('、')}了，一起往${this.cityName(pledge.cityId)}走。`);
           await this.moveOn(now, here);
           return;
         }
