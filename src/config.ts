@@ -290,6 +290,18 @@ export interface JourneyConfigSection extends WorldSection {
    */
   imageModel: string;
   /**
+   * **画面描述（`describe`）用哪种语言写**（2026-11-18，zzy1053 报的）。
+   *
+   * 原来工具说明里写死「必须英文」，理由是本地的 SDXL CLIP 读不了中文。
+   * 那个理由**只对 CLIP 系成立**：用 Qwen-Image / Kolors 这类中文原生模型的人，
+   * 被逼着写英文，反而在丢细节 —— 而且 `describe` 有 60 字符上限，
+   * 英文很容易断在单词中间（他实测三张，三张都正好 60 字符砍断）。
+   * 中文信息密度高得多，「雪花落在路灯和房檐上，暖黄灯光」十几个字就说完了。
+   *
+   * `en` = 老行为（默认，不动任何人）；`zh` = 中文优先。
+   */
+  imagePromptLang: 'en' | 'zh';
+  /**
    * 面板底部「说两句」那一栏发给谁。**空 = 整块不显示。**
    *
    * 默认是作者自己的地址：这个扩展就是给谁用、反馈就发给谁，
@@ -369,6 +381,8 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   imageWatermark: 'auto',
   imageKey: '',
   imageModel: '',
+  /* 默认英文 = 老行为，一个字节都不变。中文系的本地模型由用户自己切到 `zh`。 */
+  imagePromptLang: 'en',
   /*
    * 作者本人收反馈的地址。写成字面量而不是读 package.json 的 author 字段：
    * `author` 里是名字不是邮箱，而这里要的就是一个能发信的地方。
@@ -564,6 +578,31 @@ export function journeyConfigGroups(): ConfigGroup[] {
              */
             description: '两台电脑共用同一份：填同一个同步盘子目录，两台填完全一样的路径。注意别两台同时开着（会互相覆盖）。留空＝只在这台机器上。',
             'x-path': { kind: 'directory' },
+          },
+        },
+      },
+    },
+    {
+      /*
+       * **单独一组放「照片」**（2026-11-18）。生图那十几项都搬去面板的「生图设置」了，
+       * 这一项破例留在配置页：它不需要面板，而且改了立刻能看出差别，放在配置页反而好找。
+       */
+      id: 'journey.image',
+      owner: `world:${JOURNEY_ID}`,
+      schema: {
+        type: 'object',
+        title: '照片',
+        description: '只影响她自己写的那句画面描述。地点、时段、天气这些事实仍由程序定，改这里不会让照片偏离她真看到的。',
+        properties: {
+          'worlds.journey.imagePromptLang': {
+            type: 'string',
+            title: '画面描述用哪种语言',
+            description: '中文系的本地模型（Qwen-Image / Kolors）选中文 —— 中文信息密度高，'
+              + '60 字的描述能写完整；英文被逼到 60 个字符很容易断在单词中间。'
+              + 'SDXL / SD1.5 / Flux 这类 CLIP 系必须英文，写中文会出乱码和画笔字水印。'
+              + '不确定就保持英文。',
+            enum: ['en', 'zh'],
+            default: 'en',
           },
         },
       },

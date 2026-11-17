@@ -1438,6 +1438,17 @@ export const purseMethods: Record<string, any> = {
       'journey.status': `${phase}｜${here?.name ?? this.st.hereId}`,
       'journey.now': this.nowSummary(),
       /*
+       * **画面描述用哪种语言**（2026-11-18，zzy1053 报的）。
+       *
+       * `describe` 那句工具说明是静态的（`TOOL_DECLS` 是常量数组，没法按配置变），
+       * 所以真正的结论放在这里，说明里让她「按环境里这一行来」。
+       *
+       * 默认 `en`，老用户一个字节不变。
+       */
+      'journey.imageLang': this.cfg.imagePromptLang === 'zh'
+        ? '中文。这个后端读中文（Qwen-Image / Kolors 这类），写中文细节不会丢 —— 而且中文更短，不容易撞 `describe` 的 60 字上限。'
+        : '英文。这个后端是 CLIP 系（SDXL / SD1.5 / Flux），写中文会出乱码和画笔字水印。',
+      /*
        * **「只有她一个人」这句话太弱，模型会自己补一个同行者（2026-11-11）。**
        *
        * 用户报的：「我没开一起出发，她说我开车。」截图里她原话是

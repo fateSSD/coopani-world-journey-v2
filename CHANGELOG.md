@@ -1,5 +1,43 @@
 # 更新日志
 
+## 1.12.6 — 2026-11-18（画面描述不再强制英文）
+
+读者 zzy1053 报的，指得很准：
+
+> 强制英文在我们这类本地 Qwen 工作流上正在造成画面细节丢失。
+
+### 为什么原来写死英文
+
+工具说明里那句理由是对的，但**只对一半后端成立**：
+
+> local SDXL CLIP cannot read Chinese (it comes back as gibberish with brush-script watermarks)
+
+CLIP 系确实如此。但他那套是 `qwen3vl_8b` 接 `TextEncodeQwenImage21` —— 中文是强项，
+逼着写英文等于**为了旧模型的限制牺牲新模型的画面质量**。
+
+### 还有个更隐蔽的伤害：60 字符上限
+
+`describe` 卡 60 个字符。英文实测三张，三张都正好撞线、断在单词中间：
+
+```
+snow falling at night outside a hotel window, streetlight gl…   ← 断在 glow
+narrow old street at dusk, food stalls with warm lights, ste…   ← 断在 steam
+```
+
+中文信息密度高得多，「雪花落在路灯和房檐上，暖黄灯光」十几个字就写完，根本撞不到上限。
+**所以换语言顺手把截断问题也解决了。**
+
+### 改法
+
+配置页新增「照片」组 → **画面描述用哪种语言**（`imagePromptLang`，`en` / `zh`）：
+
+- **默认 `en`**，老用户一个字节不变；
+- 选 `zh` 后，`journey.imageLang` 那一行会告诉她「这个后端读中文」，
+  ENV_PROMPT 和工具说明都指过去，不再有「一律英文」的硬话。
+
+语言这件事跨四处，缺一处等于没做：配置 → `envPromptVars` → `ENV_PROMPT` 引用 → 工具说明。
+`test/describe-lang.test.mjs` 五条逐个守着这条链。
+
 ## 1.12.5 — 2026-11-17（日记列表倒过来：新的在前）
 
 Mr.Q 第三次提这件事，这次附了截图 —— 我才看明白：**他说的日记页是这一页（旅行日记），

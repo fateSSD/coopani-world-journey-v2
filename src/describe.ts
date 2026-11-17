@@ -161,8 +161,23 @@ export const TOOL_DECLS = [
         describe: {
           type: 'string',
           description: 'Optional, one short line describing WHAT IS IN THE FRAME, at most 60 characters. '
-            + '**Write it in English** - this string goes straight into the image model, and local SDXL CLIP '
-            + 'cannot read Chinese (it comes back as gibberish with brush-script watermarks). '
+            /*
+             * **语言按后端来，不是一律英文**（2026-11-18，zzy1053 报的）。
+             *
+             * 原来这里写死「Write it in English」，理由是本地的 SDXL CLIP 读不了中文。
+             * 那个理由只对 CLIP 系成立：用 Qwen-Image / Kolors 这类中文原生模型的人被逼着写英文，
+             * 细节反而丢 —— 而且 60 字符的上限让英文很容易断在单词中间
+             * （他实测三张，三张都正好 60 字符砍断，断在 glow / steam / 侥幸没断处）。
+             * 中文信息密度高得多，十几个字就说完了。
+             *
+             * 这句说明是静态的（`TOOL_DECLS` 是常量数组），所以真正生效的判据放在
+             * `journey.imageLang` 那一行（用户在配置页选），这里只负责把她指过去。
+             */
+            + '**Write it in the language the environment specifies for image descriptions** '
+            + '(the `journey.imageLang` line). '
+            + 'CLIP-based models (SDXL, SD1.5, Flux) need English - they get Chinese as gibberish with brush-script watermarks. '
+            + 'Chinese-native models (Qwen-Image, Kolors) read Chinese best, and Chinese is far more compact, '
+            + 'which matters because this field is capped at 60 characters. '
             + '"a calico cat crouching under a streetlight, looking up" / "empty platform, one bench, half a bottle of water". '
             + 'This is the content of the shot, not the framing (that is `focus`). '
             + 'Only describe what is really here right now: the place she is at, this season, this weather. '
