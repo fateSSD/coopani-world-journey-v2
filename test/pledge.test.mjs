@@ -812,3 +812,56 @@ test('打工期间不接邀约 —— 接了也一定过期', async () => {
     assert.equal(called, 0, '明知道接不了还发了「接」的请求');
   } finally { globalThis.fetch = async () => { throw new Error('offline'); }; restore(); }
 });
+
+/* ---------------- 2026-11-17：终于有了「不等了」 ---------------- */
+
+test('不等了：撤掉约定，人留在原地，不是瞬移回家', async () => {
+  /*
+   * zzy1053 报的：11-15 约好去哈尔滨、在呼和浩特会合，两次早上都判「人还没露面」，
+   * 要等 11-18 才自动散伙，「这三天里没有任何自助取消入口」，
+   * 「她会跟用户说『你在面板上把那邀约撤掉』，用户照着找只会白找」。
+   *
+   * 内部一直有 `dropPledge()`，缺的是入口。这条钉住三件事：
+   * 撤得掉、撤完还在原地、对方那边会留一句话。
+   */
+  const now = new Date('2026-11-17T02:00:00Z');
+  const { world, events, restore } = await boot({
+    phase: 'staying',
+    hereId: 'hohhot',
+    currentCityId: 'hohhot',
+    arrivedAt: '2026-11-15T02:00:00Z',
+  }, now.toISOString());
+  /*
+   * 启动时 `prunePledge` 会按窗口判一遍，可能先把这份约定清掉 ——
+   * 所以这里在 start 之后直接摆状态，测的是「撤」这个动作本身。
+   */
+  world.st = {
+    ...world.st,
+    pledge: pledgeTo('harbin', 2, {
+      meetCityId: 'hohhot',
+      meetArrivedAt: '2026-11-15T03:00:00Z',
+    }),
+  };
+  try {
+    const before = world.st.hereId;
+    const r = world.giveUpPledge(now, '等了三天，人不来');
+    assert.equal(r.isError, undefined, r.text);
+    assert.equal(world.st.pledge, null, '约定没清掉');
+    /* 撤的是「等」这件事，不是位置 —— 前后 `hereId` 必须一样。 */
+    assert.equal(world.st.hereId, before, '撤约定把人挪走了');
+    assert.ok(
+      events.some((e) => /不等了|作废|去不成了/.test(String(e.text ?? e))),
+      `自己这边没推事件：${events.map((e) => e.type ?? e).join(',')}`,
+    );
+  } finally { restore(); }
+});
+
+test('没有约定时删也删不掉什么，得直说', async () => {
+  const now = new Date('2026-11-17T02:00:00Z');
+  const { world, restore } = await boot({ phase: 'home', hereId: 'lanzhou' }, now.toISOString());
+  try {
+    const r = world.giveUpPledge(now, '');
+    assert.equal(r.isError, true, '没约定还说撤了，那是编');
+    assert.match(r.text, /没有/, r.text);
+  } finally { restore(); }
+});

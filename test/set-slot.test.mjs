@@ -234,3 +234,82 @@ test('补丁只留今天 —— 昨天的补丁不会再被读到，留着只是
   assert.ok(left.every((d) => d === today), `旧日期的补丁没清掉：${left.join(',')}`);
   assert.equal(left.length, 1, `今天的补丁应该只有一条，实际 ${left.length} 条`);
 });
+
+/* ---------------- 2026-11-17：Donahue 第二批反馈（日程编辑） ---------------- */
+
+test('差半小时不算命中：说 6:30 就真的加一格 6:30，不许悄悄改成 07:00', async () => {
+  /*
+   * 复现原话：表上是「07:00 起床 / 07:30 早饭 / 09:15 去拙政园」，
+   * 用户要的是「六点半出门」。旧容差 0.5h 把 6:30 算进 07:00 那一格，
+   * 于是她改了起床格，用户看到「七点起床、内容里又写六点半」——「前后重复」。
+   *
+   * 现在的行为：一刻钟容差兜不住半小时，走 `add`，**真的多出一格 6:30**。
+   */
+  const w = await settled();
+  /* 表上 14:30「下午」，说 15:00 —— 差半小时，不该被算成同一格。 */
+  const afternoon = beats(w).find((b) => Math.abs(b.at - 14.5) < 0.02);
+  assert.ok(afternoon, `构造有问题：没有 14:30 那格（${beats(w).map((b) => clock(b.at)).join(',')}）`);
+  const before = afternoon.what;
+
+  const r = w.setSlot('15:00', '去趟邮局，寄明信片');
+  assert.equal(r.isError, undefined, `15:00 应该能加一格：${r.text}`);
+  const added = beats(w).find((b) => Math.abs(b.at - 15) < 0.02);
+  assert.ok(added, `表上没有 15:00 那格：${beats(w).map((b) => clock(b.at)).join(',')}`);
+  assert.equal(added.what, '去趟邮局，寄明信片');
+  assert.equal(beats(w).find((b) => Math.abs(b.at - 14.5) < 0.02)?.what, before, '14:30 那格被动了');
+});
+
+test('指到通勤格时，报的是通勤格和 journey_spot_ride，不是旁边那个景点格', async () => {
+  const w = await settled();
+  /* 挑一个还没到点的景点格 —— 已经过去的不让改（「说出去的话不改口」）。 */
+  const nowH = new Date('2026-11-09T03:00:00Z').getUTCHours() + 8;
+  const act = ofKind(w, 'activity').find((b) => b.at > nowH);
+  assert.ok(act, `构造有问题：今天没有还没到的景点格（${beats(w).map((b) => clock(b.at)).join(',')}）`);
+  /* 造一格和景点同一时刻的通勤（「走着去」的分钟数可以是 0，见 findSlotBeat 的注释）。 */
+  w.plan = {
+    ...w.plan,
+    beats: [{ at: act.at, kind: 'commute', what: '扫了辆电瓶车去那儿' }, ...beats(w)]
+      .sort((a, b) => a.at - b.at),
+  };
+
+  const r = w.setSlot(clock(act.at), '走着去');
+  assert.equal(r.isError, true, '通勤格不该被自由文本改掉');
+  assert.match(r.text, /journey_spot_ride/, `没给正确工具：${r.text}`);
+  assert.match(r.text, /扫了辆电瓶车/, `报错了格子：${r.text}`);
+});
+
+test('同一格改第二遍，回执要说清是替换', async () => {
+  const w = await settled();
+  /* 用午饭 —— 早饭在 11:00 已经过去了，改不了（「说出去的话不改口」）。 */
+  const br = ofKind(w, 'lunch')[0];
+  assert.ok(br, '构造有问题：今天没有午饭格');
+
+  /* 用短内容 —— 回执里的引用会被 `slotBrief` 截短，拿长句断会误判成「没说」。 */
+  await w.setSlot(clock(br.at), '豆浆');
+  const second = w.setSlot(clock(br.at), '稀饭');
+  assert.equal(second.isError, undefined, second.text);
+  assert.match(second.text, /替换/, `覆盖了却说成新增：${second.text}`);
+  assert.match(second.text, /豆浆/, '没说替换掉的是哪一版');
+});
+
+test('内容里带的钟点和格子对不上，要提醒', async () => {
+  const w = await settled();
+  const br = ofKind(w, 'lunch')[0];
+  const r = w.setSlot(clock(br.at), '六点半起来收拾');
+  assert.equal(r.isError, undefined, r.text);
+  assert.match(r.text, /格子在/, `钟点冲突没提醒：${r.text}`);
+});
+
+test('「19:00 吃晚饭」仍然改到晚饭那格 —— 她说的那件事比分钟重要', async () => {
+  /*
+   * 容差收窄之后不能把这条一起弄丢：人不会精确记住晚饭排的是 18:30。
+   * 判据靠 `what` 里的类型词（`parseSlotKind`），不靠分钟差。
+   */
+  const w = await settled();
+  const dinner = ofKind(w, 'dinner')[0];
+  assert.ok(dinner, '构造有问题：今天没有晚饭格');
+  const r = w.setSlot('19:00', '晚饭，火锅');
+  assert.equal(r.isError, undefined, r.text);
+  assert.equal(ofKind(w, 'dinner')[0].what, '晚饭，火锅');
+  assert.ok(!beats(w).some((b) => Math.abs(b.at - 19) < 0.02), '同时又加了一格 19:00，等于两顿晚饭');
+});

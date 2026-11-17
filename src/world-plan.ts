@@ -100,6 +100,47 @@ import {
 } from './helpers.ts';
 export * from './helpers.ts';
 
+/**
+ * 「按钟点找格子」时允许多大的差（小时）。
+ *
+ * **0.25 = 一刻钟**（2026-11-17 由 0.5 收窄，Donahue 第二批反馈）。
+ *
+ * 原来半小时：用户说「6:30 出门」，表里最近的格是 07:00「起床」，
+ * 于是被静默改成 7 点那格 —— 而他要的是 6:30。收窄之后差半小时就不算命中，
+ * 会走 `add` 给她**真的加一格 6:30**；一刻钟还能兜住「说 12 点、表上 12:05」这种口误。
+ *
+ * 判据：**容差是给口误留的，不是给「差不多那个意思」留的。**
+ */
+export const SLOT_NEAR_HOURS = 0.25;
+
+/**
+ * 一句话里带的钟点（小数小时）。认不出返回 `null`。
+ *
+ * 只认两种写法：`6:30` / `六点半`。**认不全没关系** —— 它的用途是
+ * 在回执里提醒一句「内容和格子时钟不一致」，认不出来的下场只是少提醒一次，
+ * 不会去改她的内容。
+ */
+function clockInText(t: string): number | null {
+  const cn: Record<string, number> = {
+    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+  };
+  const m = t.match(/(\d{1,2})\s*[:：]\s*(\d{2})/);
+  if (m) {
+    const h = Number(m[1]);
+    const mi = Number(m[2]);
+    if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) return h + mi / 60;
+  }
+  const c = t.match(/([一二两三四五六七八九十]{1,3})点(半)?/);
+  if (!c) return null;
+  const raw = c[1]!;
+  let h: number | null = null;
+  if (raw === '十') h = 10;
+  else if (raw.length === 1) h = cn[raw] ?? null;
+  else if (raw[0] === '十') h = 10 + (cn[raw[1]!] ?? 0);
+  else if (raw[1] === '十') h = (cn[raw[0]!] ?? 0) * 10;
+  return h === null ? null : h + (c[2] ? 0.5 : 0);
+}
+
 export const planMethods: Record<string, any> = {
   /** 在这个城市已经待了几天。按「到达这里的时刻」算，不按整趟旅行算。 */
   /**
@@ -1398,7 +1439,10 @@ export const planMethods: Record<string, any> = {
   findSlotBeat(
     raw: string,
     nowDecimal: number,
-  ): { beat: DayPlan['beats'][number] } | { add: number } | { error: string } {
+    what = '',
+  ): { beat: DayPlan['beats'][number]; approximate?: { asked: number; at: number } }
+    | { add: number }
+    | { error: string } {
     const plan = this.plan;
     if (!plan) return { error: '今天的日程还没排出来，等一下再问。' };
 
@@ -1434,6 +1478,42 @@ export const planMethods: Record<string, any> = {
       };
     }
 
+    /*
+     * **通勤格先说清楚**（2026-11-17，Donahue 第二批反馈）。
+     *
+     * 通勤格被 `pickable` 排除之后，用户指到 09:15（「扫了辆电瓶车去拙政园」）时：
+     * `exacts` 在 pickable 里找不到它，`near` 会落到旁边 09:30 那个景点格上 ——
+     * **报错的格子是错的**，于是模型去改一个用户没提的地方，或者反复试同一个工具。
+     *
+     * ⚠ 这一段必须排在 `exacts` **之前**：「走着去」的通勤格 `ride.min = 0`，
+     * 和活动格同一时刻，`exacts` 会先把活动格抢走，这里就永远轮不到。
+     */
+    const nearestAny = plan.beats
+      .filter((b) => b.at > nowDecimal && Math.abs(b.at - at) <= SLOT_NEAR_HOURS)
+      .sort((a, b) => Math.abs(a.at - at) - Math.abs(b.at - at))[0];
+    if (nearestAny?.kind === 'commute') {
+      /*
+       * 三种情形要分开说，一句话糊过去必错一边：
+       *
+       * ① 这一刻**只有**通勤格 → 用户真指到了路上，给 `journey_spot_ride`；
+       * ② 这一刻还撞着别的格（「走着去」和活动同点）→ **两个都报**，
+       *    换地方是 `journey_plan_change`、换走法是 `journey_spot_ride`；
+       * ③ 别的格比他更近 → 那才是他要改的，交给下面正常挑。
+       */
+      const d = Math.abs(nearestAny.at - at);
+      const others = plan.beats.filter(
+        (b) => b !== nearestAny && Math.abs(b.at - at) <= Math.max(d, 0.02),
+      );
+      const here = `${slotClock(nearestAny.at)} 那一格是「${slotBrief(nearestAny.what)}」—— 路上的事，不在这儿改。`;
+      if (!others.length) {
+        return { error: `${here}换走法用 journey_spot_ride；换了目的地，这一格会自己跟着变。` };
+      }
+      return {
+        error: `${here}这一刻还有「${slotBrief(others[0]!.what)}」—— `
+          + '换地方用 journey_plan_change，换走法用 journey_spot_ride，别用这个改。',
+      };
+    }
+
     const exacts = pickable.filter((b) => Math.abs(b.at - at) < 0.02);
     if (exacts.length) {
       const hit = exacts[0]!;
@@ -1445,10 +1525,42 @@ export const planMethods: Record<string, any> = {
       return { beat: open ?? hit };
     }
 
+    /*
+     * **「要改成什么」里点了名，就以名为准**（2026-11-17）。
+     *
+     * 「19:00，晚饭吃火锅」—— 表里晚饭是 18:30，人不会精确记住那一刻，
+     * 而她说的事很明确。所以钟点落空之后先看 `what` 有没有「早饭/午饭/晚饭/起床/睡」
+     * 这类词（`parseSlotKind` 认的那一套），有就直接改那一格。
+     *
+     * 这一条和下面的容差收窄是配套的：容差只用来兜「说了 12 点、表上 12:05」，
+     * **真正决定改哪格的依据是「她要做的是哪件事」，不是「分钟差多少」**。
+     */
+    const byWhat = what ? parseSlotKind(what) : null;
+    if (byWhat) {
+      const cand = plan.beats.filter((b) => b.kind === byWhat && b.at > nowDecimal);
+      if (cand.length) {
+        const hit = cand[0]!;
+        return Math.abs(hit.at - at) > 0.02
+          ? { beat: hit, approximate: { asked: at, at: hit.at } }
+          : { beat: hit };
+      }
+    }
+
+    /*
+     * 近似命中：容差**从半小时收到一刻钟**（2026-11-17）。
+     *
+     * 原来 0.5 小时，于是「6:30 出门」被悄悄算成「7:00 起床」那格 ——
+     * 用户报的是「改成了七点、内容里又写六点半，前后重复」，根子在这一行。
+     * 一刻钟能兜住「说了 12 点、表上 12:05」这种口误，兜不住「差半小时」的错格；
+     * 兜不住就会走下面的 `add`，给她真的加一格 6:30。
+     */
     const near = pickable
-      .filter((b) => b.at > nowDecimal && Math.abs(b.at - at) <= 0.5)
+      .filter((b) => b.at > nowDecimal && Math.abs(b.at - at) <= SLOT_NEAR_HOURS)
       .sort((a, b) => Math.abs(a.at - at) - Math.abs(b.at - at))[0];
-    if (near) return { beat: near };
+    if (near) {
+      /* 近似命中要带回去，让回执说得出「我改的是哪一格」—— 不静默替换。 */
+      return Math.abs(near.at - at) > 0.02 ? { beat: near, approximate: { asked: at, at: near.at } } : { beat: near };
+    }
 
     /*
      * 表上没有这一格。
@@ -1503,7 +1615,7 @@ export const planMethods: Record<string, any> = {
     if (!what) return { text: '要改成什么？说清楚再动。', isError: true };
 
     const moment = localMoment(this.worldNow(), here.tz);
-    const found = this.findSlotBeat(timeRaw, moment.decimal);
+    const found = this.findSlotBeat(timeRaw, moment.decimal, what);
     if ('error' in found) return { text: found.error, isError: true };
     /*
      * 表上没有这一格 —— **新增一格**（2026-11-13）。
@@ -1598,6 +1710,11 @@ export const planMethods: Record<string, any> = {
      *
      * 同一格改第二遍就覆盖掉第一遍（否则重贴时 `find` 会取到旧的那条）。
      */
+    /* 先看这一格有没有改过 —— 覆盖要**说出来**（2026-11-17），见下面的回执。 */
+    const prev = this.st.planPatches.find(
+      (x) => x.dateKey === patch.dateKey && x.cityId === patch.cityId
+        && x.at === patch.at && (x.kind ?? 'activity') === beat.kind,
+    );
     this.st = {
       ...this.st,
       planPatches: [
@@ -1615,7 +1732,32 @@ export const planMethods: Record<string, any> = {
       .filter((b) => b.at > moment.decimal)
       .map((b) => `${slotClock(b.at)} ${slotBrief(b.what)}`)
       .join('、');
-    return { text: `好，${slotClock(beat.at)} 改成「${what}」。\n今天剩下的：${after || '（没了）'}` };
+    /*
+     * 回执要说清三件事（2026-11-17，Donahue 第二批反馈）：
+     *
+     * ① **近似命中**：改的不是用户说的那个钟点，就得写明「表上没有 6:30，改的是 07:00」；
+     * ② **覆盖**：同一格改第二遍是替换，不是新增 —— 不说的话，用户在外面看到的
+     *    就是她反复横跳（昨天那四条 6:30 → 起床 → 起床 → 起床，最后一版抹掉前面全部）；
+     * ③ **内容与格子冲突**：`what` 里写了「六点半」而格子在 07:00，两处会一起显示。
+     */
+    const approx = 'approximate' in found ? found.approximate : undefined;
+    const notes = [
+      approx
+        ? `（表上没有 ${slotClock(approx.asked)} 这一格，最近的是 ${slotClock(approx.at)}`
+          + `「${slotBrief(beat.what)}」，改的是那一格。）`
+        : '',
+      prev && prev.what !== what ? `（替换掉刚才那版「${slotBrief(prev.what)}」。）` : '',
+      (() => {
+        const t = clockInText(what);
+        if (t === null || Math.abs(t - beat.at) < 0.02) return '';
+        return `（内容里写的是 ${slotClock(t)}，格子在 ${slotClock(beat.at)} —— 两处会一起显示，`
+          + '看着像两件事。要么把钟点从内容里去掉，要么改的就是另一个格。）';
+      })(),
+    ].filter(Boolean).join('');
+
+    return {
+      text: `好，${slotClock(beat.at)} 改成「${what}」。${notes}\n今天剩下的：${after || '（没了）'}`,
+    };
   },
 
 

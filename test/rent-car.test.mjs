@@ -80,7 +80,12 @@ test('天数越界要夹住，不能租一年', async () => {
 });
 
 test('记账关着时不扣钱，但车照样租得到', async () => {
-  const w = staying();
+  /*
+   * 2026-11-17：记账的**默认值改成开**（Mr.Q：「想去洛杉矶就得赚出相应的钱」），
+   * 所以这一条要显式关掉才测得到「关着」的行为。
+   * 断言本身没变 —— 开关还得好使，只是不再是默认那一档。
+   */
+  const w = staying({ moneyEnabled: false });
   const r = await w.rentCar(3, false);
   assert.equal(r.isError, undefined, r.text);
   assert.equal(w.st.spent, 0, '记账关着还扣钱，用户会莫名看到「今天花了六百」');

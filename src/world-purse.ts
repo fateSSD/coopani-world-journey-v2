@@ -898,6 +898,32 @@ export const purseMethods: Record<string, any> = {
   },
 
 
+  /**
+   * 「还能花多少」—— 每回合那一份（2026-11-17）。
+   *
+   * 和 `moneyLine()` 分工：那个给面板和统计看，是**事后**语气（「这一趟花了多少」）；
+   * 这个是她在 `nowSummary` 里每回合读到的那一行，是**现在**语气 ——
+   * 说得出的应该是「我还走得起多远」，不是「我这趟花了多少」。
+   *
+   * 为什么要加：`moneyLine` 只挂在 `statsSummary`，而她每回合读的是 `nowSummary`。
+   * 于是「钱不够」这件事在旅程上只有一个来源 —— 后台某天悄悄把她降档，
+   * 她自己完全不知道，用户看到的是「她忽然不去那个地方了」。
+   */
+  purseTravelLine(): string {
+    if (!this.cfg.moneyEnabled) return '';
+    const left = this.purseLeft();
+    if (left === null) return '';
+    const spentPart = this.st.spent > 0 ? `这一趟花了 ${this.st.spent} 块，` : '';
+    if (left <= 0) {
+      return `${spentPart}能动用的钱见底了 —— 想走下一段，得先在这座城打几天短工攒路费。`;
+    }
+    if (left < PURSE_TIGHT.floor) {
+      return `${spentPart}能动用 ${left} 块，走不远也住不好；想去的地方太远，就先攒。`;
+    }
+    return `${spentPart}能动用 ${left} 块。`;
+  },
+
+
   nowSummary(): string {
     const now = this.worldNow();
     const here = this.cityOrNull(this.st.hereId);
@@ -946,11 +972,22 @@ export const purseMethods: Record<string, any> = {
        */
       const why = homeReasonText(this.st.homeReason);
       const been = this.st.everVisited.length ? `走到现在一共到过 ${this.st.everVisited.length} 个地方。` : '';
+      /*
+       * **在家这一支要自己报天气和钱**（2026-11-17）。
+       *
+       * 这一支有独立的 `return`，不走下面那段（那边的天气挂在 `plan` 上，
+       * 而回家之后 plan 是 null）。原来漏的正是这里 —— 她在家待最久，
+       * 却恰好是唯一拿不到天气和余额的那几天。
+       */
+      const m = localMoment(now, here.tz);
+      const homeW = this.homeWeather?.dateKey === m.dateKey ? this.homeWeather.w : null;
       return [
         `${here.name}。${rest}`,
         why,
         been,
         `家里这样：${bodyFeeling(here, here)}`,
+        weatherLine(homeW),
+        this.purseTravelLine(),
         /*
          * 在家也照样写日记（提示词里那句「日记照写，别把回程说得像结束」）。
          * 不报的话，回家那几天就成了日记的空白 —— 而「回来之后」本来就是
@@ -1031,7 +1068,18 @@ export const purseMethods: Record<string, any> = {
        * 中午看到「今天还没写」就动笔，那篇会写成半天的流水。
        */
       this.diaryLine(now, here),
-      weatherLine(plan?.weather ?? null),
+      /*
+       * 天气：**停留/路上用作息表那一份，在家用家里那一份**（2026-11-17）。
+       *
+       * 原来只有 `plan?.weather` —— 回家的那几天 plan 是 null，这一行就整条消失，
+       * 而提示词里又写着「你看不到天气」，两句话叠起来把她的天气彻底封死。
+       * 现在家也查（`this.homeWeather`），日期对上才用，对不上宁可不写。
+       */
+      weatherLine(
+        plan?.weather
+        ?? (this.homeWeather?.dateKey === moment.dateKey ? this.homeWeather.w : null),
+      ),
+      this.purseTravelLine(),
       plan?.sunriseHour !== null && plan?.sunriseHour !== undefined
         ? `日出 ${fmtHour(plan.sunriseHour)}，日落 ${fmtHour(plan.sunsetHour ?? 0)}。`
         : '',

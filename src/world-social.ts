@@ -1272,6 +1272,53 @@ export const socialMethods: Record<string, any> = {
   },
 
 
+  /**
+   * 不等了（2026-11-17，zzy1053 报的）。
+   *
+   * ## 为什么必须有一个声音能说「不等了」
+   *
+   * 原话：「这三天里没有任何自助取消入口」，「她会跟用户说『你在面板上把那邀约撤掉』，
+   * 用户照着找只会白找」—— 那句是空话。24 个工具、全部面板方法、
+   * `/sight/invite`（只有 GET/POST）里都没有取消路径，唯一能走的是
+   * 本地清 `pledge` 再重启 World，**普通用户做不到**。
+   *
+   * 内部一直有 `dropPledge()`：清约定 + 推一条事件 + 给对方留一句话。
+   * 缺的只是一个入口 —— 这一条补的就是它。
+   *
+   * ## 不做面板按钮
+   *
+   * 面板只读（唯一例外是「搬过去」）。撤约定是她的判断：用户跟她说「别等了」，
+   * 她来决定撤不撤。开这一个口子，就等于给「替她决定」开第二个。
+   */
+  giveUpPledge(now: Date, reasonRaw: string): { text: string; isError?: boolean } {
+    const p = this.st.pledge;
+    if (!p) {
+      return {
+        text: '现在没有在等人的约定 —— 没答应过谁，也就没什么可撤的。',
+        isError: true,
+      };
+    }
+    const who = this.whoOfPledge(p);
+    const where = this.cityName(p.cityId);
+    const atMeet = Boolean(p.meetCityId && p.meetArrivedAt);
+    const reason = String(reasonRaw || '').trim().slice(0, 40);
+    const why = reason
+      ? `不等了：${reason.replace(/[。！!]+$/, '')}。跟${who}说好去${where}的那趟，你自己收的。`
+      : `不等了。跟${who}说好去${where}的那趟，你自己收的。`;
+    /*
+     * `askWrite = false`：印象是「真一起过」才问的（见 `dropPledge` 头上那三条）。
+     * 等人没等到，不算同行 —— 问了就是在编关系。
+     */
+    this.dropPledge(now, why, false);
+    return {
+      text: `撤了。跟${who}说好去${where}的那一趟作废了，对方那边会收到一句话。`
+        + (atMeet
+          ? '你还在见面城，人没来就是没来。接下来去哪，你自己定。'
+          : '你现在还在原来的地方。接下来去哪，你自己定。'),
+    };
+  },
+
+
   dropPledge(now: Date, why: string, askWrite = false): void {
     const p = this.st.pledge;
     if (!p) return;

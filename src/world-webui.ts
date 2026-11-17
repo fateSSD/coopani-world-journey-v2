@@ -892,7 +892,20 @@ export const webUiMethods: Record<string, any> = {
         lon: here.lon,
       },
       feeling: bodyFeeling(here, home),
-      weather: this.plan ? weatherLine(this.plan.weather) : '',
+      /*
+       * 面板这格也要跟着天气走（2026-11-17）。
+       *
+       * 原来只有 `plan?.weather` —— 回家的那几天 plan 是 null，面板上「天气」整格空着。
+       * 而用户判断「天气坏了没有」看的正是这一格：她说话不提，面板也空，
+       * 两个信号叠在一起，结论当然是「兜底根本没做」。
+       */
+      weather: (() => {
+        if (this.plan) return weatherLine(this.plan.weather);
+        const m = localMoment(now, here.tz);
+        return this.homeWeather?.dateKey === m.dateKey
+          ? weatherLine(this.homeWeather.w)
+          : '';
+      })(),
       leg,
       // 别人叫的车：只在面板来问的这一刻读盘，过期自己消失（见 `readLive`）。
       ride: this.cfg.bridgeLive ? this.readLive() : null,

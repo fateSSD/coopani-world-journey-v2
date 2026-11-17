@@ -760,6 +760,41 @@ export const TOOL_DECLS = [
     tags: ['write'] as const,
     summary: { zh: '这一趟先不走，再待一天。', en: 'Stay one more day after all.' },
   },
+  /*
+   * 不等了（2026-11-17，zzy1053 报的）。
+   *
+   * 原话：「这三天里没有任何自助取消入口」，「她会跟用户说『你在面板上把那邀约撤掉』，
+   * 用户照着找只会白找」。24 个工具、全部面板方法、`/sight/invite` 里都没有取消路径，
+   * 唯一能走的是本地清 `pledge` 再重启 World —— 普通用户做不到。
+   *
+   * 内部一直有 `dropPledge()`（清约定 + 推事件 + 给对方留一句话），缺的只是一个入口。
+   *
+   * **不做面板按钮**：面板只读，撤约定是她自己的判断 —— 用户跟她说一句「别等了」，
+   * 她来决定撤不撤。这条边界和「搬过去」那个例外同级，不该再开第二个口子。
+   */
+  {
+    name: 'journey_give_up',
+    description:
+      'Give up the meet-up she is waiting on: stop waiting for the person, and call off that one trip. '
+      + 'Call it when days have passed and nobody showed up, when the person says "别等了" / "算了吧", '
+      + 'or when she herself decides it is not worth waiting any longer. '
+      + 'It does NOT move her anywhere - she just stops waiting. Where she is now stays where she is. '
+      + 'The other side gets one short note through the meet server, and the promise is gone for good. '
+      + 'Do not call it when there is no promise outstanding - the answer says so instead of inventing one. '
+      + 'Say why in one short line of her own.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reason: {
+          type: 'string',
+          description: 'Why she stops waiting, one short sentence in her own voice.',
+        },
+      },
+    },
+    tags: ['write'] as const,
+    summary: { zh: '不等了，这一趟撤掉。', en: 'Stop waiting - call the meet-up off.' },
+  },
 ] as const;
 
 /** 给市场卡片和诊断看的全量清单。`events` 必须与源码里 push 的类型一一对应。 */

@@ -637,9 +637,18 @@ test('天气路由：国内 + 有 key 时走高德', async () => {
   } finally { globalThis.fetch = orig; }
 });
 
-test('天气路由：key 失效只降级到 Open-Meteo，不是没有天气', async () => {
-  // 0.2.6 之前这里打的是「天气功能停止」—— 错的。key 坏了只是不再走高德，
-  // 下一次查询就落到 Open-Meteo，天气照有。文案改了这一条就跟着钉住行为。
+test('天气路由：key 失效当场落到 Open-Meteo，不是空一轮', async () => {
+  /*
+   * 0.2.6 钉的是「key 坏了不等于没天气」，但当时的实现是**下一轮**才降级：
+   * 第一次返回 null，理由是「不能拿假数据顶上」。
+   *
+   * 2026-11-17 改成**当场**降级，原因是那个理由不成立了：落下去拿的是
+   * Open-Meteo 的真数据，不是假数据。而「空一轮」的代价很实 —— 天气只在
+   * 排表/巡检那几拍查，空掉的那一拍可能就是一整天，用户看到的是
+   * 「填了 key 反而没天气」。
+   *
+   * 这条同时钉住两件事：① 第一次就该有天气；② key 判无效后不再反复打高德。
+   */
   const seen = [];
   const orig = globalThis.fetch;
   let amapCalls = 0;
@@ -654,7 +663,9 @@ test('天气路由：key 失效只降级到 Open-Meteo，不是没有天气', as
   };
   try {
     const w = new AmapWeather('bad-key', join(tmpdir(), `j-${Date.now()}-bad.json`));
-    assert.equal(await w.forecast(LZ, '2026-10-31'), null, '第一次就该是未知，不能拿假数据顶上');
+    const first = await w.forecast(LZ, '2026-10-31');
+    assert.ok(first, 'key 失效后当场就该有天气 —— 空一轮等于那天没有天气');
+    assert.equal(first.dayWeather, '小雨', '拿到的不是 Open-Meteo 的数据');
     const second = await w.forecast(LZ, '2026-10-31');
     assert.ok(second, 'key 失效之后彻底没天气了');
     assert.equal(second.dayWeather, '小雨', '降级后拿到的不是 Open-Meteo 的数据');

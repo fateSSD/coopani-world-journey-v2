@@ -292,8 +292,23 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   maxTripWeeks: 26,
   meetUrl: '',
   withUser: false,
-  moneyEnabled: false,
-  payFromLife: false,
+  /*
+   * 记账默认**开**（2026-11-17）。
+   *
+   * 关着的时候「想去洛杉矶」和「想在家门口转」在她账上没差别 ——
+   * 而 Mr.Q 要的是「想去哪儿就得先赚出那笔钱」。记账是这条因果的地基：
+   * 不记，她永远不知道自己走不起。
+   * 没装「模拟鱼生」的人不受影响：`purseLeft()` 拿不到生活层余额、预算又是 0，
+   * 一律按「不记账」处理，不替任何人省钱。
+   */
+  moneyEnabled: true,
+  /*
+   * 花她的钱也默认**开**（2026-11-17）。
+   *
+   * 和记账是两个开关（一个记、一个扣），但只有两个都开，「出门要花钱」才成立。
+   * 递条子有保护：`life-state.json` 不在就不写，所以只装旅行的人什么都不会发生。
+   */
+  payFromLife: true,
   budget: 0,
   bridgeSpend: true,
   bridgeDiary: true,
@@ -436,8 +451,9 @@ export function journeyConfigGroups(): ConfigGroup[] {
           'worlds.journey.payFromLife': {
             type: 'boolean',
             title: '旅行花她的钱',
-            description: '关着（默认）= 这趟你请：路费房费不算进她的钱包，「这趟花了多少」照记。'
-              + '打开 = 每笔从她那本账里扣。要装了「模拟鱼生」才生效；没装就走这里自己的预算。',
+            description: '打开（默认）= 路费房费每笔从她那本账里扣，想去远处就得先赚出那笔钱。'
+              + '关掉 = 这趟你请：不算进她的钱包，「这趟花了多少」照记。'
+              + '要装了「模拟鱼生」才生效；没装就走这里自己的预算。',
           },
           'worlds.journey.budget': {
             type: 'integer',

@@ -170,6 +170,21 @@ export class JourneyWorld implements World {
 
   private readonly weather: AmapWeather;
 
+  /**
+   * **在家那天的天气**（2026-11-17）。
+   *
+   * 原来天气只挂在 `rebuildPlan` 上，而排表只在「在别的城停留」或「抵达/赶路」时发生。
+   * 回家之后一次都不查 —— `nowSummary` 里天气那行依赖 `plan?.weather`，plan 是 null，
+   * 整行消失。于是「不填高德也有 Open-Meteo 兜底」这句话在家的场景下完全不成立：
+   * 兜底没坏，是**压根没触发查询**。
+   *
+   * 家也是城（`resolveHome()`），也有经纬度，也配查天气。这个字段就是那一份。
+   * 只为「今天」服务，日期一变就重查，跟排表的 plan 互不相干。
+   */
+  private homeWeather: { dateKey: string; cityId: string; w: Forecast | null } | null = null;
+  /** 上一回家那边天气的真实时刻。半小时一查，别拿网络请求当心跳。 */
+  private homeWeatherAt = 0;
+
   private readonly opts: JourneyWorldOptions;
 
   /** 照片簿：她拍过哪些张。只存句柄，字节在宿主媒体库。 */
@@ -849,6 +864,30 @@ export class JourneyWorld implements World {
 
   /* ---------------- 巡检 ---------------- */
 
+  /**
+   * 家那边今天的天气（2026-11-17 加）。
+   *
+   * **只有 `phase === 'home'` 才走这条** —— 出门之后天气由当天的作息表带
+   * （`plan.weather`），两边都查会多打一倍请求，而停留时那份还更准（按目的地的城）。
+   *
+   * 失败静默：查不到就是没有天气，她少一句「今天有点冷」，日子照过。
+   * 不因为一个天气接口把巡检打成半瘫。
+   */
+  private async refreshHomeWeather(now: Date): Promise<void> {
+    if (this.st.phase !== 'home') return;
+    const home = this.resolveHome().city;
+    const m = localMoment(now, home.tz);
+    /* 已经有今天这一份了就不查。`w === null` 也认 —— 否则查失败的每一拍都要重试。 */
+    if (this.homeWeather?.dateKey === m.dateKey && this.homeWeather.cityId === home.id) return;
+    /* 半小时一次。日切那一拍之后要等半小时才重查，别拿它当心跳。 */
+    const realMs = this.realNow().getTime();
+    if (realMs - this.homeWeatherAt < 30 * 60_000) return;
+    this.homeWeatherAt = realMs;
+    this.weather.setKey(this.amapKey());
+    const w = await this.weather.forecast(home, m.dateKey).catch(() => null);
+    this.homeWeather = { dateKey: m.dateKey, cityId: home.id, w };
+  }
+
   private async tick(): Promise<void> {
     if (!this.host) return;
     /**
@@ -993,6 +1032,13 @@ export class JourneyWorld implements World {
        */
       // 一个请求两样：池子总数 + 谁在找伴（60 分钟闸，绝大多数轮次立刻返回）。
       await this.probeStatus(now);
+
+      /*
+       * 家那边的天气（2026-11-17）。**放在 home 分支之前** —— 那一支里有好几处 `return`
+       * （休息期、在睡），写进去就会被它们整段跳过，于是「她在家躺了三天没天气」。
+       * 方法内部只在 `phase === 'home'` 时才真去查，别的 phase 立刻返回。
+       */
+      await this.refreshHomeWeather(now);
 
       if (this.st.phase === 'home') {
         if (this.stillResting(now)) return;
@@ -3010,6 +3056,16 @@ export class JourneyWorld implements World {
         handler: async (args) => {
           const a = (args ?? {}) as { reason?: string };
           return await this.stayOneMoreDay(a.reason ?? '');
+        },
+      },
+      {
+        name: decl[24].name,
+        description: decl[24].description,
+        parameters: decl[24].parameters,
+        tags: [...decl[24].tags],
+        handler: async (args) => {
+          const a = (args ?? {}) as { reason?: string };
+          return this.giveUpPledge(this.worldNow(), a.reason ?? '');
         },
       },
     ];

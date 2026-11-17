@@ -669,6 +669,27 @@
         "zh": "这一趟先不走，再待一天。",
         "en": "Stay one more day after all."
       }
+    },
+    {
+      "name": "journey_give_up",
+      "description": "Give up the meet-up she is waiting on: stop waiting for the person, and call off that one trip. Call it when days have passed and nobody showed up, when the person says \"别等了\" / \"算了吧\", or when she herself decides it is not worth waiting any longer. It does NOT move her anywhere - she just stops waiting. Where she is now stays where she is. The other side gets one short note through the meet server, and the promise is gone for good. Do not call it when there is no promise outstanding - the answer says so instead of inventing one. Say why in one short line of her own.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Why she stops waiting, one short sentence in her own voice."
+          }
+        }
+      },
+      "tags": [
+        "write"
+      ],
+      "summary": {
+        "zh": "不等了，这一趟撤掉。",
+        "en": "Stop waiting - call the meet-up off."
+      }
     }
   ],
   "events": [

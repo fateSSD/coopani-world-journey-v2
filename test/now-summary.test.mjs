@@ -73,3 +73,46 @@ test('住宿那一行与面板用同一个口径（含真店名与类别）', ()
   assert.equal(snap.lodging?.name, '月牙酒店(成都春熙路店)');
   assert.equal(snap.lodging?.kind, '连锁商务酒店');
 });
+
+test('在家也有天气：不排表的那几天也不该没有天气（2026-11-17）', () => {
+  /*
+   * 根因不是「没兜底」——`AmapWeather` 早就写着「没 key 走 Open-Meteo」。
+   * 是**压根没触发查询**：天气挂在 `rebuildPlan` 上，而排表只发生在
+   * 「在别的城停留」或「抵达/赶路」。回家之后 `plan` 是 null，
+   * `weatherLine(plan?.weather)` 整行消失，加上提示词里那句「看不到天气」，
+   * 两层一起把她的天气封死。
+   */
+  const w = staying(null);
+  w.st = { ...w.st, phase: 'home' };
+  w.plan = null;
+  const key = '2026-11-06';
+  w.homeWeather = {
+    dateKey: key,
+    cityId: 'lanzhou',
+    w: {
+      dateKey: key, dayWeather: '晴', nightWeather: '晴',
+      dayTemp: 15, nightTemp: 2, dayWind: '西北', dayPower: '3',
+    },
+  };
+  /* 日期对得上就用 —— 对不上的那份不能用（那是别人的晴天）。 */
+  const today = w.nowSummary();
+  assert.match(today, /天气：晴/, `在家没把天气写出来：${today.slice(0, 300)}`);
+
+  w.homeWeather = { ...w.homeWeather, dateKey: '2026-11-05' };
+  assert.doesNotMatch(w.nowSummary(), /天气：/, '昨天的天气不能当今天的用');
+
+  /* 面板那一格是同一个病，一起钉住 —— 只看 nowSummary 等于漏了用户真正在看的地方。 */
+  w.homeWeather = { ...w.homeWeather, dateKey: key };
+  assert.match(String(w.uiSnapshot().weather ?? ''), /天气：/, '面板上「天气」那格在家不该是空的');
+});
+
+test('钱那一行每回合都看得见（2026-11-17）', () => {
+  /*
+   * `moneyLine()` 只挂在 `statsSummary`（面板/统计），而她现在读的是 `nowSummary`。
+   * 于是「钱不够」只有后台知道：她某天忽然不去那座城了，自己说不出为什么。
+   */
+  const w = staying(null);
+  w.st = { ...w.st, spent: 300, earned: 0 };
+  /* 没装生活层、预算 0 —— `purseLeft()` 返回 null，就该一个字都不说。 */
+  assert.equal(w.purseTravelLine(), '', '没记账时不该提钱');
+});
