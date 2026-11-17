@@ -129,6 +129,71 @@ export function slotBrief(what: string): string {
   return one.length > 14 ? `${one.slice(0, 14)}…` : one;
 }
 
+/**
+ * 一句话里带的钟点（小数小时）。认不出返回 `null`。
+ *
+ * 只认 `6:30` / `六点半` 两种写法。**认不全没关系** —— 它只用来判断
+ * 「正文里的钟点跟这一格对不对得上」，认不出的下场只是少剥一次，不会去改内容本身。
+ */
+export function clockInText(t: string): number | null {
+  const cn: Record<string, number> = {
+    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+  };
+  const m = t.match(/(\d{1,2})\s*[:：]\s*(\d{2})/);
+  if (m) {
+    const h = Number(m[1]);
+    const mi = Number(m[2]);
+    if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) return h + mi / 60;
+  }
+  const c = t.match(/([一二两三四五六七八九十]{1,3})点(半)?/);
+  if (!c) return null;
+  const raw = c[1]!;
+  let h: number | null = null;
+  if (raw === '十') h = 10;
+  else if (raw.length === 1) h = cn[raw] ?? null;
+  else if (raw[0] === '十') h = 10 + (cn[raw[1]!] ?? 0);
+  else if (raw[1] === '十') h = (cn[raw[0]!] ?? 0) * 10;
+  return h === null ? null : h + (c[2] ? 0.5 : 0);
+}
+
+/**
+ * 正文里的钟点和这一格对不上时，把那一段剥掉（2026-11-17，Donahue 第三批）。
+ *
+ * ## 现场
+ *
+ * 用户把起床格改成「六点半，赶拙政园开门头一趟」，格子本身还在 07:00。
+ * `beatText` 的头部写「当地 07:00」，正文又写「六点半」——
+ * 她读到的就是「七点起床，六点半…」，用户看到的是件**前后重复**的事。
+ *
+ * ## 为什么剥而不是提示
+ *
+ * Donahue 给了两条路（剥掉 / 提示冲突）。选剥：这行字是**天天读的日程**，
+ * 每行缀一句「本格内容与时刻不符」会让整张表没法看。写入那一刻已经提醒过一次了
+ * （`setSlot` 的回执），渲染层再把矛盾抹平，两边各管一件事。
+ *
+ * ## 边界
+ *
+ * 只删**第一处**钟点。一句话里写两个（「六点半起，七点出门」）时，
+ * 第二个很可能是真内容（她要描述两件事），这里只处理「渲染时间对不上」这一个毛病，
+ * 不做时间轴解析。
+ */
+export function stripClashClock(what: string, at: number): string {
+  const found = clockInText(what);
+  /*
+   * 3 分钟以内不算矛盾。人写钟点会取整会手滑，而 `findSlotBeat` 那头的精确匹配
+   * 用的是 1.2 分钟（找格子要准），**判冲突不需要那么准** —— 用同一个阈值会把
+   * 「7:02 起床」当成冲突剥掉，正好剥掉她本来写对的东西。
+   */
+  if (found === null || Math.abs(found - at) < 0.05) return what;
+  const clean = what
+    .replace(/(\d{1,2})\s*[:：]\s*(\d{2})|[一二两三四五六七八九十]{1,3}点(半)?/, '')
+    .replace(/[，,]{2,}/g, '，')
+    .replace(/^[，,、\s]+/, '')
+    .trim();
+  /* 剥空了就退回原文 —— 「六点半」单独一格的极端情况，剥掉等于把这一格删了。 */
+  return clean || what;
+}
+
 /* ---------------- 对外自描述 ---------------- */
 
 /**
@@ -511,6 +576,13 @@ export function beatText(
   city: City, plan: DayPlan, kind: string, at: number, what: string, pilgrim?: Pilgrim,
 ): string {
   const head = `${city.name}，当地 ${fmtHour(at)}。`;
+  /*
+   * 正文里自带的钟点跟这一格对不上，先剥掉（2026-11-17）。
+   *
+   * `head` 已经报了「当地 07:00」，正文再写「六点半」就是两个时间摆在一起。
+   * 详见 `stripClashClock` 的注释 —— 写入时提醒过一次，这里是渲染时抹平。
+   */
+  what = stripClashClock(what, at);
   // 统一在这里收句号，并压掉重复标点。
   //
   // 酒店的体感（`lodging.feel`）本身是整句、自带句号，拼上「价格」那句就会变成

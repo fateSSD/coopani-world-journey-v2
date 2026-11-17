@@ -1207,7 +1207,14 @@ export const socialMethods: Record<string, any> = {
      * 只问「此刻在这座城的有谁」，不问日期 —— 服务端按真实写入时刻划窗口。
      * 约好的人在不在这儿，是个当下的事，跟她的游戏内日历无关。
      */
-    const board = await findNeighbors(meet, here.id, 'night');
+    /*
+     * **要 5 个，不是 3 个**（2026-11-17，zzy1053 报的）。
+     *
+     * 一条邀约最多 5 只接，而这里拿列表去比对「约好的人在不在」——
+     * 只看前 3 个，排在后面的人就被判成「没来」。他现场那次正是这样：
+     * 11-16、11-17 连续两次早上判「人还没露面」，三次机会废掉两次。
+     */
+    const board = await findNeighbors(meet, here.id, 'night', 5);
     const have = new Set(board.list.map((x) => x.pet.trim()));
     return names.filter((n) => have.has(n));
   },

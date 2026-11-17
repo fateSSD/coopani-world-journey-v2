@@ -95,7 +95,7 @@ import {
   decisionCrossedWhileAway, trainUnit, pick, seedOf, parseClock, parseSlotKind,
   slotClock, slotBrief, coverLine, whoOf, namesIn, impressionAsk, festivalCities,
   photoProtocolOf, shouldCropWatermark, gist, homeReasonText, weatherLine,
-  partWord, seededRandom, modeIdOf, roadText, matchSpot, todayPilgrimLines,
+  partWord, seededRandom, modeIdOf, roadText, matchSpot, todayPilgrimLines, clockInText,
   pilgrimNote, beatText,
 } from './helpers.ts';
 export * from './helpers.ts';
@@ -112,34 +112,6 @@ export * from './helpers.ts';
  * 判据：**容差是给口误留的，不是给「差不多那个意思」留的。**
  */
 export const SLOT_NEAR_HOURS = 0.25;
-
-/**
- * 一句话里带的钟点（小数小时）。认不出返回 `null`。
- *
- * 只认两种写法：`6:30` / `六点半`。**认不全没关系** —— 它的用途是
- * 在回执里提醒一句「内容和格子时钟不一致」，认不出来的下场只是少提醒一次，
- * 不会去改她的内容。
- */
-function clockInText(t: string): number | null {
-  const cn: Record<string, number> = {
-    一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
-  };
-  const m = t.match(/(\d{1,2})\s*[:：]\s*(\d{2})/);
-  if (m) {
-    const h = Number(m[1]);
-    const mi = Number(m[2]);
-    if (h >= 0 && h <= 23 && mi >= 0 && mi <= 59) return h + mi / 60;
-  }
-  const c = t.match(/([一二两三四五六七八九十]{1,3})点(半)?/);
-  if (!c) return null;
-  const raw = c[1]!;
-  let h: number | null = null;
-  if (raw === '十') h = 10;
-  else if (raw.length === 1) h = cn[raw] ?? null;
-  else if (raw[0] === '十') h = 10 + (cn[raw[1]!] ?? 0);
-  else if (raw[1] === '十') h = (cn[raw[0]!] ?? 0) * 10;
-  return h === null ? null : h + (c[2] ? 0.5 : 0);
-}
 
 export const planMethods: Record<string, any> = {
   /** 在这个城市已经待了几天。按「到达这里的时刻」算，不按整趟旅行算。 */

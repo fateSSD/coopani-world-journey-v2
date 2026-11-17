@@ -280,6 +280,17 @@ export async function findNeighbors(
   opt: MeetOptions,
   cityId: string,
   slot: Slot,
+  /**
+   * 要几个邻居。默认 `MEET_MAX - 1`（三个，加上她自己正好四个）。
+   *
+   * **判定场景要传更大的值**（2026-11-17，zzy1053 报的）：一条邀约最多 5 只接，
+   * 而 `matesHere()` 拿这个列表去比对「约好的人在不在」，只看前 3 个必然漏人 ——
+   * 漏一个就等于当天判「人没露面」，三次机会废掉一次。
+   *
+   * 这个值会**一起发给服务端**（`limit` 查询参数）。服务端如果不认、仍按自己的封顶回，
+   * 客户端这边也不会坏：少的那几个人只是照旧看不到。
+   */
+  limit = MEET_MAX - 1,
 ): Promise<NeighborBoard> {
   const url = clean(opt.url);
   if (!url || !clean(opt.uid)) return { list: [], pool: 0, here: 0 };
@@ -295,7 +306,7 @@ export async function findNeighbors(
     city: cityId,
     slot,
     exclude: clean(opt.uid),
-    limit: String(MEET_MAX - 1),
+    limit: String(limit),
   });
   try {
     const res = await fetch(`${endpointOf(url)}?${q}`, {
@@ -317,7 +328,7 @@ export async function findNeighbors(
           && typeof (x as Neighbor).doing === 'string')
         .map((x) => ({ pet: x.pet.slice(0, 24), doing: x.doing.slice(0, 40) }))
         .filter((x) => x.pet && x.pet !== clean(opt.pet))
-        .slice(0, MEET_MAX - 1),
+        .slice(0, limit),
       pool,
       here,
     };
