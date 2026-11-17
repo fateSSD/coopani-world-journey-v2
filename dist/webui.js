@@ -498,6 +498,10 @@ const SET = {
     styleHint: '留空＝真实旅行照片（胶片、自然光）。接二次元底模时写「anime style, cel shading」；写 none＝不指定，交给底模。',
     cast: '照片里出不出人',
     castHint: '留空＝画面里没有人，拍的是她眼前的风景。想让她出现，写一段外貌描述，越具体越稳。',
+    styleCast: '有人那张用什么风格',
+    styleCastHint: '留空＝跟上面那个一样。想让风景写实、自拍二次元，就这里填二次元那套前缀 —— 只有她在画面里的照片用它。',
+    castChance: '几成照片有她',
+    castChanceHint: '0 到 1。1＝每张都有（默认）；填 0.3 就是三成有她、七成纯风景。留空或填 1 行为不变。',
     watermark: '去掉「AI生成」水印',
     watermarkHint: '服务商出图后盖上去的那一条，提示词压不掉。auto＝云端裁底边、本地不动；off＝一律不裁；crop＝一律裁掉底部 8%。',
     watermarks: { auto: '自动', off: '不裁', crop: '都裁' },
@@ -552,6 +556,10 @@ const SET = {
     styleHint: 'Empty = real travel photo (film, natural light). For anime base models write “anime style, cel shading”; “none” = leave it to the model.',
     cast: 'Anyone in frame',
     castHint: 'Empty = empty scenery. To include her, describe her appearance — the more specific the steadier.',
+    styleCast: 'Style when she is in frame',
+    styleCastHint: 'Empty = same as the style above. Set this to keep scenery photoreal while portraits are anime — only photos with her in them use it.',
+    castChance: 'Chance a photo includes her',
+    castChanceHint: '0 to 1. 1 = always (default); 0.3 = three in ten. Empty or 1 keeps the old behaviour.',
     watermark: 'Remove the “AI generated” mark',
     watermarkHint: 'added by the provider after generation; a prompt cannot remove it. auto = crop on cloud only; off = never; crop = always (bottom 8%).',
     watermarks: { auto: 'Auto', off: 'Never', crop: 'Always' },
@@ -1961,6 +1969,8 @@ export default {
           minimal: false,
           style: '',
           cast: '',
+          styleCast: '',
+          castChance: '',
           watermark: 'auto',
           timeoutSec: 0,
           photoDir: '',
@@ -2182,6 +2192,12 @@ export default {
           otherBox.append(checkRow(S.minimal, S.minimalHint, draft.minimal, (v) => { draft.minimal = v; }));
           otherBox.append(field(S.style, S.styleHint, draft.style, (v) => { draft.style = v; }, ''));
           otherBox.append(field(S.cast, S.castHint, draft.cast, (v) => { draft.cast = v; }, ''));
+          /*
+           * 有人那张另用一套风格 + 有人的比例（2026-11-17）。
+           * 这两格只在 `cast` 填了的时候有意义 —— 没填就没人出镜，风格和比例都用不上。
+           */
+          otherBox.append(field(S.styleCast, S.styleCastHint, draft.styleCast, (v) => { draft.styleCast = v; }, ''));
+          otherBox.append(field(S.castChance, S.castChanceHint, draft.castChance, (v) => { draft.castChance = v; }, ''));
           otherBox.append(chipRow(
             S.watermark, S.watermarkHint,
             [
@@ -2247,6 +2263,8 @@ export default {
           draft.minimal = Boolean(data.minimal);
           draft.style = data.style || '';
           draft.cast = data.cast || '';
+          draft.styleCast = data.styleCast || '';
+          draft.castChance = typeof data.castChance === 'number' ? String(data.castChance) : '';
           draft.watermark = data.watermark || 'auto';
           draft.timeoutSec = Number(data.timeoutSec) || 0;
           draft.photoDir = data.photoDir || '';
@@ -2306,6 +2324,15 @@ export default {
           values.imageMinimal = draft.minimal;
           values.imageStyle = draft.style.trim();
           values.imageCast = draft.cast.trim();
+          values.imageStyleCast = draft.styleCast.trim();
+          /*
+           * 比例是**数字**，而且 0 是合法值（一张都不要）。
+           * 所以不能用 `|| 1` —— 那会把「填 0」变成「每张都有」。
+           */
+          if (draft.castChance.trim() !== '') {
+            const n = Number(draft.castChance);
+            if (Number.isFinite(n)) values.imageCastChance = Math.min(1, Math.max(0, n));
+          }
           values.imageWatermark = draft.watermark;
           values.imageTimeoutSec = draft.timeoutSec;
           values.photoDir = draft.photoDir.trim();

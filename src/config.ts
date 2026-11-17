@@ -234,6 +234,28 @@ export interface JourneyConfigSection extends WorldSection {
    */
   imageCast: string;
   /**
+   * **有人出镜那几张，用另一套风格**（2026-11-17，读者「左圳杰」问的）。
+   *
+   * 他想要的场景：风景照写实、自拍二次元 —— 而 `imageStyle` 是全局单值，做不到。
+   *
+   * 留空 = 回退到 `imageStyle`（老行为一个字不变）。填了之后：
+   * 有人出镜的照片用它，没人的照片仍用 `imageStyle`。
+   *
+   * 为什么要和 `imageCast` 分开：**风格是风格，有没有人是另一回事**。
+   * 有人 + 写实（她站在风景里）和 有人 + 二次元（画出来的她）都是合理需求，
+   * 用两个字段把这两件事拆开，不用逼用户在「全写实」和「全二次元」之间二选一。
+   */
+  imageStyleCast: string;
+  /**
+   * 有人的照片占几成（0–1）。**默认 1 = 每张都有**（老行为）。
+   *
+   * 填 0.3 就是「三成有她、七成是景」。判定按 `dateKey + 场景` 播种，
+   * 所以同一张重拍不会一会儿有人一会儿没人 —— 看到的照片是稳定的。
+   *
+   * 只在 `imageCast` 填了的时候有意义。
+   */
+  imageCastChance: number;
+  /**
    * 出图尺寸，`宽x高`，如 `1664x928`。留空 = `1024x1024`（老行为）。
    *
    * 2026-11-04 Mr.Q：「画布写死的正方形，手机拍出来的照片基本是竖的 3:4、
@@ -339,6 +361,10 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   imageMinimal: false,
   imageStyle: '',
   imageCast: '',
+  /* 留空 = 跟着 `imageStyle`（老行为）。 */
+  imageStyleCast: '',
+  /* 1 = 每张都有她。填了 `imageCast` 才生效。 */
+  imageCastChance: 1,
   imageSize: '',
   imageWatermark: 'auto',
   imageKey: '',

@@ -1208,14 +1208,26 @@ export const socialMethods: Record<string, any> = {
      * 约好的人在不在这儿，是个当下的事，跟她的游戏内日历无关。
      */
     /*
-     * **要 5 个，不是 3 个**（2026-11-17，zzy1053 报的）。
+     * **四个时段都要问**（2026-11-17，zzy1053 报的，附服务端源码可核）。
      *
-     * 一条邀约最多 5 只接，而这里拿列表去比对「约好的人在不在」——
-     * 只看前 3 个，排在后面的人就被判成「没来」。他现场那次正是这样：
-     * 11-16、11-17 连续两次早上判「人还没露面」，三次机会废掉两次。
+     * 原来只查 `night`。而服务端 `cloud/sight-cf/src/worker.js` 的查询是
+     * `WHERE city = ?1 AND slot = ?2 AND at >= ?3` —— **按 slot 硬过滤**，
+     * 对方在 afternoon 上报的，查 night 永远拿不到。
+     *
+     * `SLOTS` 就四个（morning / afternoon / evening / night），全查一遍再合并去重。
+     * 一天只判一次，四次请求的代价可以接受；漏一个人就废掉一天，那才是贵的。
+     *
+     * ⚠ 服务端那边 `LIMIT` 是常量 `MAX = 3`，**不读客户端传的 limit 参数** ——
+     * 单个时段最多回 3 个，四个时段合并后才有机会看到 5 个人。
      */
-    const board = await findNeighbors(meet, here.id, 'night', 5);
-    const have = new Set(board.list.map((x) => x.pet.trim()));
+    const boards = await Promise.all(
+      (['morning', 'afternoon', 'evening', 'night'] as const)
+        .map((s) => findNeighbors(meet, here.id, s, 3).catch(() => null)),
+    );
+    const have = new Set<string>();
+    for (const b of boards) {
+      for (const x of b?.list ?? []) have.add(x.pet.trim());
+    }
     return names.filter((n) => have.has(n));
   },
 

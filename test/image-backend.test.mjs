@@ -173,6 +173,7 @@ test('defaults 里的键都能在 schema 里找到 —— 拼错了没人会发�
     'imageProtocol', 'imagePreset', 'imageApi', 'imageModel', 'imageSize',
     'imageWorkflow', 'imagePromptNode', 'imageMinimal', 'imageStyle', 'imageCast',
     'imageWatermark', 'photoDir', 'comfyNegative', 'comfyNegativeNode',
+    'imageStyleCast', 'imageCastChance',
     'imageTimeoutSec', 'imageKey',
   ]);
   const declared = new Set();

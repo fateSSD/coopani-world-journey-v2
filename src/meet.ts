@@ -281,14 +281,15 @@ export async function findNeighbors(
   cityId: string,
   slot: Slot,
   /**
-   * 要几个邻居。默认 `MEET_MAX - 1`（三个，加上她自己正好四个）。
+   * 要几个邻居。默认 `MEET_MAX - 1`（三个）。
    *
-   * **判定场景要传更大的值**（2026-11-17，zzy1053 报的）：一条邀约最多 5 只接，
-   * 而 `matesHere()` 拿这个列表去比对「约好的人在不在」，只看前 3 个必然漏人 ——
-   * 漏一个就等于当天判「人没露面」，三次机会废掉一次。
+   * ⚠ **服务端不读这个参数**（2026-11-17 核过 `cloud/sight-cf/src/worker.js`）：
+   * 那边是 `ORDER BY at DESC LIMIT ${MAX}`，`MAX = 3` 写死，query 里的 `limit` 被忽略。
+   * 所以这个值**只管本地再截一道**，传大了服务端也不会多给。
    *
-   * 这个值会**一起发给服务端**（`limit` 查询参数）。服务端如果不认、仍按自己的封顶回，
-   * 客户端这边也不会坏：少的那几个人只是照旧看不到。
+   * **判定场景漏人的真原因不是条数，是时段**：服务端按 `slot` 硬过滤，
+   * 而 `matesHere()` 原来只查 `night` —— 对方在别的时段上报就永远看不到。
+   * 那边现在四个时段全查再合并，见 `matesHere` 的注释。
    */
   limit = MEET_MAX - 1,
 ): Promise<NeighborBoard> {

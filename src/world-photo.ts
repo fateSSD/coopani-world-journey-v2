@@ -495,6 +495,21 @@ export const photoMethods: Record<string, any> = {
        * 重新生成时用他改过的那一段，一个字都不重排 —— 他要的就是"按我改的拍"。
        * 老照片没留提示词的话，前端那边按钮是禁用的，走不到这里。
        */
+      /*
+       * **这张里出不出现她，按概率定**（2026-11-17，读者要「一张风景一张自拍」）。
+       *
+       * 播种用 `dateKey + 场景`，不是 `Math.random()`：同一张重拍必须给出同样的结果，
+       * 否则用户会看到「刚才那张有她，再拍一次没了」—— 那不像照片，像抽卡。
+       *
+       * `imageCastChance` 默认 1，所以没填这个配置的人行为完全不变（每张都有）。
+       */
+      const castOn = !!this.cfg.imageCast
+        && seededRandom(`${dateKey}:${sceneId}:cast`)() <= this.cfg.imageCastChance;
+      /*
+       * 有人那几张可以用另一套风格（`imageStyleCast`）。留空就还是 `imageStyle`。
+       * 这样「风景写实 + 自拍二次元」才成立 —— 风格和有没有人本来就是两件事。
+       */
+      const shootStyle = castOn && this.cfg.imageStyleCast ? this.cfg.imageStyleCast : this.cfg.imageStyle;
       const prompt = override?.prompt.trim() || photoPrompt({
         city: city.name,
         // 视觉锚点按 id 查（名字会重，id 唯一）
@@ -507,14 +522,14 @@ export const photoMethods: Record<string, any> = {
         // 体感参与提示词：高原和湿热拍出来的调子不一样，那是她眼睛看到的东西。
         feel: bodyFeeling(city, this.resolveHome().city),
         // 风格交给用户：接本地模型的人要能盖掉「胶片质感」这种写实指令。
-        style: this.cfg.imageStyle,
+        style: shootStyle,
         /*
          * 极简提示词（2026-11-11）。用户沃兔实测「只写地名和景点反而对」，
          * 这一格把这套开关接到那条路上。默认关，见 `imageMinimal` 的定义。
          */
         minimal: this.cfg.imageMinimal,
         // 留空 = 画面里没有人。填了才画人。
-        cast: this.cfg.imageCast,
+        cast: castOn ? this.cfg.imageCast : '',
         // 抬头还是看脚下。天空照仍受当地时刻和天气约束。
         view,
         /* 她自己写的那一句（2026-11-10）。空 = 不出现，老行为不变。 */

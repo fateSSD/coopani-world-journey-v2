@@ -315,6 +315,11 @@ export const webUiMethods: Record<string, any> = {
       minimal: Boolean(c.imageMinimal),
       style: (c.imageStyle ?? '').trim(),
       cast: (c.imageCast ?? '').trim(),
+      /* 有人出镜那几张另用一套风格，留空就跟着 `style`（2026-11-17）。 */
+      styleCast: (c.imageStyleCast ?? '').trim(),
+      castChance: Number.isFinite(Number(c.imageCastChance))
+        ? Math.min(1, Math.max(0, Number(c.imageCastChance)))
+        : 1,
       watermark: (c.imageWatermark ?? 'auto').trim() || 'auto',
       timeoutSec: Number(c.imageTimeoutSec) || 0,
       photoDir: (c.photoDir ?? '').trim(),
@@ -363,7 +368,8 @@ export const webUiMethods: Record<string, any> = {
     const allowed = new Set([
       'imageProtocol', 'imagePreset', 'imageApi', 'imageModel', 'imageSize',
       'imageWorkflow', 'imagePromptNode', 'comfyNegative', 'comfyNegativeNode', 'imageKey',
-      'imageMinimal', 'imageStyle', 'imageCast', 'imageWatermark', 'imageTimeoutSec', 'photoDir',
+      'imageMinimal', 'imageStyle', 'imageCast', 'imageStyleCast', 'imageCastChance',
+      'imageWatermark', 'imageTimeoutSec', 'photoDir',
     ]);
     /*
      * 三个类型分家。
@@ -374,6 +380,11 @@ export const webUiMethods: Record<string, any> = {
      */
     const booleans = new Set(['imageMinimal']);
     const numbers = new Set(['imageTimeoutSec']);
+    /*
+     * 0–1 的小数**不能进 `numbers`** —— 那里会 `Math.round`，0.3 变成 0，
+     * 用户设「三成有她」会得到「一张都没有」。单独一组，并且夹到 [0,1]。
+     */
+    const floats = new Set(['imageCastChance']);
 
     const clean: Record<string, string | boolean | number> = {};
     for (const [key, value] of Object.entries(patch as Record<string, unknown>)) {
@@ -382,6 +393,11 @@ export const webUiMethods: Record<string, any> = {
       if (numbers.has(key)) {
         const n = Math.max(0, Math.round(Number(value)));
         clean[key] = Number.isFinite(n) ? n : 0;
+        continue;
+      }
+      if (floats.has(key)) {
+        const n = Number(value);
+        clean[key] = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 1;
         continue;
       }
       clean[key] = String(value ?? '').trim();
