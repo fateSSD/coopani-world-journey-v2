@@ -561,7 +561,16 @@ export const webUiMethods: Record<string, any> = {
        * 用户想改就直接去那个目录改，日记本来就是 md。
        */
       if (method === 'list') {
-        const days = this.diary.recent(60).map((d) => ({
+        /*
+         * **新的在前**（2026-11-17，Mr.Q 第三次提这条）。
+         *
+         * `recent(60)` 返回的是**升序**（`sort()` 升序取末尾 60 个，还是升序），
+         * 直接 map 出去就是「从 10 月 31 日翻到 11 月 13 日」，想看今天得滚到底。
+         *
+         * 他上封信建议「按最新日期来」，我当时核的是**模拟鱼生**那边的面板 ——
+         * 那边有 `.reverse()`，本来就对。**这一页是旅行日记，漏了那一步。**
+         */
+        const days = this.diary.recent(60).reverse().map((d) => ({
           dateKey: d.dateKey,
           city: d.cityName,
           weather: d.weather ?? '',
