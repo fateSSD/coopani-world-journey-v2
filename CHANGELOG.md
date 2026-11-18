@@ -1,5 +1,49 @@
 # 更新日志
 
+## 1.12.14 — 2026-11-18（工具定义里 223 处第三人称，把她教成了第三人称说话）
+
+读者 zzy1053 报的，判断很准，而且他自己做了对照实验。
+
+### 现象
+
+她在 thinking 里自称 she：`"She's in bed but this is the thing she came for"` /
+`"He asks what she's doing"`。11-16 / 17 / 18 的 134 / 83 / 32 条 thinking 里
+分别是 **19 / 13 / 7 条**，**没降**。
+
+### 根因：上一轮只治了事件通道
+
+1.8.11 修的是**事件帧**（`journey.photo` 的事件文案用第三人称）—— 那批降下来了。
+但**工具定义通道**没扫：`describe.json` 里 223 处 she/her
+（`tools[].description` 151 + `events[].description.en` 22 + 参数说明 43）。
+
+**对照实验**（他做的）：调 journey 的工具时冒 she，调 terrarium 时是 I ——
+说明不是模型搞混了谁，是**工具清单里的文风被她模仿了**。
+
+**这一点很关键**：按「有没有指代歧义」判断要不要改，会漏掉这一层。
+这些 she 指代全对（`She's in bed` 主语确实是桌宠），
+问题是**「用第三人称写自己」被她当成了 thinking 的默认句式**。
+
+### 改法
+
+- `describe.json` + `src/describe.ts`：指代桌宠的 she/her → you/your，**223 处**
+  （主谓一起改：`she is` → `you are`、`she has` → `you have`、`herself` → `yourself`，
+  另修两处 `you yourself says` 的主谓不一致）；
+- `src/world-purse.ts` 的 `withUser = false` 模板：
+  「**她**一个人在路上。那个人隔着屏幕看**她**……」→ 第二人称（这条每回合都进上下文，
+  是所有叙述的地基，系统前缀里 20 个「她」有 18 个来自它）；
+- `ENV_PROMPT.md` 四处夹注里的「她」→「你」。
+
+**回执（调用之后才出现的那层）没动** —— 它不影响 thinking 的文风。
+
+### 测试
+
+`describe.json` 与 `describe.ts` 必须一字不差那条仍然绿；全量 **1032/1032**（主套）+ e2e 全绿。
+工具描述里的 she/her 从 223 降到 0。
+
+> 关于 events：一并改了。**如果宿主把 `events[].description` 显示给用户**，
+> 那几行会从「She is asking to set off」变成「You are asking to set off」——
+> 对用户读起来会有点怪。**这一条需要在实际界面上确认**，怪的话把 events 那 22 处回滚。
+
 ## 1.12.13 — 2026-11-18（叫她回来坐什么：原来是在掷骰子）
 
 读者报的（v1.12.11，13:39）：在面板上点「叫她回来」，她一步到家（这是设计），

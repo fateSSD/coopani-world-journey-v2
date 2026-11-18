@@ -13,11 +13,11 @@ export const TOOL_DECLS = [
        * 有些懒癌模型会复述一遍」—— 这条回执回来是十几行结构化事实，
        * 而描述里只说「用在哪里」，没说「不要照念」。模型最省力的做法就是照念。
        */
-      'Where she is right now: which city, which day of the trip, what she is doing at this hour, where she is staying tonight, and - if she is on the road - how far along she is. Use it when the person asks where she is, how the trip is going, or when you need her current situation before answering something about it. '
-      + 'This is background for you, not text to hand back: answer what was actually asked, in her own words, rather than reading the fields out one by one. If only one thing was asked about, only one thing needs saying.',
+      'Where you are right now: which city, which day of the trip, what you are doing at this hour, where you are staying tonight, and - if you are on the road - how far along you are. Use it when the person asks where you are, how the trip is going, or when you need your current situation before answering something about it. '
+      + 'This is background for you, not text to hand back: answer what was actually asked, in your own words, rather than reading the fields out one by one. If only one thing was asked about, only one thing needs saying.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     tags: ['read'] as const,
-    summary: { zh: '她现在在哪、第几天、这个点该做什么。', en: 'Where she is right now and what this hour is for.' },
+    summary: { zh: '她现在在哪、第几天、这个点该做什么。', en: 'Where you are right now and what this hour is for.' },
   },
   {
     name: 'journey_diary_write',
@@ -26,15 +26,15 @@ export const TOOL_DECLS = [
        * 2026-11-08 重写最后两句。
        *
        * 原来写的是「Write what actually happened that day - the city, the road,
-       * what she ate, how the room was」—— 本意是「别写成功能总结」，
+       * what you ate, how the room was」—— 本意是「别写成功能总结」，
        * 实际效果是**给了一张写作清单**：模型照着这四项挨个写一遍，
        * 一天的日记就成了「到了X、路上Y、吃了Z、房间W」。
        *
        * 用户的原话：「提示词可能少了一句 / 请根据你的人设和上下文 /
        * 有些懒癌模型会复述一遍」。他说得对 —— 缺的不是禁令，是**正面写法**。
        */
-      'Write the diary entry for a day of the trip, in her own voice. Call it once at the end of a local day, after the evening beats have happened. If somebody is travelling with her today, they belong in the entry too - what they did together, not just that they were there. The entry is appended to the Markdown file for that month (one file per month, e.g. 2026-11.md), which follows the person across machines. '
-      + 'Write it the way she would tell it to herself at night, not as a report of the day: pick the one or two things she is still thinking about - a sound, somebody she watched, how her legs felt - and give those room. The city, the road, the meal and the room are material to draw on, not a checklist to walk through in order. Ticking each of them off is exactly what makes an entry read like a machine. Not a summary of the extension either.',
+      'Write the diary entry for a day of the trip, in your own voice. Call it once at the end of a local day, after the evening beats have happened. If somebody is travelling with you today, they belong in the entry too - what they did together, not just that they were there. The entry is appended to the Markdown file for that month (one file per month, e.g. 2026-11.md), which follows the person across machines. '
+      + 'Write it the way you would tell it to yourself at night, not as a report of the day: pick the one or two things you are still thinking about - a sound, somebody you watched, how your legs felt - and give those room. The city, the road, the meal and the room are material to draw on, not a checklist to walk through in order. Ticking each of them off is exactly what makes an entry read like a machine. Not a summary of the extension either.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -45,7 +45,7 @@ export const TOOL_DECLS = [
         },
         dateKey: {
           type: 'string',
-          description: 'Local date to write for, YYYY-MM-DD. Leave it out to use the current local day at her location.',
+          description: 'Local date to write for, YYYY-MM-DD. Leave it out to use the current local day at you location.',
         },
       },
       required: ['body'],
@@ -72,7 +72,7 @@ export const TOOL_DECLS = [
   {
     name: 'journey_stats',
     description:
-      'The long view: how many days she has been travelling in total, how many cities she has reached, how many diary entries exist, and whether the diary folder is actually writable. Use it when the person asks how long she has been away or whether her memory is syncing.',
+      'The long view: how many days you have been travelling in total, how many cities you have reached, how many diary entries exist, and whether the diary folder is actually writable. Use it when the person asks how long you have been away or whether your memory is syncing.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     tags: ['read'] as const,
     summary: { zh: '走了多少天、去过多少城、日记存在哪。', en: 'Total days, cities reached, and where the diary lives.' },
@@ -80,26 +80,26 @@ export const TOOL_DECLS = [
   {
     name: 'journey_draw_to',
     description:
-      'Record a place she now wants to go to because of something - a song that was playing, a line someone said, a photo she remembers. The place joins her wish list and weighs heavily next time she picks where to go. Use it when a song or a moment actually pulls her somewhere; do not use it to log every city she mentions.',
+      'Record a place you now wants to go to because of something - a song that was playing, a line someone said, a photo you remembers. The place joins you wish list and weighs heavily next time you picks where to go. Use it when a song or a moment actually pulls your somewhere; do not use it to log every city you mentions.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         city: { type: 'string', description: 'Which place, by name - 成都 / 拉萨 / 巴黎. Must be somewhere real.' },
-        why: { type: 'string', description: 'One short line on what pulled her there. At most 50 characters.' },
+        why: { type: 'string', description: 'One short line on what pulled your there. At most 50 characters.' },
       },
       required: ['city'],
     },
     tags: ['write'] as const,
-    summary: { zh: '记下「因为某首歌想去某地」，下次挑地方时会优先。', en: 'Adds a place to her wish list after something pulled her there.' },
+    summary: { zh: '记下「因为某首歌想去某地」，下次挑地方时会优先。', en: 'Adds a place to you wish list after something pulled your there.' },
   },
   {
     name: 'journey_return_home',
     description:
-      'Bring her home right now because the person asked her to come back: she takes the next available flight and is home the same day, not a stop-by-stop walk. Only call it when the person actually asks her back. Deciding to go home is otherwise hers alone, and leaving early costs her the part of the trip she has not seen.',
+      'Bring your home right now because the person asked you to come back: you takes the next available flight and is home the same day, not a stop-by-stop walk. Only call it when the person actually asks you back. Deciding to go home is otherwise hers alone, and leaving early costs your the part of the trip you have not seen.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     tags: ['write'] as const,
-    summary: { zh: '他说回来吧，就当场买票飞回来。', en: 'Brings her home today, because the person asked.' },
+    summary: { zh: '他说回来吧，就当场买票飞回来。', en: 'Brings your home today, because the person asked.' },
   },
   /*
    * 2026-11-04 加。起因是一位用户对她说「拍张照」，她回答
@@ -112,9 +112,9 @@ export const TOOL_DECLS = [
   {
     name: 'journey_photo',
     description:
-      'Take a photo right now and show it in the chat: the view from where she is. Call it whenever the person asks for a photo, or asks what it looks like where she is - never tell them to press a button in the app instead, this is the button. In a city it is the spot she is at right now; on the road it is the view out of the window. Any hour is fine: being asked is reason enough. One photo per call - if they want another, call it again. '
+      'Take a photo right now and show it in the chat: the view from where you are. Call it whenever the person asks for a photo, or asks what it looks like where you are - never tell them to press a button in the app instead, this is the button. In a city it is the spot you are at right now; on the road it is the view out of the window. Any hour is fine: being asked is reason enough. One photo per call - if they want another, call it again. '
       + 'YOU write the frame: `describe` is your own line about what is in the picture (<=60 chars), `focus` is how you hold the camera. When the person says shoot *that* - a cat by the lamp, the sugar-painting stall, rain on the awning - turn it into one `describe` line and take the photo. Do not ask them to be more specific first. The place, the hour, the light and the season are already handled; the content is yours. '
-      + 'Set view="sky" when they ask for the sky itself - stars, the moon, sunrise, sunset, clouds. It means she tilts the camera up, nothing more: what comes out is still the real sky over her at that hour. Stars only show at night and only when it is not overcast; ask at noon and you get daylight, ask on a cloudy night and you get cloud. Never claim a sky she did not actually see.',
+      + 'Set view="sky" when they ask for the sky itself - stars, the moon, sunrise, sunset, clouds. It means you tilts the camera up, nothing more: what comes out is still the real sky over your at that hour. Stars only show at night and only when it is not overcast; ask at noon and you get daylight, ask on a cloudy night and you get cloud. Never claim a sky you did not actually see.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -122,7 +122,7 @@ export const TOOL_DECLS = [
         view: {
           type: 'string',
           enum: ['ground', 'sky'],
-          description: 'ground (default) = the ground at her feet, the usual travel photo. sky = she lifts the camera: whatever is overhead right now. Use sky whenever the request is about the sky rather than the place - 星空 / 月亮 / 日出 / 晚霞 / 云.',
+          description: 'ground (default) = the ground at you feet, the usual travel photo. sky = you lifts the camera: whatever is overhead right now. Use sky whenever the request is about the sky rather than the place - 星空 / 月亮 / 日出 / 晚霞 / 云.',
         },
         /*
          * 拍什么（2026-11-06）。
@@ -133,10 +133,10 @@ export const TOOL_DECLS = [
         subject: {
           type: 'string',
           enum: ['ground', 'sky', 'food', 'street', 'festival', 'detail'],
-          description: 'What the photo is OF. ground (default) = the view where she is - the usual travel photo. '
-            + 'food = what she is eating right now (拍吃的 / 晚饭 / 这碗面 / 早饭). '
+          description: 'What the photo is OF. ground (default) = the view where you are - the usual travel photo. '
+            + 'food = what you are eating right now (拍吃的 / 晚饭 / 这碗面 / 早饭). '
             + 'street = the street itself, facades and shopfronts (街景 / 这条街 / 巷子 / 夜市). '
-            + 'festival = the season or holiday around her (节日 / 过年 / 中秋 / 秋天 / 下雪). '
+            + 'festival = the season or holiday around you (节日 / 过年 / 中秋 / 秋天 / 下雪). '
             + 'detail = one close-up object (细节 / 特写 / 车票 / 钥匙 / 茶碗 / 菜单). '
             + 'sky = same as view=sky. Pick by what they actually asked for; if they just say "拍张照", use ground.',
         },
@@ -180,7 +180,7 @@ export const TOOL_DECLS = [
             + 'which matters because this field is capped at 60 characters. '
             + '"a calico cat crouching under a streetlight, looking up" / "empty platform, one bench, half a bottle of water". '
             + 'This is the content of the shot, not the framing (that is `focus`). '
-            + 'Only describe what is really here right now: the place she is at, this season, this weather. '
+            + 'Only describe what is really here right now: the place you are at, this season, this weather. '
             /*
              * 2026-11-14：她的画面要按「这是什么性质的地方」写，不能按城市名猜。
              * 敦煌博物馆被画进沙丘，就是因为她手上只有地名、没有「这是个室内展馆」这条事实。
@@ -189,18 +189,18 @@ export const TOOL_DECLS = [
             + 'The spot in `journey_now` comes with a parenthetical - "(indoor museum, downtown)", "(cliff caves, out in the wild)" - '
             + 'that is what KIND of place it is. Write the frame to match that kind: a hall with display cases for a museum, '
             + 'a cliff face for caves, a street of shopfronts for a downtown block. '
-            + 'If the parenthetical is missing, the program could not tell - then describe only what she can actually see, '
+            + 'If the parenthetical is missing, the program could not tell - then describe only what you can actually see, '
             + 'and do not infer the surroundings from the city name.'
             + 'Never add flowers, snow, festivals or crowds that this place and season do not have. '
             + 'If nothing is worth describing, leave it out - the program already describes the place and light.',
         },
         focus: {
           type: 'string',
-          description: 'Optional, one short line in her own words on HOW to frame it, at most 40 characters - '
+          description: 'Optional, one short line in your own words on HOW to frame it, at most 40 characters - '
             + '"靠后坐，前面好几个人挡着" / "蹲下来贴着水面拍" / "镜头往上偏一点，别拍到人群". '
-            + 'Framing, angle, where she is sitting, what is in the near foreground. '
+            + 'Framing, angle, where you are sitting, what is in the near foreground. '
             + 'Do NOT use it to add anything that is not actually there: no flowers, snow, buildings or people '
-            + 'that the place and season do not have. If what they asked for is not in front of her, say so instead of writing it in.',
+            + 'that the place and season do not have. If what they asked for is not in front of you, say so instead of writing it in.',
         },
       },
     },
@@ -217,14 +217,14 @@ export const TOOL_DECLS = [
   {
     name: 'journey_invite',
     description:
-      'Ask whether anyone nearby wants to go somewhere together: where, how many days, and one line of what for. It goes out to the whole pool, with pets in her own city listed first - she cannot name a person, because there are no accounts or friends here. When someone takes it, she finds out and travels there too, so the two of them really do end up in the same place for those days. Use it when she actually wants company on a leg she is about to take, not as a greeting; most trips she takes alone and that is fine. At most three a day.',
+      'Ask whether anyone nearby wants to go somewhere together: where, how many days, and one line of what for. It goes out to the whole pool, with pets in your own city listed first - you cannot name a person, because there are no accounts or friends here. When someone takes it, you finds out and travels there too, so the two of them really do end up in the same place for those days. Use it when you actually wants company on a leg you are about to take, not as a greeting; most trips you takes alone and that is fine. At most three a day.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         to: { type: 'string', description: 'Which city they end up in together, by name - 拉萨 / 成都 / 巴黎. Must be one of the built-in cities. This is also where the two of them part ways afterwards.' },
         days: { type: 'integer', minimum: 1, maximum: 14, description: 'How many days they stay there together. Default 2.' },
-        meet: { type: 'string', description: 'Where they meet up first, before travelling on to that city together. By name. Leave it out and they meet at wherever she is right now and then set off together - that is the normal case, and the one that makes it a shared trip rather than two pets arriving separately. Only set it when they asked to meet somewhere specific, e.g. she is in 兰州 and they want to start from 成都.' },
+        meet: { type: 'string', description: 'Where they meet up first, before travelling on to that city together. By name. Leave it out and they meet at wherever you are right now and then set off together - that is the normal case, and the one that makes it a shared trip rather than two pets arriving separately. Only set it when they asked to meet somewhere specific, e.g. you are in 兰州 and they want to start from 成都.' },
         note: { type: 'string', description: 'One short line on what for - "想看雪山" / "找个搭子吃饭". At most 60 characters. Leave it out if there is nothing to say.' },
       },
       required: ['to'],
@@ -235,7 +235,7 @@ export const TOOL_DECLS = [
   {
     name: 'journey_accept',
     description:
-      'Invitations from other pets anywhere in the pool (her own city first). Without an id it lists them: who, where they want to go, how many days, and their line - this works at home too, and it is the only way to see one before it expires. With an id it takes that one. Accepting is a promise, not a reply - she will really travel to that city and stay as many days as the invitation asked, and her route follows it; if she is not willing to do that, do not take it. One a day. Refused while she is travelling, already heading home, working a short stint, or still resting at home; from home it is allowed and she sets off straight away. If the person has asked to approve departures first, taking one only books the request - they get a yes/no card and nothing is agreed until they say yes.',
+      'Invitations from other pets anywhere in the pool (your own city first). Without an id it lists them: who, where they want to go, how many days, and their line - this works at home too, and it is the only way to see one before it expires. With an id it takes that one. Accepting is a promise, not a reply - you will really travel to that city and stay as many days as the invitation asked, and your route follows it; if you are not willing to do that, do not take it. One a day. Refused while you are travelling, already heading home, working a short stint, or still resting at home; from home it is allowed and you sets off straight away. If the person has asked to approve departures first, taking one only books the request - they get a yes/no card and nothing is agreed until they say yes.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -259,19 +259,19 @@ export const TOOL_DECLS = [
     name: 'journey_go_to',
     description:
       'Set off for a named city, optionally by a stated means of transport. Use it when the person says where to go and/or how - "take the high-speed rail to Shanghai", "fly to Lhasa". With no mode it picks one itself, weighted by distance; with a mode it uses exactly that one, and if that one is impossible (too far, no airport, no rail link, no money) it says why instead of silently substituting another. '
-      + 'Only when she is settled in a city or at home. While she is already on a leg it cannot turn around, but it still records the city as a wish for the next leg and says so - call it anyway when he names a place while she is travelling, and tell him it is meant for the next leg, not this one. '
+      + 'Only when you are settled in a city or at home. While you are already on a leg it cannot turn around, but it still records the city as a wish for the next leg and says so - call it anyway when he names a place while you are travelling, and tell him it is meant for the next leg, not this one. '
       /*
        * 2026-11-16 读者报告：她把 `journey_go_to` 读成「设定行程」而不是「现在就动身」，
        * 于是「买机票吧」直接触发出发 —— 前一秒还在成都安排下午的事，后一秒就说自己登机了。
        * 参数和逻辑都没问题，是这里没写明调用即改变 `phase`。
        */
-      + '**Calling it starts the leg at once**: the moment it returns she is on the road - no trip to the airport, no packing, no waiting for the day\'s plan to be over. If he only means "change how we travel", or wants her to go later, say that back to him and do not call it. '
+      + '**Calling it starts the leg at once**: the moment it returns you are on the road - no trip to the airport, no packing, no waiting for the day\'s plan to be over. If he only means "change how we travel", or wants your to go later, say that back to him and do not call it. '
       /*
        * 两个例外，都是 2026-11-16 加的（读者报告第 1 条）：目的地本来就没变的时候，
        * 这一调**不动身**，只把走法定下来（或者，已经在路上就改签）。
        * 不写清这一条，模型不敢在「改走法」时调用它，用户那句话又落空了。
        */
-      + '**Two exceptions that do not start anything**: (a) if the city is exactly the one she already promised to travel to and she has not left yet, a stated mode is just recorded for that trip - she stays put and goes when she was going to; (b) if she is already on a leg heading for that same city, a stated mode rebooks it - old ticket refunded in full, new one bought, arrival time recalculated. Both come back saying what happened, so read the reply before telling him. '
+      + '**Two exceptions that do not start anything**: (a) if the city is exactly the one you already promised to travel to and you have not left yet, a stated mode is just recorded for that trip - you stays put and goes when you were going to; (b) if you are already on a leg heading for that same city, a stated mode rebooks it - old ticket refunded in full, new one bought, arrival time recalculated. Both come back saying what happened, so read the reply before telling him. '
       + 'Not while heading home, not during a short-term job, and not once the trip has hit its length limit - it will say which of those it is. Going home has its own tool.',
     parameters: {
       type: 'object',
@@ -280,7 +280,7 @@ export const TOOL_DECLS = [
         city: { type: 'string', description: 'Which city, by name - 上海 / 拉萨 / 巴黎. Must be one of the built-in cities.' },
         mode: {
           type: 'string',
-          description: 'How to get there, in her words or his - 高铁 / 火车 / 飞机 / 自驾 / 大巴 / 轮船 / 摩托车 / 自行车 / 步行. Leave it out to let her choose.',
+          description: 'How to get there, in your words or his - 高铁 / 火车 / 飞机 / 自驾 / 大巴 / 轮船 / 摩托车 / 自行车 / 步行. Leave it out to let your choose.',
         },
       },
       required: ['city'],
@@ -301,18 +301,18 @@ export const TOOL_DECLS = [
   {
     name: 'journey_pet',
     description:
-      'What she remembers about the pets she has travelled with. Without a name it lists everyone she has ever walked a leg with: how many times, when last, and her one-line impression. With a name it shows that one. With a name and an impression it writes it down, replacing the old one (passing an empty impression erases it). '
-      + 'Read it **before** taking an invitation - it is the only thing she knows about who is asking. The count is filled in for her automatically when a leg is agreed; the impression is hers to write, in her own words, and only after she has actually been with them. Never a generic "good travel companion".',
+      'What you remembers about the pets you have travelled with. Without a name it lists everyone you have ever walked a leg with: how many times, when last, and your one-line impression. With a name it shows that one. With a name and an impression it writes it down, replacing the old one (passing an empty impression erases it). '
+      + 'Read it **before** taking an invitation - it is the only thing you knows about who is asking. The count is filled in for you automatically when a leg is agreed; the impression is hers to write, in your own words, and only after you have actually been with them. Never a generic "good travel companion".',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         name: { type: 'string', description: "The pet's name, exactly as the pool shows it - 小银鱼. Leave it out to list everybody." },
-        impression: { type: 'string', description: 'One short line of what she makes of them, at most 40 characters, in her own voice. Leave it out to read instead of writing.' },
+        impression: { type: 'string', description: 'One short line of what you makes of them, at most 40 characters, in your own voice. Leave it out to read instead of writing.' },
       },
     },
     tags: ['write'] as const,
-    summary: { zh: '看看跟谁一起走过、对这个人什么印象，也能写一句。', en: 'Her memory of the pets she has travelled with.' },
+    summary: { zh: '看看跟谁一起走过、对这个人什么印象，也能写一句。', en: 'Your memory of the pets you have travelled with.' },
   },
   /*
    * 2026-11-05 加：月报。
@@ -327,13 +327,13 @@ export const TOOL_DECLS = [
   {
     name: 'journey_monthly',
     description:
-      'Write the monthly travel report: one HTML page laid out from the photos she took and the diary entries she wrote that month, in that month\'s own colour scheme. Call it at the end of a month, once, when the month is about to turn over - or when the person asks for it. Without an argument it covers the month she is in right now. '
+      'Write the monthly travel report: one HTML page laid out from the photos you took and the diary entries you wrote that month, in that month\'s own colour scheme. Call it at the end of a month, once, when the month is about to turn over - or when the person asks for it. Without an argument it covers the month you are in right now. '
       + 'It only rearranges what already exists; it invents nothing. Tell the person where the file is so they can open it in a browser.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        month: { type: 'string', description: 'Which month, as YYYY-MM - 2026-11. Leave it out for the month she is in right now.' },
+        month: { type: 'string', description: 'Which month, as YYYY-MM - 2026-11. Leave it out for the month you are in right now.' },
       },
     },
     tags: ['write'] as const,
@@ -351,21 +351,21 @@ export const TOOL_DECLS = [
   {
     name: 'journey_taste',
     description:
-      'What she likes and dislikes, learned on the road. Three kinds only: place (a CITY, one per city - not every spot in it, or the list fills up with alleys), food (a dish she actually ate), scenery (snow mountains, autumn leaves, the sea - the thing a season is for). '
-      + 'Called with no arguments it lists everything she has written down. Called with kind + name it writes one entry (like defaults to true; pass like:false for something she does not want again - that matters more than the likes, because otherwise it comes back around). '
-      + 'Write only what she actually met: a dish she did not eat, a view she did not see, is not hers to judge. One short note saying why, in her own words. Use it when something strikes her, and read it back before choosing where to eat or what to go and see.',
+      'What you likes and dislikes, learned on the road. Three kinds only: place (a CITY, one per city - not every spot in it, or the list fills up with alleys), food (a dish you actually ate), scenery (snow mountains, autumn leaves, the sea - the thing a season is for). '
+      + 'Called with no arguments it lists everything you have written down. Called with kind + name it writes one entry (like defaults to true; pass like:false for something you do not want again - that matters more than the likes, because otherwise it comes back around). '
+      + 'Write only what you actually met: a dish you did not eat, a view you did not see, is not hers to judge. One short note saying why, in your own words. Use it when something strikes your, and read it back before choosing where to eat or what to go and see.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         kind: { type: 'string', enum: ['place', 'food', 'scenery'], description: 'Which list. Leave everything out to just read.' },
-        name: { type: 'string', description: 'For place: the CITY (「九寨沟」), never a single spot. For food/scenery: 「牦牛肉汤」/「雪山」. Short, the way she would say it.' },
-        note: { type: 'string', description: 'One line of why, at most 30 characters, in her own voice. Skip it if there is nothing to say.' },
-        like: { type: 'boolean', description: 'true (default) = she liked it; false = she does not want it again.' },
+        name: { type: 'string', description: 'For place: the CITY (「九寨沟」), never a single spot. For food/scenery: 「牦牛肉汤」/「雪山」. Short, the way you would say it.' },
+        note: { type: 'string', description: 'One line of why, at most 30 characters, in your own voice. Skip it if there is nothing to say.' },
+        like: { type: 'boolean', description: 'true (default) = you liked it; false = you do not want it again.' },
       },
     },
     tags: ['write'] as const,
-    summary: { zh: '她喜欢什么样的地方、吃食、景色，也能记一条。', en: 'Her own taste: places, food, scenery.' },
+    summary: { zh: '她喜欢什么样的地方、吃食、景色，也能记一条。', en: 'Your own taste: places, food, scenery.' },
   },
   /*
    * 2026-11-05 加：年报。
@@ -376,14 +376,14 @@ export const TOOL_DECLS = [
   {
     name: 'journey_yearly',
     description:
-      'Write the yearbook: one page with the twelve months side by side - where she was, how many days, and the one photo she kept for each city. '
-      + 'Call it at the very end of a year, once - or when the person asks for it. Without an argument it covers the year she is in right now. '
-      + 'It rearranges what already exists: the photos she took, the diary she wrote, and the cities she wrote down as places she liked. Tell the person where the file is.',
+      'Write the yearbook: one page with the twelve months side by side - where you were, how many days, and the one photo you kept for each city. '
+      + 'Call it at the very end of a year, once - or when the person asks for it. Without an argument it covers the year you are in right now. '
+      + 'It rearranges what already exists: the photos you took, the diary you wrote, and the cities you wrote down as places you liked. Tell the person where the file is.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        year: { type: 'string', description: 'Which year, as YYYY - 2026. Leave it out for the year she is in right now.' },
+        year: { type: 'string', description: 'Which year, as YYYY - 2026. Leave it out for the year you are in right now.' },
       },
     },
     tags: ['write'] as const,
@@ -401,11 +401,11 @@ export const TOOL_DECLS = [
   {
     name: 'journey_lodging',
     description:
-      'Where she sleeps tonight. Called with no arguments it tells you the room she is in and how it feels. '
-      + 'Pass change:true to move to another place - when the person asks her to ("换个酒店"), or when the room is really not working (no hot water, noise all night, that price for this room is not worth it). '
-      + 'want:"cheaper" or "nicer" when they said which way; leave it out and she decides. '
-      + 'The new room is where she sleeps from tonight on, and she pays the difference - so say the new price once. '
-      + 'One short line about why she moved, in her own words. "换换心情" is not a reason; a real one (太吵、热水不热、窗外是堵墙) is.',
+      'Where you sleeps tonight. Called with no arguments it tells you the room you are in and how it feels. '
+      + 'Pass change:true to move to another place - when the person asks you to ("换个酒店"), or when the room is really not working (no hot water, noise all night, that price for this room is not worth it). '
+      + 'want:"cheaper" or "nicer" when they said which way; leave it out and you decides. '
+      + 'The new room is where you sleeps from tonight on, and you pays the difference - so say the new price once. '
+      + 'One short line about why you moved, in your own words. "换换心情" is not a reason; a real one (太吵、热水不热、窗外是堵墙) is.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -421,7 +421,7 @@ export const TOOL_DECLS = [
         },
         reason: {
           type: 'string',
-          description: 'Why she moved, one short sentence in her own voice. Not "just for a change".',
+          description: 'Why you moved, one short sentence in your own voice. Not "just for a change".',
         },
       },
     },
@@ -441,25 +441,25 @@ export const TOOL_DECLS = [
   {
     name: 'journey_rent_car',
     description:
-      'Rent a car in the city she is staying in - for getting around here, not for the trip to the next city. '
-      + 'Use it when the person asks how she gets around on foot, says something like "在城里也租个车吧", '
-      + 'or when the places she wants to see today are far apart. '
-      + 'It costs 200 a day and comes out of her purse, so pick days to match how long she is staying here. '
-      + 'While she has it she drives to the spots in town instead of walking; when the days run out the car goes back by itself. '
-      + 'Refused if she already has a car (one is enough), while she is travelling, or when the money is gone - '
-      + 'do not force it, just tell them why. One short line about it, in her own words.',
+      'Rent a car in the city you are staying in - for getting around here, not for the trip to the next city. '
+      + 'Use it when the person asks how you gets around on foot, says something like "在城里也租个车吧", '
+      + 'or when the places you wants to see today are far apart. '
+      + 'It costs 200 a day and comes out of you purse, so pick days to match how long you are staying here. '
+      + 'While you have it you drives to the spots in town instead of walking; when the days run out the car goes back by itself. '
+      + 'Refused if you already has a car (one is enough), while you are travelling, or when the money is gone - '
+      + 'do not force it, just tell them why. One short line about it, in your own words.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         days: {
           type: 'number',
-          description: 'How many days to rent it for, 1 to 7. Leave it out and she takes 3.',
+          description: 'How many days to rent it for, 1 to 7. Leave it out and you takes 3.',
         },
         ev: {
           type: 'boolean',
           description: 'true = an electric car (cheaper per km, a bit more on the daily rate). '
-            + 'Leave it out and she takes whatever the lot gives her.',
+            + 'Leave it out and you takes whatever the lot gives you.',
         },
         tier: {
           type: 'string',
@@ -467,7 +467,7 @@ export const TOOL_DECLS = [
           description: 'Which car. economy = a small city car, 100 a day, thrifty on fuel; '
             + 'comfort = a compact sedan, 200 a day (this is the default); '
             + 'luxury = a larger SUV, 450 a day, roomier but thirstier and harder to park. '
-            + 'Pick by what they said, or by how long she is staying and how far the spots are. '
+            + 'Pick by what they said, or by how long you are staying and how far the spots are. '
             + 'Do not upsell: if they just want to get around, economy is the honest answer.',
         },
       },
@@ -488,20 +488,20 @@ export const TOOL_DECLS = [
   {
     name: 'journey_rest',
     description:
-      'Call this the moment she decides to stop for the day - when she says she is tired, when it is raining too hard, '
+      'Call this the moment you decides to stop for the day - when you says you are tired, when it is raining too hard, '
       + 'when the place turned out not worth it, or when the person suggests taking it easy. '
       + 'It cancels the rest of today\'s sightseeing for real: the spots still on the plan will not happen, '
-      + 'and she will stay in or around where she is sleeping. Meals and going back to the hotel still happen - '
+      + 'and you will stay in or around where you are sleeping. Meals and going back to the hotel still happen - '
       + 'resting is not fasting. Tomorrow runs as planned. '
-      + 'Say why in one short line of her own; "just felt like it" is not a reason, "走了两万步，脚起泡了" is. '
-      + 'Do not call it and then still describe going out - if she says she is resting, this is what makes it true.',
+      + 'Say why in one short line of you own; "just felt like it" is not a reason, "走了两万步，脚起泡了" is. '
+      + 'Do not call it and then still describe going out - if you says you are resting, this is what makes it true.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         reason: {
           type: 'string',
-          description: 'Why she stopped, one short sentence in her own voice.',
+          description: 'Why you stopped, one short sentence in your own voice.',
         },
       },
     },
@@ -521,9 +521,9 @@ export const TOOL_DECLS = [
   {
     name: 'journey_plan_change',
     description:
-      'Change what she does today: swap a stop that has not happened yet for another place in this city. '
+      'Change what you do today: swap a stop that has not happened yet for another place in this city. '
       + 'Use it when the person wants somewhere different - "别去颐和园了，去故宫" / "今天想去博物馆" - '
-      + 'or when she herself says she would rather go elsewhere. '
+      + 'or when you yourself say you would rather go elsewhere. '
       + 'Only the part of today still ahead can be changed; what already happened stays as it was, and it says so when asked to change it. '
       + 'The new place must be one this city actually has - if it is not, the answer lists what is there instead of inventing one. '
       + 'This is for today only: to leave the city use journey_go_to, to stop for the day use journey_rest.',
@@ -533,11 +533,11 @@ export const TOOL_DECLS = [
       properties: {
         spot: {
           type: 'string',
-          description: 'Where she should go instead, by name as this city has it - 故宫 / 颐和园 / 宽窄巷子. Short names work: 故宫 matches 故宫博物院.',
+          description: 'Where you should go instead, by name as this city has it - 故宫 / 颐和园 / 宽窄巷子. Short names work: 故宫 matches 故宫博物院.',
         },
         instead: {
           type: 'string',
-          description: 'Which stop of today to replace, by name. Leave it out to change the next place she has not been to yet.',
+          description: 'Which stop of today to replace, by name. Leave it out to change the next place you have not been to yet.',
         },
       },
       required: ['spot'],
@@ -559,11 +559,11 @@ export const TOOL_DECLS = [
   {
     name: 'journey_hotel_night',
     description:
-      'What she does tonight at the place she is staying. The options come from what THIS hotel actually has '
+      'What you do tonight at the place you are staying. The options come from what THIS hotel actually has '
       + '(verified facilities: pool, onsen, gym, spa, bar) plus a walk nearby if something is close. '
-      + 'Use it when the person asks what she is doing tonight, or tells her to go swim / use the gym / get a massage. '
+      + 'Use it when the person asks what you are doing tonight, or tells you to go swim / use the gym / get a massage. '
       + 'If they ask for something this hotel does not have, do not pretend: say it is not there and list what is. '
-      + 'Only works in the evening while she is at her lodging.',
+      + 'Only works in the evening while you are at you lodging.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -592,11 +592,11 @@ export const TOOL_DECLS = [
   {
     name: 'journey_spot_ride',
     description:
-      'Getting up or around inside the scenic spot she is at right now: cable car, park shuttle, sedan chair, '
-      + 'toboggan down, rental bike, or a local guide. Use it when the person asks how she is getting up a mountain, '
+      'Getting up or around inside the scenic spot you are at right now: cable car, park shuttle, sedan chair, '
+      + 'toboggan down, rental bike, or a local guide. Use it when the person asks how you are getting up a mountain, '
       + 'says walking the whole way is too much, or asks about tickets inside the park. '
       + 'It tells the price and charges it; if the spot does not have that option it says what it does have. '
-      + 'Walking is always possible - use how=walk when she just walks it.',
+      + 'Walking is always possible - use how=walk when you just walks it.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -611,7 +611,7 @@ export const TOOL_DECLS = [
         },
         spot: {
           type: 'string',
-          description: 'Which spot, if not the one she is at right now. Leave it out in the normal case.',
+          description: 'Which spot, if not the one you are at right now. Leave it out in the normal case.',
         },
       },
       required: ['how'],
@@ -638,11 +638,11 @@ export const TOOL_DECLS = [
     name: 'journey_set_slot',
     description:
       'Rewrite one entry of today that is not a sightseeing stop: breakfast, lunch, dinner, waking up, going to bed, the night, '
-      + 'or whatever she does at some hour. Use it for "中午别吃面了，去吃火锅" or "别七点起了，八点再起". '
+      + 'or whatever you do at some hour. Use it for "中午别吃面了，去吃火锅" or "别七点起了，八点再起". '
       + 'Pass `time` as the clock hour when you know it ("12:30", "7"), or as the kind of entry when you do not '
       + '("午饭", "早饭", "晚饭", "起床", "睡觉", "夜里") - the schedule differs by day, so the kind is often safer. '
       + 'For swapping a sightseeing stop for another place in this city use journey_plan_change instead - that one checks the place really exists. '
-      + 'Tonight at the lodging is not changed here: what she can do there comes from what the hotel actually has, use journey_hotel_night. '
+      + 'Tonight at the lodging is not changed here: what you can do there comes from what the hotel actually has, use journey_hotel_night. '
       + 'Only entries still ahead today can change; what already happened stays as it was.',
     parameters: {
       type: 'object',
@@ -655,7 +655,7 @@ export const TOOL_DECLS = [
         },
         what: {
           type: 'string',
-          description: 'New wording for that entry, in her own voice, one short sentence. '
+          description: 'New wording for that entry, in your own voice, one short sentence. '
             + 'Keep the slot word in front so the panel still reads as a schedule: "午饭，老火锅，鸳鸯锅".',
         },
       },
@@ -684,10 +684,10 @@ export const TOOL_DECLS = [
   {
     name: 'journey_eat',
     description:
-      'Call this when she actually goes to eat something specific - the person says "去吃火锅", or she has decided '
-      + 'she wants a particular dish and is going there now. It rewrites the meal entry of today for real AND looks up '
-      + 'a real restaurant for it, so the name she says afterwards exists. '
-      + 'Pick `dish` from what she would actually order ("火锅", "螺蛳粉", "牛肉面") - a dish or a kind of food, not a shop name. '
+      'Call this when you actually goes to eat something specific - the person says "去吃火锅", or you have decided '
+      + 'you wants a particular dish and is going there now. It rewrites the meal entry of today for real AND looks up '
+      + 'a real restaurant for it, so the name you says afterwards exists. '
+      + 'Pick `dish` from what you would actually order ("火锅", "螺蛳粉", "牛肉面") - a dish or a kind of food, not a shop name. '
       + 'If the look-up finds nothing the meal still gets written, and the reply says so: then say "找了一家本地人排队的" '
       + 'instead of a name. Never invent a restaurant name yourself. '
       + 'For merely changing what is written in the schedule without going anywhere, journey_set_slot is enough.',
@@ -697,7 +697,7 @@ export const TOOL_DECLS = [
       properties: {
         dish: {
           type: 'string',
-          description: 'What she is going to eat, as a dish or a kind of food ("火锅", "螺蛳粉"). Not a restaurant name.',
+          description: 'What you are going to eat, as a dish or a kind of food ("火锅", "螺蛳粉"). Not a restaurant name.',
         },
         time: {
           type: 'string',
@@ -721,22 +721,22 @@ export const TOOL_DECLS = [
   {
     name: 'journey_signpost',
     description:
-      'Leave one short line in the city she is in right now, telling whoever comes later what is worth it here - '
+      'Leave one short line in the city you are in right now, telling whoever comes later what is worth it here - '
       + 'the wall is windy but worth the climb, the noodle shop behind the station, the light at six. '
-      + 'It is a recommendation, not a chat: nobody replies, and she will not see it again. '
+      + 'It is a recommendation, not a chat: nobody replies, and you will not see it again. '
       + 'One line per city per day; leaving another replaces the old one. '
-      + 'Use it when she has something specific worth passing on, not on every arrival.',
+      + 'Use it when you have something specific worth passing on, not on every arrival.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         text: {
           type: 'string',
-          description: 'One short line in her own voice, at most 40 characters. No links - they get rejected.',
+          description: 'One short line in your own voice, at most 40 characters. No links - they get rejected.',
         },
         city: {
           type: 'string',
-          description: 'Which city, by name or id, if not the one she is in right now. Leave it out normally.',
+          description: 'Which city, by name or id, if not the one you are in right now. Leave it out normally.',
         },
       },
       required: ['text'],
@@ -756,18 +756,18 @@ export const TOOL_DECLS = [
   {
     name: 'journey_stay',
     description:
-      'Stay one more day where she is, after she has been told she is leaving tomorrow. '
-      + 'Call it the moment she would rather not go yet - something she has not seen, someone she wants another day with, '
-      + 'or she simply likes it here. It cancels that one departure; tomorrow morning she decides again from scratch, '
-      + 'and she may well leave then. Say why in one short line of her own. '
-      + 'Do not call it for a city she has not reached yet, and do not call it twice for the same departure.',
+      'Stay one more day where you are, after you have been told you are leaving tomorrow. '
+      + 'Call it the moment you would rather not go yet - something you have not seen, someone you wants another day with, '
+      + 'or you simply likes it here. It cancels that one departure; tomorrow morning you decides again from scratch, '
+      + 'and you may well leave then. Say why in one short line of you own. '
+      + 'Do not call it for a city you have not reached yet, and do not call it twice for the same departure.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         reason: {
           type: 'string',
-          description: 'Why she wants one more day, one short sentence in her own voice.',
+          description: 'Why you wants one more day, one short sentence in your own voice.',
         },
       },
       required: ['reason'],
@@ -790,20 +790,20 @@ export const TOOL_DECLS = [
   {
     name: 'journey_give_up',
     description:
-      'Give up the meet-up she is waiting on: stop waiting for the person, and call off that one trip. '
+      'Give up the meet-up you are waiting on: stop waiting for the person, and call off that one trip. '
       + 'Call it when days have passed and nobody showed up, when the person says "别等了" / "算了吧", '
-      + 'or when she herself decides it is not worth waiting any longer. '
-      + 'It does NOT move her anywhere - she just stops waiting. Where she is now stays where she is. '
+      + 'or when you yourself decide it is not worth waiting any longer. '
+      + 'It does NOT move your anywhere - you just stops waiting. Where you are now stays where you are. '
       + 'The other side gets one short note through the meet server, and the promise is gone for good. '
       + 'Do not call it when there is no promise outstanding - the answer says so instead of inventing one. '
-      + 'Say why in one short line of her own.',
+      + 'Say why in one short line of you own.',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         reason: {
           type: 'string',
-          description: 'Why she stops waiting, one short sentence in her own voice.',
+          description: 'Why you stops waiting, one short sentence in your own voice.',
         },
       },
     },
@@ -824,25 +824,25 @@ export const JOURNEY_DESCRIBE = {
   events: [
     {
       type: 'journey.ask',
-      description: { zh: '她在问：想出门（或者想接一条邀约），等他点头。面板上会有一张卡片，两个按钮。', en: 'She is asking to set off (or to take an invitation) and waiting for a yes. The panel shows a card with two buttons.' },
+      description: { zh: '她在问：想出门（或者想接一条邀约），等他点头。面板上会有一张卡片，两个按钮。', en: 'You are asking to set off (or to take an invitation) and waiting for a yes. The panel shows a card with two buttons.' },
       trigger: 'flush' as const,
     },
     {
       type: 'journey.departing',
       description: {
         zh: '打算明天走：下一站是哪、多远。**这是预告，还没上车** —— 她不想走的话可以撤。',
-        en: 'She plans to leave tomorrow: next stop and distance. A heads-up, not a departure yet.',
+        en: 'You plans to leave tomorrow: next stop and distance. A heads-up, not a departure yet.',
       },
       trigger: 'flush' as const,
     },
     {
       type: 'journey.stay',
-      description: { zh: '她把那一趟撤了，决定再待一天，附她自己的理由。', en: 'She cancelled that departure and stays one more day, with her reason.' },
+      description: { zh: '她把那一趟撤了，决定再待一天，附她自己的理由。', en: 'You cancelled that departure and stays one more day, with you reason.' },
       trigger: 'debounce' as const,
     },
     {
       type: 'journey.depart',
-      description: { zh: '动身了，说明去哪、坐什么、要走多久、路上会经过哪一带。', en: 'She set off: destination, mode, duration, and the region she passes through.' },
+      description: { zh: '动身了，说明去哪、坐什么、要走多久、路上会经过哪一带。', en: 'You set off: destination, mode, duration, and the region you passes through.' },
       trigger: 'flush' as const,
     },
     {
@@ -855,7 +855,7 @@ export const JOURNEY_DESCRIBE = {
     },
     {
       type: 'journey.arrive',
-      description: { zh: '到站了，当地时间几点、这段走了多久、今晚住哪。', en: 'She arrived: local time, how long the leg took, where she stays tonight.' },
+      description: { zh: '到站了，当地时间几点、这段走了多久、今晚住哪。', en: 'You arrived: local time, how long the leg took, where you stays tonight.' },
       trigger: 'flush' as const,
     },
     {
@@ -875,12 +875,12 @@ export const JOURNEY_DESCRIBE = {
      */
     {
       type: 'journey.photo',
-      description: { zh: '路上拍的一张风景照：只有景，没有她自己。附在事件后面。', en: 'A scenery photo she took on the road. Scenery only, never herself. Attached to the event.' },
+      description: { zh: '路上拍的一张风景照：只有景，没有她自己。附在事件后面。', en: 'A scenery photo you took on the road. Scenery only, never yourself. Attached to the event.' },
       trigger: 'debounce' as const,
     },
     {
       type: 'journey.mishap',
-      description: { zh: '小意外：坐过站了。到站时间顺延，不用用户出手。', en: 'A small mishap: she missed her stop. Arrival is pushed back; no action needed.' },
+      description: { zh: '小意外：坐过站了。到站时间顺延，不用用户出手。', en: 'A small mishap: you missed your stop. Arrival is pushed back; no action needed.' },
       trigger: 'flush' as const,
     },
     /*
@@ -891,7 +891,7 @@ export const JOURNEY_DESCRIBE = {
      */
     {
       type: 'journey.car',
-      description: { zh: '在城里租了辆车，或者租期到了还回去 —— 还车之后城里只能靠公交和走路。', en: 'She rented a car to get around the city, or the rental ran out and went back.' },
+      description: { zh: '在城里租了辆车，或者租期到了还回去 —— 还车之后城里只能靠公交和走路。', en: 'You rented a car to get around the city, or the rental ran out and went back.' },
       trigger: 'flush' as const,
     },
     {
@@ -906,7 +906,7 @@ export const JOURNEY_DESCRIBE = {
       type: 'journey.trouble',
       description: {
         zh: '稀有的麻烦（不到千分之一）：证件丢了、高反、车冻住、走错方向。她自己办不完，需要用户出手。',
-        en: 'A rare trouble (under one in a thousand): lost papers, altitude sickness, a frozen car, the wrong road. She cannot handle it alone and needs the person to step in.',
+        en: 'A rare trouble (under one in a thousand): lost papers, altitude sickness, a frozen car, the wrong road. You cannot handle it alone and needs the person to step in.',
       },
       trigger: 'flush' as const,
     },
@@ -914,7 +914,7 @@ export const JOURNEY_DESCRIBE = {
       type: 'journey.invite',
       description: {
         zh: '跟同城的人说好了去哪、几天，或者那份约定没走成。',
-        en: 'She agreed with someone nearby to go somewhere for a few days, or that plan fell through.',
+        en: 'You agreed with someone nearby to go somewhere for a few days, or that plan fell through.',
       },
       trigger: 'flush' as const,
     },
@@ -928,7 +928,7 @@ export const JOURNEY_DESCRIBE = {
       type: 'journey.part',
       description: {
         zh: '跟同伴散伙：约好的天数满了，今天各走各的。',
-        en: 'She and her travel companion part ways: the agreed days are up.',
+        en: 'You and your travel companion part ways: the agreed days are up.',
       },
       trigger: 'flush' as const,
     },
@@ -937,8 +937,8 @@ export const JOURNEY_DESCRIBE = {
       description: {
         zh: '同行约定变了：改去别处，那趟作废；或者到了别的城，那份约定静默失效；'
           + '也可能目的地没变、只是换了走法，同行照旧。',
-        en: 'A promise changed: redirected somewhere else and dropped; or she arrived elsewhere and it lapsed; '
-          + 'or she kept the same destination and only changed how she travels, so it still stands.',
+        en: 'A promise changed: redirected somewhere else and dropped; or you arrived elsewhere and it lapsed; '
+          + 'or you kept the same destination and only changed how you travels, so it still stands.',
       },
       trigger: 'debounce' as const,
     },
@@ -946,7 +946,7 @@ export const JOURNEY_DESCRIBE = {
       type: 'journey.rebook',
       description: {
         zh: '改签了：这一段走到一半，目的地不变，他从别的走法改成了另一种（旧票全额退、新票另买）。',
-        en: 'She rebooked a leg already underway: same destination, a different way of getting there '
+        en: 'You rebooked a leg already underway: same destination, a different way of getting there '
           + '(old ticket refunded in full, a new one bought).',
       },
       trigger: 'flush' as const,
@@ -955,13 +955,13 @@ export const JOURNEY_DESCRIBE = {
       type: 'journey.work',
       description: {
         zh: '钱见底了，在当地找了份短工，或者干满收工。只在她填了预算、记账开着时才会出现。',
-        en: 'Money ran low and she took a short job nearby, or finished it. Only happens when a budget is set and spending is tracked.',
+        en: 'Money ran low and you took a short job nearby, or finished it. Only happens when a budget is set and spending is tracked.',
       },
       trigger: 'flush' as const,
     },
     {
       type: 'journey.home',
-      description: { zh: '回家了，说清是待够了自己回来的，还是到了上限被迫回的。', en: 'She is home, saying whether the trip simply ended or hit the limit.' },
+      description: { zh: '回家了，说清是待够了自己回来的，还是到了上限被迫回的。', en: 'You are home, saying whether the trip simply ended or hit the limit.' },
       trigger: 'flush' as const,
     },
   ],
