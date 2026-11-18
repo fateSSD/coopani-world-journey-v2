@@ -216,3 +216,25 @@ test('钱花光又在外地：回程不许躺平，一定动身往家走', async
     world.stop?.();
   }
 });
+
+test('叫回来要坐高铁或飞机，不能是轮渡大巴 —— 有人等着，不该在路上再耗几天', async () => {
+  /*
+   * 用户报的现场（v1.12.11）：面板上点「叫她回来」，她一步到家，
+   * 但事件文案写「苏州 → 兰州，坐火车，189 公里」——他原话是「轮船是什么鬼」。
+   *
+   * 根因：`goHome('called')` 的注释写「当场买最近一班飞回」，但 `flyRegardless` 只免票价，
+   * 方式仍由 `pickMode` 从 `usableModes` 加权随机。苏州 `air: false`、`port: true`，
+   * 189 公里落在短途档，于是掷中了慢速档。
+   *
+   * 这条守的是**方式**：叫回必须是高铁或飞机。
+   */
+  const { world, events } = await startWorld();
+  try {
+    await world.goHome(new Date('2026-11-04T04:00:00Z'), cityById('tianshui'), 'called');
+    const home = events.filter((e) => e.type === 'journey.home');
+    assert.equal(home.length, 1, `推了 ${home.length} 条回家事件`);
+    const text = String(home[0].text);
+    assert.match(text, /高铁|飞机/, `叫回来却坐了别的方式：${text}`);
+    assert.doesNotMatch(text, /轮渡|大巴|顺风车|自驾|坐船/, `叫回来不该走慢速档：${text}`);
+  } finally { world.stop?.(); }
+});

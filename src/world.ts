@@ -2276,7 +2276,17 @@ export class JourneyWorld implements World {
      */
     if (reason === 'called') {
       if (this.st.car) this.st = { ...this.st, car: null };
-      await this.settleHome(now, from, reason, km, { flyRegardless: true });
+      /*
+       * **方式也一起定下来，别让 `settleHome` 再掷一次骰子**（2026-11-18，用户报的）。
+       *
+       * 原来这里只传了 `flyRegardless: true` —— 那只免票价，不管方式。
+       * 于是「有人等着」的场景可能抽到轮渡/大巴，和她「他叫回 = 当天航班」的规则打架。
+       */
+      const fast = this.fastHomeLeg(from, home, km);
+      await this.settleHome(now, from, reason, km, {
+        flyRegardless: true,
+        ...(fast ? { mode: fast.mode, modeLabel: fast.label } : {}),
+      });
       return;
     }
 
@@ -2311,22 +2321,53 @@ export class JourneyWorld implements World {
 
 
   /** 真正到家：结掉这一趟，进休息期。 */
+  /**
+   * **他叫回来的这一趟坐什么**（2026-11-18，用户报的）。
+   *
+   * `goHome('called')` 的注释写的是「当场买最近一班飞回」，但 `flyRegardless` 只免了票价 ——
+   * 交通方式仍由 `pickMode` 从 `usableModes` 里加权随机。于是 189 公里从苏州回兰州
+   * （苏州 `air: false` 没有机场、`port: true` 有港口）掷中了慢速档，
+   * 和她的规则「他叫回 = 当天航班，落地就是家」直接矛盾 —— 她在思考记录里专门停下来
+   * 处理了这个龃龉，那段推理对用户是不可见的成本。
+   *
+   * 叫回的场景是「有人在等」，不该让她在路上再耗几天：**短途高铁，长途飞机**。
+   *
+   * 两种都不可用（无铁路、无机场）才返回 null，让调用方回退到原来的权重表 ——
+   * **不能为了文案好看把她困在某座城里**。
+   */
+  private fastHomeLeg(from: City, to: City, km: number): { mode: TravelMode; label: string } | null {
+    const pool = usableModesFor(from, to, km);
+    const train = pool.find((m) => m.id === 'train');
+    const plane = pool.find((m) => m.id === 'plane');
+    if (km <= 1200 && train) return { mode: train, label: '高铁' };
+    if (plane) return { mode: plane, label: '飞机' };
+    if (train) return { mode: train, label: '高铁' };
+    return null;
+  }
+
   private async settleHome(
     now: Date,
     from: City,
     reason: HomeReason,
     km: number,
-    opts: { flyRegardless?: boolean } = {},
+    opts: { flyRegardless?: boolean; mode?: TravelMode; modeLabel?: string } = {},
   ): Promise<void> {
     const home = this.resolveHome().city;
     // 回家这一趟是一次性支出，钱的上限放宽到八成（`goHome` 已经先判过一遍）。
     // `flyRegardless` = 被叫回来：票钱不够也照买（这一版还没落欠账，见 `goHome`）。
-    const mode = km < 30 ? null : pickMode(
+    const picked = opts.mode ?? (km < 30 ? null : pickMode(
       from, home, km, Math.random, this.isTight(), this.noFly(),
       opts.flyRegardless
         ? undefined
         : this.affordMode(km, 0.8, from.country !== home.country, { from, to: home }),
-    );
+    ));
+    /*
+     * 叫回时调用方会给「高铁 / 飞机」这种更紧的说法（见 `fastHomeLeg`）。
+     *
+     * 直接盖在 `name` 上，下面所有文案（事件、日记、`journey_now`）自动跟着走 ——
+     * 不用每一处再判断一次是什么场景。
+     */
+    const mode = picked && opts.modeLabel ? { ...picked, name: opts.modeLabel } : picked;
     const restUntil = new Date(now.getTime() + Math.max(0, this.cfg.restDays) * 86_400_000);
     const visited = this.st.everVisited.length;
     /*
