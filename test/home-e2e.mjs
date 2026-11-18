@@ -330,7 +330,18 @@ test('指示灯：四条链路都在，且状态说得清', () => {
 
 test('指示灯：配了生图接口，状态从「没启用」变成「还没拍过」', () => {
   const dir = seed({ phase: 'home', hereId: 'lanzhou', homeId: 'lanzhou' });
-  const world = makeWorld(dir, { imageApi: 'http://127.0.0.1:1/v1' }, () => new Date('2026-10-31T02:00:00Z'));
+  /*
+   * **模型名必须一起配**（2026-11-18 修）。
+   *
+   * 2026-11-14 起 `photoConfigProblem()` 对云端后端多了一条「没有模型名就算没配好」——
+   * 那时起这条测试就一直红：只填地址不填模型，灯是 `error`（提示「还差模型名」），
+   * 不是这里期望的 `offline`（「配好了，还没拍过」）。
+   * 代码是对的，是测试没跟上那条校验。
+   */
+  const world = makeWorld(
+    dir, { imageApi: 'http://127.0.0.1:1/v1', imageModel: 'gpt-image-1' },
+    () => new Date('2026-10-31T02:00:00Z'),
+  );
   world.start(fakeHost());
   const photo = (world.webUi().lamps ?? []).find((l) => l.label === '照片');
   assert.equal(photo.state, 'offline');

@@ -75,6 +75,20 @@ for (const c of CASES) {
     const { world, events } = await startWorld();
     try {
       await world.goHome(new Date('2026-11-04T04:00:00Z'), cityById('tianshui'), c.reason);
+      /*
+       * **从远处调 `goHome` 只是「开始往回走」。**
+       *
+       * 那时候 `phase` 还是 traveling、`homeReason` 还是空的 —— 真正把这一趟收掉、
+       * 写下 `homeReason` 的是走到同城（六十公里内）那一次 `settleHome`。
+       *
+       * 原来这里只调了一次就断言 `phase === 'home'`，所以 done / limit / broke
+       * 三条一直红。`called` 那条例外：他是「叫回来」，当场买机票飞回，一次就落。
+       */
+      if (world.st.phase !== 'home') {
+        await world.goHome(
+          new Date('2026-11-06T12:00:00Z'), cityById('lanzhou'), world.st.returnReason ?? c.reason,
+        );
+      }
 
       // 一行状态：日记、面板、以后再判断「要不要马上出门」都读它。
       assert.equal(world.st.homeReason, c.reason, `状态里没记下原因（读到 ${world.st.homeReason}）`);
