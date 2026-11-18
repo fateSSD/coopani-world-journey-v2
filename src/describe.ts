@@ -80,7 +80,7 @@ export const TOOL_DECLS = [
   {
     name: 'journey_draw_to',
     description:
-      'Record a place you now wants to go to because of something - a song that was playing, a line someone said, a photo you remembers. The place joins you wish list and weighs heavily next time you picks where to go. Use it when a song or a moment actually pulls your somewhere; do not use it to log every city you mentions.',
+      'Record a place you now wants to go to because of something - a song that was playing, a line someone said, a photo you remember. The place joins you wish list and weighs heavily next time you pick where to go. Use it when a song or a moment actually pulls your somewhere; do not use it to log every city you mention.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -96,7 +96,7 @@ export const TOOL_DECLS = [
   {
     name: 'journey_return_home',
     description:
-      'Bring your home right now because the person asked you to come back: you takes the next available flight and is home the same day, not a stop-by-stop walk. Only call it when the person actually asks you back. Deciding to go home is otherwise hers alone, and leaving early costs your the part of the trip you have not seen.',
+      'Bring your home right now because the person asked you to come back: you take the next available flight and is home the same day, not a stop-by-stop walk. Only call it when the person actually asks you back. Deciding to go home is otherwise hers alone, and leaving early costs your the part of the trip you have not seen.',
     parameters: { type: 'object', additionalProperties: false, properties: {} },
     tags: ['write'] as const,
     summary: { zh: '他说回来吧，就当场买票飞回来。', en: 'Brings your home today, because the person asked.' },
@@ -114,7 +114,7 @@ export const TOOL_DECLS = [
     description:
       'Take a photo right now and show it in the chat: the view from where you are. Call it whenever the person asks for a photo, or asks what it looks like where you are - never tell them to press a button in the app instead, this is the button. In a city it is the spot you are at right now; on the road it is the view out of the window. Any hour is fine: being asked is reason enough. One photo per call - if they want another, call it again. '
       + 'YOU write the frame: `describe` is your own line about what is in the picture (<=60 chars), `focus` is how you hold the camera. When the person says shoot *that* - a cat by the lamp, the sugar-painting stall, rain on the awning - turn it into one `describe` line and take the photo. Do not ask them to be more specific first. The place, the hour, the light and the season are already handled; the content is yours. '
-      + 'Set view="sky" when they ask for the sky itself - stars, the moon, sunrise, sunset, clouds. It means you tilts the camera up, nothing more: what comes out is still the real sky over your at that hour. Stars only show at night and only when it is not overcast; ask at noon and you get daylight, ask on a cloudy night and you get cloud. Never claim a sky you did not actually see.',
+      + 'Set view="sky" when they ask for the sky itself - stars, the moon, sunrise, sunset, clouds. It means you tilt the camera up, nothing more: what comes out is still the real sky over your at that hour. Stars only show at night and only when it is not overcast; ask at noon and you get daylight, ask on a cloudy night and you get cloud. Never claim a sky you did not actually see.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -122,7 +122,7 @@ export const TOOL_DECLS = [
         view: {
           type: 'string',
           enum: ['ground', 'sky'],
-          description: 'ground (default) = the ground at you feet, the usual travel photo. sky = you lifts the camera: whatever is overhead right now. Use sky whenever the request is about the sky rather than the place - 星空 / 月亮 / 日出 / 晚霞 / 云.',
+          description: 'ground (default) = the ground at you feet, the usual travel photo. sky = you lift the camera: whatever is overhead right now. Use sky whenever the request is about the sky rather than the place - 星空 / 月亮 / 日出 / 晚霞 / 云.',
         },
         /*
          * 拍什么（2026-11-06）。
@@ -217,7 +217,7 @@ export const TOOL_DECLS = [
   {
     name: 'journey_invite',
     description:
-      'Ask whether anyone nearby wants to go somewhere together: where, how many days, and one line of what for. It goes out to the whole pool, with pets in your own city listed first - you cannot name a person, because there are no accounts or friends here. When someone takes it, you finds out and travels there too, so the two of them really do end up in the same place for those days. Use it when you actually wants company on a leg you are about to take, not as a greeting; most trips you takes alone and that is fine. At most three a day.',
+      'Ask whether anyone nearby wants to go somewhere together: where, how many days, and one line of what for. It goes out to the whole pool, with pets in your own city listed first - you cannot name a person, because there are no accounts or friends here. When someone takes it, you find out and travels there too, so the two of them really do end up in the same place for those days. Use it when you actually wants company on a leg you are about to take, not as a greeting; most trips you take alone and that is fine. At most three a day.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -235,7 +235,7 @@ export const TOOL_DECLS = [
   {
     name: 'journey_accept',
     description:
-      'Invitations from other pets anywhere in the pool (your own city first). Without an id it lists them: who, where they want to go, how many days, and their line - this works at home too, and it is the only way to see one before it expires. With an id it takes that one. Accepting is a promise, not a reply - you will really travel to that city and stay as many days as the invitation asked, and your route follows it; if you are not willing to do that, do not take it. One a day. Refused while you are travelling, already heading home, working a short stint, or still resting at home; from home it is allowed and you sets off straight away. If the person has asked to approve departures first, taking one only books the request - they get a yes/no card and nothing is agreed until they say yes.',
+      'Invitations from other pets anywhere in the pool (your own city first). Without an id it lists them: who, where they want to go, how many days, and their line - this works at home too, and it is the only way to see one before it expires. With an id it takes that one. Accepting is a promise, not a reply - you will really travel to that city and stay as many days as the invitation asked, and your route follows it; if you are not willing to do that, do not take it. One a day. Refused while you are travelling, already heading home, working a short stint, or still resting at home; from home it is allowed and you set off straight away. If the person has asked to approve departures first, taking one only books the request - they get a yes/no card and nothing is agreed until they say yes.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -271,7 +271,7 @@ export const TOOL_DECLS = [
        * 这一调**不动身**，只把走法定下来（或者，已经在路上就改签）。
        * 不写清这一条，模型不敢在「改走法」时调用它，用户那句话又落空了。
        */
-      + '**Two exceptions that do not start anything**: (a) if the city is exactly the one you already promised to travel to and you have not left yet, a stated mode is just recorded for that trip - you stays put and goes when you were going to; (b) if you are already on a leg heading for that same city, a stated mode rebooks it - old ticket refunded in full, new one bought, arrival time recalculated. Both come back saying what happened, so read the reply before telling him. '
+      + '**Two exceptions that do not start anything**: (a) if the city is exactly the one you already promised to travel to and you have not left yet, a stated mode is just recorded for that trip - you stay put and goes when you were going to; (b) if you are already on a leg heading for that same city, a stated mode rebooks it - old ticket refunded in full, new one bought, arrival time recalculated. Both come back saying what happened, so read the reply before telling him. '
       + 'Not while heading home, not during a short-term job, and not once the trip has hit its length limit - it will say which of those it is. Going home has its own tool.',
     parameters: {
       type: 'object',
@@ -301,14 +301,14 @@ export const TOOL_DECLS = [
   {
     name: 'journey_pet',
     description:
-      'What you remembers about the pets you have travelled with. Without a name it lists everyone you have ever walked a leg with: how many times, when last, and your one-line impression. With a name it shows that one. With a name and an impression it writes it down, replacing the old one (passing an empty impression erases it). '
-      + 'Read it **before** taking an invitation - it is the only thing you knows about who is asking. The count is filled in for you automatically when a leg is agreed; the impression is hers to write, in your own words, and only after you have actually been with them. Never a generic "good travel companion".',
+      'What you remember about the pets you have travelled with. Without a name it lists everyone you have ever walked a leg with: how many times, when last, and your one-line impression. With a name it shows that one. With a name and an impression it writes it down, replacing the old one (passing an empty impression erases it). '
+      + 'Read it **before** taking an invitation - it is the only thing you know about who is asking. The count is filled in for you automatically when a leg is agreed; the impression is hers to write, in your own words, and only after you have actually been with them. Never a generic "good travel companion".',
     parameters: {
       type: 'object',
       additionalProperties: false,
       properties: {
         name: { type: 'string', description: "The pet's name, exactly as the pool shows it - 小银鱼. Leave it out to list everybody." },
-        impression: { type: 'string', description: 'One short line of what you makes of them, at most 40 characters, in your own voice. Leave it out to read instead of writing.' },
+        impression: { type: 'string', description: 'One short line of what you make of them, at most 40 characters, in your own voice. Leave it out to read instead of writing.' },
       },
     },
     tags: ['write'] as const,
@@ -351,7 +351,7 @@ export const TOOL_DECLS = [
   {
     name: 'journey_taste',
     description:
-      'What you likes and dislikes, learned on the road. Three kinds only: place (a CITY, one per city - not every spot in it, or the list fills up with alleys), food (a dish you actually ate), scenery (snow mountains, autumn leaves, the sea - the thing a season is for). '
+      'What you like and dislikes, learned on the road. Three kinds only: place (a CITY, one per city - not every spot in it, or the list fills up with alleys), food (a dish you actually ate), scenery (snow mountains, autumn leaves, the sea - the thing a season is for). '
       + 'Called with no arguments it lists everything you have written down. Called with kind + name it writes one entry (like defaults to true; pass like:false for something you do not want again - that matters more than the likes, because otherwise it comes back around). '
       + 'Write only what you actually met: a dish you did not eat, a view you did not see, is not hers to judge. One short note saying why, in your own words. Use it when something strikes your, and read it back before choosing where to eat or what to go and see.',
     parameters: {
@@ -401,10 +401,10 @@ export const TOOL_DECLS = [
   {
     name: 'journey_lodging',
     description:
-      'Where you sleeps tonight. Called with no arguments it tells you the room you are in and how it feels. '
+      'Where you sleep tonight. Called with no arguments it tells you the room you are in and how it feels. '
       + 'Pass change:true to move to another place - when the person asks you to ("换个酒店"), or when the room is really not working (no hot water, noise all night, that price for this room is not worth it). '
-      + 'want:"cheaper" or "nicer" when they said which way; leave it out and you decides. '
-      + 'The new room is where you sleeps from tonight on, and you pays the difference - so say the new price once. '
+      + 'want:"cheaper" or "nicer" when they said which way; leave it out and you decide. '
+      + 'The new room is where you sleep from tonight on, and you pay the difference - so say the new price once. '
       + 'One short line about why you moved, in your own words. "换换心情" is not a reason; a real one (太吵、热水不热、窗外是堵墙) is.',
     parameters: {
       type: 'object',
@@ -442,10 +442,10 @@ export const TOOL_DECLS = [
     name: 'journey_rent_car',
     description:
       'Rent a car in the city you are staying in - for getting around here, not for the trip to the next city. '
-      + 'Use it when the person asks how you gets around on foot, says something like "在城里也租个车吧", '
-      + 'or when the places you wants to see today are far apart. '
+      + 'Use it when the person asks how you get around on foot, says something like "在城里也租个车吧", '
+      + 'or when the places you want to see today are far apart. '
       + 'It costs 200 a day and comes out of you purse, so pick days to match how long you are staying here. '
-      + 'While you have it you drives to the spots in town instead of walking; when the days run out the car goes back by itself. '
+      + 'While you have it you drive to the spots in town instead of walking; when the days run out the car goes back by itself. '
       + 'Refused if you already has a car (one is enough), while you are travelling, or when the money is gone - '
       + 'do not force it, just tell them why. One short line about it, in your own words.',
     parameters: {
@@ -454,12 +454,12 @@ export const TOOL_DECLS = [
       properties: {
         days: {
           type: 'number',
-          description: 'How many days to rent it for, 1 to 7. Leave it out and you takes 3.',
+          description: 'How many days to rent it for, 1 to 7. Leave it out and you take 3.',
         },
         ev: {
           type: 'boolean',
           description: 'true = an electric car (cheaper per km, a bit more on the daily rate). '
-            + 'Leave it out and you takes whatever the lot gives you.',
+            + 'Leave it out and you take whatever the lot gives you.',
         },
         tier: {
           type: 'string',
@@ -488,13 +488,13 @@ export const TOOL_DECLS = [
   {
     name: 'journey_rest',
     description:
-      'Call this the moment you decides to stop for the day - when you says you are tired, when it is raining too hard, '
+      'Call this the moment you decide to stop for the day - when you say you are tired, when it is raining too hard, '
       + 'when the place turned out not worth it, or when the person suggests taking it easy. '
       + 'It cancels the rest of today\'s sightseeing for real: the spots still on the plan will not happen, '
       + 'and you will stay in or around where you are sleeping. Meals and going back to the hotel still happen - '
       + 'resting is not fasting. Tomorrow runs as planned. '
       + 'Say why in one short line of you own; "just felt like it" is not a reason, "走了两万步，脚起泡了" is. '
-      + 'Do not call it and then still describe going out - if you says you are resting, this is what makes it true.',
+      + 'Do not call it and then still describe going out - if you say you are resting, this is what makes it true.',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -685,8 +685,8 @@ export const TOOL_DECLS = [
     name: 'journey_eat',
     description:
       'Call this when you actually goes to eat something specific - the person says "去吃火锅", or you have decided '
-      + 'you wants a particular dish and is going there now. It rewrites the meal entry of today for real AND looks up '
-      + 'a real restaurant for it, so the name you says afterwards exists. '
+      + 'you want a particular dish and is going there now. It rewrites the meal entry of today for real AND looks up '
+      + 'a real restaurant for it, so the name you say afterwards exists. '
       + 'Pick `dish` from what you would actually order ("火锅", "螺蛳粉", "牛肉面") - a dish or a kind of food, not a shop name. '
       + 'If the look-up finds nothing the meal still gets written, and the reply says so: then say "找了一家本地人排队的" '
       + 'instead of a name. Never invent a restaurant name yourself. '
@@ -757,8 +757,8 @@ export const TOOL_DECLS = [
     name: 'journey_stay',
     description:
       'Stay one more day where you are, after you have been told you are leaving tomorrow. '
-      + 'Call it the moment you would rather not go yet - something you have not seen, someone you wants another day with, '
-      + 'or you simply likes it here. It cancels that one departure; tomorrow morning you decides again from scratch, '
+      + 'Call it the moment you would rather not go yet - something you have not seen, someone you want another day with, '
+      + 'or you simply likes it here. It cancels that one departure; tomorrow morning you decide again from scratch, '
       + 'and you may well leave then. Say why in one short line of you own. '
       + 'Do not call it for a city you have not reached yet, and do not call it twice for the same departure.',
     parameters: {
@@ -767,7 +767,7 @@ export const TOOL_DECLS = [
       properties: {
         reason: {
           type: 'string',
-          description: 'Why you wants one more day, one short sentence in your own voice.',
+          description: 'Why you want one more day, one short sentence in your own voice.',
         },
       },
       required: ['reason'],
@@ -803,7 +803,7 @@ export const TOOL_DECLS = [
       properties: {
         reason: {
           type: 'string',
-          description: 'Why you stops waiting, one short sentence in your own voice.',
+          description: 'Why you stop waiting, one short sentence in your own voice.',
         },
       },
     },
@@ -831,7 +831,7 @@ export const JOURNEY_DESCRIBE = {
       type: 'journey.departing',
       description: {
         zh: '打算明天走：下一站是哪、多远。**这是预告，还没上车** —— 她不想走的话可以撤。',
-        en: 'You plans to leave tomorrow: next stop and distance. A heads-up, not a departure yet.',
+        en: 'You plan to leave tomorrow: next stop and distance. A heads-up, not a departure yet.',
       },
       trigger: 'flush' as const,
     },
@@ -842,7 +842,7 @@ export const JOURNEY_DESCRIBE = {
     },
     {
       type: 'journey.depart',
-      description: { zh: '动身了，说明去哪、坐什么、要走多久、路上会经过哪一带。', en: 'You set off: destination, mode, duration, and the region you passes through.' },
+      description: { zh: '动身了，说明去哪、坐什么、要走多久、路上会经过哪一带。', en: 'You set off: destination, mode, duration, and the region you pass through.' },
       trigger: 'flush' as const,
     },
     {
@@ -855,7 +855,7 @@ export const JOURNEY_DESCRIBE = {
     },
     {
       type: 'journey.arrive',
-      description: { zh: '到站了，当地时间几点、这段走了多久、今晚住哪。', en: 'You arrived: local time, how long the leg took, where you stays tonight.' },
+      description: { zh: '到站了，当地时间几点、这段走了多久、今晚住哪。', en: 'You arrived: local time, how long the leg took, where you stay tonight.' },
       trigger: 'flush' as const,
     },
     {
@@ -938,7 +938,7 @@ export const JOURNEY_DESCRIBE = {
         zh: '同行约定变了：改去别处，那趟作废；或者到了别的城，那份约定静默失效；'
           + '也可能目的地没变、只是换了走法，同行照旧。',
         en: 'A promise changed: redirected somewhere else and dropped; or you arrived elsewhere and it lapsed; '
-          + 'or you kept the same destination and only changed how you travels, so it still stands.',
+          + 'or you kept the same destination and only changed how you travel, so it still stands.',
       },
       trigger: 'debounce' as const,
     },

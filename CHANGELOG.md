@@ -1,5 +1,39 @@
 # 更新日志
 
+## 1.12.18 — 2026-11-18（主谓一致：`you wants` → `you want`）
+
+读者 zzy1053 报的：1.12.14 那次批量把 `she/her` 换成 `you/your`，**只换了代词，动词没跟着变**：
+
+```
+you wants / you takes / you says / you remembers / You plans to …
+```
+
+实际清点 **23 种、36 处**（他估「约 26 处」，比估的多）。
+
+### 改法
+
+`you <第三人称单数>` → `you <原形>`。特殊的是 `passes`：去 `es`，不是去 `s`
+（去 `s` 会变成 `passe`）。`describe.json` 与 `src/describe.ts` 两边同步，**各 40 处**。
+
+> **我的失误**：替换词表第一行写成 `wants wants`（自己映射自己），所以 `you wants`
+> 一直没变，第一遍跑完还剩 4 处，回扫才发现。
+> **教训：「命令报了多少处」和「还剩多少处」是两个数，跑完必须回扫源模式。**
+
+### 顺带：修 1.12.16 漏掉的城市表刷新
+
+`1.12.16` 加了台湾地区 5 座城（`CITIES` 188 → 193），但没重生成页面那份手抄表 ——
+`test/pets-page.test.mjs` 的「城市表覆盖 CITIES 全部」因此变红，缺的 5 座会显示成英文 id。
+
+按测试自己给的提示跑了两步：
+
+```
+node tools/regen-city-table.mjs        → 重写 site/pets.html（188 → 193）
+node cloud/sight-cf/build-pets.mjs     → 同步 cloud/sight-cf/src/pets-page.js
+```
+
+**第二条容易漏**：`pets-page.js` 是 `site/pets.html` 的副本，两条测试分别守着它们。
+以后加城市，这两步要一起跑。
+
 ## 1.12.17 — 2026-11-18（修请客模式下仍向模拟鱼生扣款的冲突）
 
 - **`addSpent()` 守住请客模式边界**：[world-purse.ts](src/world-purse.ts) 仅在 `moneyEnabled && payFromLife` 同时开启时才向 `life-spend/` 递扣款条子；关闭旅行记账（你请客）时不再在未检查余额的情况下把模拟鱼生余额扣穿到 0。
