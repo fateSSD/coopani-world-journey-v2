@@ -943,7 +943,10 @@ export const purseMethods: Record<string, any> = {
         `还剩约 ${humanHours(remainWorld)}的世界时间。`,
         leg.viaIds.length ? `路上经过：${leg.viaIds.map((id) => this.cityName(id)).join('、')}。` : '',
         // 这一趟为什么走：赴约和「待够了想换地方」在记忆里不是同一件事。
-        this.pledgeText(now),
+        String(this.cfg.meetUrl ?? '').trim() !== '' && this.lastMeetOk === false
+        ? '碰面服务器这会儿没连上，暂时不知道这一带还有谁。'
+        : '',
+      this.pledgeText(now),
         /*
          * **赶路那天也要报日记欠账。**
          *
@@ -1308,7 +1311,8 @@ export const purseMethods: Record<string, any> = {
            * 往同一座城走，接约那边没有任何约束；不写这一句，她会把「没露面」
            * 当成对方失约，而实际是这机制本来就不保证。
            */
-          + `，人还没露面。这趟碰不碰得上不一定 —— 等见到了再一起去${name}，在那儿待 ${p.days} 天。`;
+          + (this.lastMeetOk === false ? '，刚才没连上碰面服务器，暂时不知道对方到了没有。' : '，人还没露面。')
+          + `这趟碰不碰得上不一定 —— 等见到了再一起去${name}，在那儿待 ${p.days} 天。`;
       }
       return `答应了${this.whoOfPledge(p)}在${meetName}碰头，再一起去${name}待 ${p.days} 天 —— 正在往${meetName}赶。`;
     }

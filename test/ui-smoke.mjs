@@ -572,3 +572,26 @@ test('前端产物：城市名旁边直接显示天气胶囊（无前缀、有�
     assert.equal(badge.textContent, '多云，9~16℃', '胶囊去掉天气：前缀且无空行');
   } finally { restore(); }
 });
+
+test('前端产物：碰面服务器没连上与同城没人要分开显示', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const offRoot = new FakeNode('div');
+    const ctxOff = makeCtx(offRoot, async () => ({
+      ...snapshot, guideSeen: true,
+      social: { online: false, nearby: 0, invites: 0, pool: 0, pledge: null },
+    }));
+    await bundle.panels.now.mount(ctxOff);
+    assert.ok(offRoot.text.includes('碰面服务器没连上'), '断连时面板应显示碰面服务器没连上');
+    assert.ok(!offRoot.text.includes('这段时间没别人'), '断连时不该误显示成没人');
+
+    const emptyRoot = new FakeNode('div');
+    const ctxEmpty = makeCtx(emptyRoot, async () => ({
+      ...snapshot, guideSeen: true,
+      social: { online: true, nearby: 0, invites: 0, pool: 0, pledge: null },
+    }));
+    await bundle.panels.now.mount(ctxEmpty);
+    assert.ok(emptyRoot.text.includes('这段时间没别人'), '连上了但真没人时显示这段时间没别人');
+  } finally { restore(); }
+});

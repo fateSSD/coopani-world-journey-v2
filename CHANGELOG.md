@@ -1,5 +1,15 @@
 # 更新日志
 
+## 1.12.9 — 2026-11-18（修跨天打工收工死锁 P0 + 面板/文本区分碰面断连与没人 P2）
+
+### P0：跨天期间打工不再被 `awayCrossedDecide` 锁死
+- **根因**：`stayTick` 在跨天重排时若判定为「跨过离线决策点（`awayCrossedDecide`）」，会把当天 `decidedOn` 直接设为今天，导致即使正在打工（`this.st.work` 非空）也进不去决策检查分支，工期满了却一直走不到 `endWork()`。
+- **改法**：`decidedOn` 改为 `(this.awayCrossedDecide && !this.st.work) ? moment.dateKey : null`（打工中仍会进决策检查，判断到点后立刻 `endWork()` 并 `return`，不会触发开机发车）。`test/home-e2e.mjs`「钱见底：先找活干，六天后收工」已转绿。
+
+### P2：区分「碰面服务器没连上」与「连上了但同城没人」
+- 在 `JourneyWorld` 记录 `lastMeetOk`（`rebuildPlan` 的 `findNeighbors` 与 `matesHere` 同步更新）；`uiSnapshot().social` 透出 `online: this.lastMeetOk !== false`。
+- `dist/webui.js` 在 `so.online === false` 时显示「碰面服务器没连上」，仅在确实连上且 0 人时显示「这段时间没别人」；`nowSummary()` 与 `pledgeText()` 断连时同样明确说明没连上服务器，不再误当成没人露面。
+
 ## 1.12.7 — 2026-11-18（在家拍照时，画面用她正在做的事）
 
 ### 双扩展联动

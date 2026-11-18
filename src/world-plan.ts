@@ -389,9 +389,10 @@ export const planMethods: Record<string, any> = {
     const [board, inviteRes] = await Promise.all([
       meet
         ? findNeighbors(meet, c.id, slot)
-        : Promise.resolve({ list: [] as { pet: string; doing: string }[], pool: 0 }),
+        : Promise.resolve({ list: [] as { pet: string; doing: string }[], pool: 0, ok: true }),
       meet ? listInvites(meet, c.id) : Promise.resolve({ ok: true as const, list: [] }),
     ]);
+    this.lastMeetOk = meet ? board.ok : null;
     const neighbors = board.list;
     /*
      * **她发出去的邀约，有人接了没有。**

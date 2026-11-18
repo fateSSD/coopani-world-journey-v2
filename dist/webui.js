@@ -81,6 +81,7 @@ const TEXT = {
     meetHint: '下面这个是我这边一直开着的，填进设置里的「碰面地址」就能用：',
     meetCopy: '复制地址',
     nearbyNone: '这段时间没别人',
+    nearbyOffline: '碰面服务器没连上',
     nearbyN: '{n} 个也在这一带',
     invites: '找伴',
     invitesN: '{n} 个在找伴',
@@ -259,6 +260,7 @@ const TEXT = {
     meetHint: 'This one is always on — paste it into the "meet server" setting:',
     meetCopy: 'Copy address',
     nearbyNone: 'nobody else right now',
+    nearbyOffline: 'meet server unreachable',
     nearbyN: '{n} others nearby',
     invites: 'Company',
     invitesN: '{n} looking for company',
@@ -1136,7 +1138,7 @@ export default {
              * 池子活着，只是这一带没人。总数是 0 才说明服务器没回话或真的空了。
              */
             if (so.pool > 0) chips.push([T.pool, fill(T.poolN, { n: so.pool })]);
-            chips.push([T.nearby, so.nearby > 0 ? fill(T.nearbyN, { n: so.nearby }) : T.nearbyNone]);
+            chips.push([T.nearby, so.online === false ? T.nearbyOffline : (so.nearby > 0 ? fill(T.nearbyN, { n: so.nearby }) : T.nearbyNone)]);
             if (so.invites > 0) chips.push([T.invites, fill(T.invitesN, { n: so.invites })]);
             if (so.pledge) {
               const pg = so.pledge;

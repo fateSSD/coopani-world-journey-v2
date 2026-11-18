@@ -1233,6 +1233,7 @@ export const socialMethods: Record<string, any> = {
      * 调用方不能把它当成「没人」—— 这正是 11-16 那天被误判成「人没露面」的原因。
      */
     const ok = boards.some((b) => b?.ok);
+    this.lastMeetOk = ok;
     return { names: names.filter((n) => have.has(n)), ok };
   },
 

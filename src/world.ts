@@ -215,6 +215,8 @@ export class JourneyWorld implements World {
 
   /** 连续上报失败次数。成功一次立刻归零。 */
   private reportFails = 0;
+  /** 最近一次查碰面服务器是否连上：null = 未配或未查，true = 连上，false = 断连。 */
+  public lastMeetOk: boolean | null = null;
 
   /** 失败后排的那一次重试。和心跳并存，谁先到谁报。 */
   private reportRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1923,7 +1925,7 @@ export class JourneyWorld implements World {
          * 那种情况这个决定点已经不在了，补判等于「开机即发车」，
          * 而她那会儿正在说「我还没待够」。判据见 `tick()` 里的 `awayCrossedDecide`。
          */
-        decidedOn: this.awayCrossedDecide ? moment.dateKey : null,
+        decidedOn: (this.awayCrossedDecide && !this.st.work) ? moment.dateKey : null,
       };
       await this.rebuildPlan(now, 'full', 0, here);
       this.persist();

@@ -994,15 +994,17 @@ export const webUiMethods: Record<string, any> = {
         // 两个来源都可能是 0（没配服务器 / 真没人 / 接口没回），面板那边只在 > 0 时显示。
         const pool = this.poolProbe?.value || this.plan?.pool || 0;
         if (!configured && !p) return null;
-        if (!p) return { nearby, invites, pool, pledge: null };
+        const online = this.lastMeetOk !== false;
+        if (!p) return { online, nearby, invites, pool, pledge: null };
         const city = this.cityName(p.cityId);
         if (!p.arrivedAt) {
           // 还没到：天数就是他答应人家的天数，不能算「还剩」。
-          return { nearby, invites, pool, pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: p.days, here: false } };
+          return { online, nearby, invites, pool, pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: p.days, here: false } };
         }
         const ms = now.getTime() - Date.parse(p.arrivedAt);
         const left = Math.max(0, Math.ceil((p.days * 86_400_000 - ms) / 86_400_000));
         return {
+          online,
           nearby,
           invites,
           pool,
