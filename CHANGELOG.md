@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.12.12 — 2026-11-18（联动模拟鱼生三档留影策略与冷却闸门）
+
+- **消费 `life-public.json` 的 `imagePolicy`**：`world-photo.ts` 新增 `readLifeImagePolicy()`（同样遵守 `realNow()` 单一时钟入口与 30 分钟有效期），在自动拍照（`replace=false`）分支接入三档留影策略与冷却分钟数：`off` 静默直接跳过、冷却未到跳过、`active`（积极留影且冷却 > 0）允许同城同日多拍、`milestone` 维持一天一城一张。用户主动拍照与面板重拍不受限制。
+
 ## 1.12.11 — 2026-11-18（仓库迁到 -v2，旧仓库里的 .workbuddy 对象清不掉）
 
 > 1.12.10 那次 publish 卡在 npm 的 staged 状态（`E409 Cannot publish over previously staged version`），

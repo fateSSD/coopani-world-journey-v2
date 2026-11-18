@@ -473,7 +473,22 @@ export const photoMethods: Record<string, any> = {
      * 不这么分的话，「今天在城里逛过」会把「今天路上那张」挡掉。
      */
     const sceneId = onRoad ? 'road' : city.id;
-    if (!replace && this.photos.has(dateKey, sceneId)) return skip(onRoad ? '今天在路上已经拍过' : '这一天这个城市已经拍过');
+    const lifePolicy = !replace ? this.readLifeImagePolicy() : null;
+    if (!replace && lifePolicy?.policy === 'off') {
+      return skip('留影策略已设为静默');
+    }
+    if (!replace && lifePolicy && lifePolicy.cooldownMin > 0) {
+      const latestAt = this.photos.list()[0]?.at;
+      const lastMs = latestAt ? Date.parse(latestAt) : NaN;
+      const nowMs = this.realNow().getTime();
+      if (Number.isFinite(lastMs) && nowMs - lastMs < lifePolicy.cooldownMin * 60_000) {
+        return skip(`距上一张照片未满 ${lifePolicy.cooldownMin} 分钟冷却`);
+      }
+    }
+    const allowMultiPerDay = lifePolicy?.policy === 'active' && lifePolicy.cooldownMin > 0;
+    if (!replace && !allowMultiPerDay && this.photos.has(dateKey, sceneId)) {
+      return skip(onRoad ? '今天在路上已经拍过' : '这一天这个城市已经拍过');
+    }
 
     // 标题要在 try 外面算好：catch 里要用它拼日志，写在里面就出作用域了。
     // 节日/季节题材要月日。dateKey 是当地的日期，直接拆，别再算一次时区。
@@ -1148,6 +1163,28 @@ export const photoMethods: Record<string, any> = {
         props: typeof a.props === 'string' ? a.props : null,
         visualPrompt: typeof a.visualPrompt === 'string' ? a.visualPrompt : null,
       };
+    } catch {
+      return null;
+    }
+  },
+
+  /**
+   * 读取模拟鱼生广播的留影策略与冷却（`life-public.json` 的 `imagePolicy`）。
+   * 未安装或超过 30 分钟未更新时返回 null，退回旅行扩展默认策略。
+   */
+  readLifeImagePolicy(): { policy: 'off' | 'milestone' | 'active'; cooldownMin: number } | null {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
+      const nowMs = this.realNow().getTime();
+      const upd = Date.parse(String(raw?.updatedAt ?? ''));
+      if (!Number.isFinite(upd) || Math.abs(nowMs - upd) > 30 * 60_000) return null;
+      const p = raw?.imagePolicy;
+      if (!p || typeof p !== 'object') return null;
+      const policy = p.policy === 'off' || p.policy === 'milestone' || p.policy === 'active' ? p.policy : null;
+      if (!policy) return null;
+      const cd = Number(p.cooldownMin);
+      const cooldownMin = Number.isFinite(cd) && cd >= 0 ? Math.min(1440, Math.round(cd)) : 60;
+      return { policy, cooldownMin };
     } catch {
       return null;
     }
