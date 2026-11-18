@@ -491,6 +491,8 @@ export const planMethods: Record<string, any> = {
        * 合在一起的后果是**记账一关，景区里永远只能走路**（见 `spotSpendOk`）。
        */
       spotRideOk: this.spotSpendOk(),
+      highFitness: this.isHighFitness(),
+      lowEnergy: (this.effectiveLifeEnergy() ?? 100) < 40,
     });
 
     /*
@@ -636,6 +638,31 @@ export const planMethods: Record<string, any> = {
     if (last.kind === 'sleep' || last.kind === 'arrive') return;
     const trigger: TriggerMode = last.kind === 'hotel' || last.kind === 'sunrise' ? 'flush' : 'debounce';
     await this.push('journey.beat', `beat-${dateKey}-${last.kind}-${last.at}`, text, trigger);
+
+    /* 旅行节点反哺 life 五维（不扣钱，请客模式同样生效）。 */
+    const tier = plan.lodging?.tier ?? 'budget';
+    if (last.kind === 'breakfast') {
+      this.queueLifeEffect('旅途早饭', { vitalsDelta: { food: 22 } });
+    } else if (last.kind === 'lunch' || last.kind === 'dinner') {
+      const richMeal = tier === 'luxury' || this.purseRich();
+      this.queueLifeEffect('旅途正餐', {
+        vitalsDelta: { food: richMeal ? 36 : 30 },
+        ...(richMeal ? { moodlet: { text: '在当地吃了顿顺口的好饭', kind: 'good', hours: 3 } } : {}),
+      });
+    } else if (last.kind === 'activity') {
+      this.queueLifeEffect('逛景点', {
+        vitalsDelta: { fun: 14, ...(this.st.mate ? { social: 16 } : {}) },
+      });
+    } else if (last.kind === 'hotel') {
+      const hotelBonus = tier === 'luxury'
+        ? { clean: 24, energy: 8 }
+        : tier === 'view'
+          ? { clean: 20, energy: 5 }
+          : tier === 'comfort'
+            ? { clean: 16, energy: 3 }
+            : { clean: 12 };
+      this.queueLifeEffect('回酒店洗漱休息', { vitalsDelta: hotelBonus });
+    }
 
     // 拍一张：只在「出去逛」这个节点，一天一次。**不 await** ——
     // 生图要十几秒，等它会把这个巡检卡住，后面该推的节点全被推迟。
@@ -1234,6 +1261,20 @@ export const planMethods: Record<string, any> = {
       this.addSpent(hit.price);
     }
     this.pushBeat(Math.min(now + 0.1, 23), hit.text);
+    if (hit.what === 'pool') {
+      this.queueLifeEffect('酒店泳池游泳', { vitalsDelta: { clean: 25, fun: 15 }, fitnessDelta: 1.5 });
+    } else if (hit.what === 'onsen' || hit.what === 'spa') {
+      this.queueLifeEffect(`酒店${hit.label}`, {
+        vitalsDelta: { clean: 30, energy: 15, fun: 12 },
+        moodlet: { text: `在酒店做完${hit.label}，浑身都松快了`, kind: 'good', hours: 4 },
+      });
+    } else if (hit.what === 'bath') {
+      this.queueLifeEffect('酒店泡澡', { vitalsDelta: { clean: 20 } });
+    } else if (hit.what === 'gym') {
+      this.queueLifeEffect('酒店健身房', { vitalsDelta: { fun: 10, energy: -8, clean: -8 }, fitnessDelta: 2 });
+    } else {
+      this.queueLifeEffect(`酒店夜间：${hit.label}`, { vitalsDelta: { fun: 12 } });
+    }
     this.persist();
     return { text: hit.text + (hit.price > 0 ? `（花了 ${hit.price} 块）` : '') };
   },

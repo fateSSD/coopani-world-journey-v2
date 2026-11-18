@@ -188,7 +188,15 @@ export const purseMethods: Record<string, any> = {
    * - **文件名就是 id**：life 处理不过来时要能用文件名回一条 `rejected`；
    * - **写不进去只记日志**：不能因为递不出条子把行程搞挂 —— 那会变成「她因为磁盘满而不走了」。
    */
-  queueLifeSpend(amount: number, note: string): void {
+  queueLifeSpend(
+    amount: number,
+    note: string,
+    effect?: {
+      vitalsDelta?: Partial<Record<'food' | 'energy' | 'clean' | 'fun' | 'social', number>>;
+      fitnessDelta?: number;
+      moodlet?: { text: string; kind: 'good' | 'bad'; hours: number };
+    },
+  ): void {
     try {
       if (!existsSync(join(this.opts.dataDir, 'life-state.json'))) return;
       /*
@@ -208,10 +216,44 @@ export const purseMethods: Record<string, any> = {
           at: this.realNow().toISOString(),
           amount,
           note: String(note || '').slice(0, 60),
+          ...(effect?.vitalsDelta ? { vitalsDelta: effect.vitalsDelta } : {}),
+          ...(effect?.fitnessDelta ? { fitnessDelta: effect.fitnessDelta } : {}),
+          ...(effect?.moodlet ? { moodlet: effect.moodlet } : {}),
         }, null, 2),
       );
     } catch (e) {
       this.log?.warn(`这一笔没能递给她那边：${(e as Error)?.message ?? e}`);
+    }
+  },
+
+  /** 纯状态反哺给 life（不扣钱，请客模式下同样生效）。 */
+  queueLifeEffect(
+    note: string,
+    effect: {
+      vitalsDelta?: Partial<Record<'food' | 'energy' | 'clean' | 'fun' | 'social', number>>;
+      fitnessDelta?: number;
+      moodlet?: { text: string; kind: 'good' | 'bad'; hours: number };
+    },
+  ): void {
+    this.queueLifeSpend(0, note, effect);
+  },
+
+  /** 读模拟鱼生广播的精力与体质（30 分钟内有效，用于影响交通方式/景区代步与脚酸文案）。 */
+  readLifeVitals(): { energy: number; fitness: number } | null {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
+      const nowMs = this.realNow().getTime();
+      const upd = Date.parse(String(raw?.updatedAt ?? ''));
+      if (!Number.isFinite(upd) || Math.abs(nowMs - upd) > 30 * 60_000) return null;
+      const e = Number(raw?.vitals?.energy);
+      const f = Number(raw?.vitals?.fitness);
+      if (!Number.isFinite(e)) return null;
+      return {
+        energy: Math.max(0, Math.min(100, e)),
+        fitness: Number.isFinite(f) ? Math.max(0, Math.min(100, f)) : 25,
+      };
+    } catch {
+      return null;
     }
   },
 
@@ -488,7 +530,22 @@ export const purseMethods: Record<string, any> = {
   spotSpendOk(): boolean {
     const left = this.purseLeft();
     if (left === null) return true;
-    return left > 300;
+    const eff = this.effectiveLifeEnergy();
+    const minNeed = eff !== undefined && eff < 40 ? 120 : 300;
+    return left > minNeed;
+  },
+
+  /** 有效精力（energy + fitness * 0.25）。未装 life 或数据过期时返回 undefined。 */
+  effectiveLifeEnergy(): number | undefined {
+    const v = this.readLifeVitals();
+    if (!v) return undefined;
+    return v.energy + v.fitness * 0.25;
+  },
+
+  /** 高体质判定（fitness >= 60）：不抱怨脚酸。 */
+  isHighFitness(): boolean {
+    const v = this.readLifeVitals();
+    return Boolean(v && v.fitness >= 60);
   },
 
 
@@ -756,6 +813,7 @@ export const purseMethods: Record<string, any> = {
         worldNow: now.getTime(),
         speed: this.speedNow(),
         phase: this.st.phase,
+        hotelTier: this.st.phase === 'staying' ? (this.st.lodging?.value?.tier ?? '') : '',
         city: { id: c.id, name: c.name, tz: c.tz },
         leg: this.st.phase === 'traveling' && this.st.leg
           ? {

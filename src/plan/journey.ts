@@ -477,6 +477,8 @@ export function pickMode(
    * 不是压权 —— 没证的人不该有一成的概率「偷偷开一趟」。
    */
   noCar = false,
+  /** 有效精力（来自模拟鱼生：energy + fitness * 0.25）。低于 40 时少走少骑、偏省力方式。 */
+  effectiveEnergy?: number,
 ): TravelMode | null {
   const all = usableModes(from, to, km);
   const allowed = (noFly ? all.filter((m) => m.id !== 'plane') : all)
@@ -551,6 +553,15 @@ export function pickMode(
     // 手头紧：飞机压到原来的一成。不是禁掉 —— 跨洲还是只能飞，
     // 但国内这段距离她会开始算「这钱值不值」。
     if (poor && m.id === 'plane') w *= 0.1;
+    if (effectiveEnergy !== undefined && effectiveEnergy < 40) {
+      if (effectiveEnergy < 25 && (m.id === 'walk' || m.id === 'bike') && usable.some((u) => u.id !== 'walk' && u.id !== 'bike')) {
+        return 0;
+      }
+      if (m.id === 'walk') w *= 0.2;
+      else if (m.id === 'bike') w *= 0.3;
+      else if (m.id === 'motorcycle') w *= 0.5;
+      else if (m.id === 'car' || m.id === 'train' || m.id === 'plane') w *= 1.4;
+    }
     // 慢得离谱的再压一道，防止短途段里出现「摩托车横穿八百公里」。
     return w * (1 - slowness * 0.35);
   };

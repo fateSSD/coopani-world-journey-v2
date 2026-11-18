@@ -1242,7 +1242,7 @@ export class JourneyWorld implements World {
       // 约定里点过走法就照它 —— 那是他自己说的「买机票吧」，不该被掷骰子盖掉。
       // 他这次又点了名（`opts.to`）但没再说方式时，`pledged` 是 null，要靠 `pledgeFor` 找回来。
       ?? this.pledgedMode(pledged ?? this.pledgeFor(to), from, to, km)
-      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.cfg.hasLicense);
+      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.cfg.hasLicense, this.effectiveLifeEnergy());
     if (!mode) {
       /*
        * **「没有可用交通方式」和「买不起」是两件事，原来都说成前一句。**
@@ -1662,6 +1662,66 @@ export class JourneyWorld implements World {
   }
 
 
+  private applyLegArrivalToLife(leg: Journey, tz: string): void {
+    const fitnessDelta = leg.modeId === 'walk'
+      ? Math.min(3, Math.max(1, Math.round(leg.km / 12)))
+      : leg.modeId === 'bike'
+        ? Math.min(2.5, Math.max(0.8, Math.round(leg.km / 40)))
+        : 0;
+
+    const depMs = Date.parse(leg.departedAt);
+    const arrMs = Date.parse(leg.arriveAt);
+    let overnight = false;
+    if (Number.isFinite(depMs) && Number.isFinite(arrMs) && arrMs - depMs >= 6 * 3_600_000) {
+      for (let t = depMs + 3_600_000; t < arrMs; t += 3_600_000) {
+        const h = localMoment(new Date(t), tz).hour;
+        if (h >= 0 && h < 5) { overnight = true; break; }
+      }
+    }
+
+    let vitalsDelta: Partial<Record<'food' | 'energy' | 'clean' | 'fun' | 'social', number>> | undefined;
+    let moodlet: { text: string; kind: 'good' | 'bad'; hours: number } | undefined;
+    if (overnight) {
+      const g = leg.grade?.id ?? '';
+      if (leg.modeId === 'bus' && g === 'sleeper-bus') {
+        vitalsDelta = { energy: -8 };
+        moodlet = { text: '卧铺大巴窄得翻不了身，睡得不算踏实', kind: 'bad', hours: 4 };
+      } else if (leg.modeId === 'bus' && g === 'comfort') {
+        vitalsDelta = { energy: -12 };
+        moodlet = { text: '长途大巴航空座靠着睡了一宿，有点乏', kind: 'bad', hours: 4 };
+      } else if (leg.modeId === 'bus') {
+        vitalsDelta = { energy: -18 };
+        moodlet = { text: '大巴硬坐了一宿，腰背发僵', kind: 'bad', hours: 5 };
+      } else if (leg.modeId === 'train' && g === 'second') {
+        vitalsDelta = { energy: -14 };
+        moodlet = { text: '火车二等座熬了一夜，脖子有点酸', kind: 'bad', hours: 4 };
+      } else if (leg.modeId === 'train' && g === 'first') {
+        vitalsDelta = { energy: -8 };
+      } else if (leg.modeId === 'train' && g === 'hard-sleeper') {
+        vitalsDelta = { energy: -5 };
+      } else if (leg.modeId === 'train' && g === 'deluxe-sleeper') {
+        vitalsDelta = { energy: 6, clean: 10 };
+        moodlet = { text: '高级软卧独立间睡了个安稳觉，下车神清气爽', kind: 'good', hours: 4 };
+      } else if (leg.modeId === 'plane' && g === 'economy') {
+        vitalsDelta = { energy: -10 };
+        moodlet = { text: '红眼经济舱没怎么睡好，有点困倦', kind: 'bad', hours: 4 };
+      } else if (leg.modeId === 'plane' && g === 'business-class') {
+        vitalsDelta = { energy: 4 };
+        moodlet = { text: '公务舱平躺睡了一觉，下飞机精神不错', kind: 'good', hours: 4 };
+      } else if (leg.modeId === 'ship') {
+        vitalsDelta = { energy: -3 };
+      }
+    }
+
+    if (fitnessDelta > 0 || vitalsDelta || moodlet) {
+      this.queueLifeEffect(`抵达（${leg.modeId}）`, {
+        ...(fitnessDelta > 0 ? { fitnessDelta } : {}),
+        ...(vitalsDelta ? { vitalsDelta } : {}),
+        ...(moodlet ? { moodlet } : {}),
+      });
+    }
+  }
+
   private async arrive(now: Date, leg: Journey): Promise<void> {
     const { to } = citiesOf(leg);
     if (!to) {
@@ -1670,6 +1730,7 @@ export class JourneyWorld implements World {
       return;
     }
     const moment = localMoment(now, to.tz);
+    this.applyLegArrivalToLife(leg, to.tz);
     const speed = this.speedNow();
     // 必须在更新 state 之前判「以前来过没有」—— 更新之后 everVisited 里一定有它。
     const beenBefore = this.st.everVisited.includes(to.id);
@@ -2360,6 +2421,8 @@ export class JourneyWorld implements World {
       opts.flyRegardless
         ? undefined
         : this.affordMode(km, 0.8, from.country !== home.country, { from, to: home }),
+      !this.cfg.hasLicense,
+      this.effectiveLifeEnergy(),
     ));
     /*
      * 叫回时调用方会给「高铁 / 飞机」这种更紧的说法（见 `fastHomeLeg`）。
@@ -2623,7 +2686,7 @@ export class JourneyWorld implements World {
     // 他点名了怎么去就用那个；约定里点过也照它；都没说才照旧掷骰子。
     const mode = opts.mode
       ?? this.pledgedMode(target ? null : (pledge ?? this.pledgeFor(to)), from, to, km)
-      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }));
+      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.cfg.hasLicense, this.effectiveLifeEnergy());
     if (!mode) {
       /*
        * 买不起票 ≠ 没有路。但如果这一趟是**为了赴约**，那就不能一直卡在原地：
