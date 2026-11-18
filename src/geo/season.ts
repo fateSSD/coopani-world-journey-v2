@@ -105,7 +105,7 @@ const BY_PROVINCE: Record<string, SeasonRegion> = {
   四川: 'sichuan', 重庆: 'sichuan', 贵州: 'sichuan',
   云南: 'yunnan',
   广东: 'south', 广西: 'south', 海南: 'south', 福建: 'south',
-  中国香港: 'south', 中国澳门: 'south',
+  中国香港: 'south', 中国澳门: 'south', 中国台湾: 'south',
   西藏: 'plateau',
 };
 

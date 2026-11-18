@@ -421,6 +421,7 @@ function usableModes(from: City, to: City, km: number): TravelMode[] {
      * 国界不看、海也不看，算出来的是一个不存在的地方。
      */
     if (GROUND_MODES.has(m.id) && !landLinked(from.country, to.country)) return false;
+    if (GROUND_MODES.has(m.id) && (from.region === '中国台湾') !== (to.region === '中国台湾')) return false;
     return true;
   });
 }
