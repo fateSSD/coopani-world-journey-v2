@@ -9,12 +9,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fateSSD/coopani-world-journey.git"
+    "url": "git+https://github.com/fateSSD/coopani-world-journey-v2.git"
   },
   "bugs": {
-    "url": "https://github.com/fateSSD/coopani-world-journey/issues"
+    "url": "https://github.com/fateSSD/coopani-world-journey-v2/issues"
   },
-  "homepage": "https://github.com/fateSSD/coopani-world-journey#readme",
+  "homepage": "https://github.com/fateSSD/coopani-world-journey-v2#readme",
   "keywords": [
     "cortico-world",
     "cortico",
