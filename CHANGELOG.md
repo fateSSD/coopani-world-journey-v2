@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.12.17 — 2026-11-18（修请客模式下仍向模拟鱼生扣款的冲突）
+
+- **`addSpent()` 守住请客模式边界**：[world-purse.ts](src/world-purse.ts) 仅在 `moneyEnabled && payFromLife` 同时开启时才向 `life-spend/` 递扣款条子；关闭旅行记账（你请客）时不再在未检查余额的情况下把模拟鱼生余额扣穿到 0。
+
 ## 1.12.16 — 2026-11-18（新增台湾地区 5 座城市与景点 + 隔海禁地面交通）
 
 - **新增台湾省 5 座代表城市**：[cities.ts](src/geo/cities.ts) 补充 `taibei`（台北）、`taizhong`（台中）、`tainan`（台南）、`gaoxiong`（高雄）、`hualian`（花莲）的景点（台北101、故宫博物院、九份老街、日月潭、太鲁阁峡谷、七星潭、驳二、赤嵌楼等）、地道美食、夜市、演出、平溪天灯节与视觉锚点，全量城市扩充至 193 座；[season.ts](src/geo/season.ts) 补入 `中国台湾: 'south'`。

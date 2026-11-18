@@ -176,7 +176,7 @@ export const purseMethods: Record<string, any> = {
     if (!(n > 0)) return;
     const amount = Math.round(n);
     if (this.cfg.moneyEnabled) this.st = { ...this.st, spent: this.st.spent + amount };
-    if (this.cfg.payFromLife) this.queueLifeSpend(amount, note);
+    if (this.cfg.moneyEnabled && this.cfg.payFromLife) this.queueLifeSpend(amount, note);
   },
 
 
