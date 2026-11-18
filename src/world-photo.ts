@@ -356,7 +356,13 @@ export const photoMethods: Record<string, any> = {
     // 时区跟着拍摄地走 —— 跨时区的时候，出发地和目的地的「下午」不是一个下午。
     const moment = localMoment(this.worldNow(), target.tz);
     const hour = Math.round(moment.decimal);
-    const spot = onRoad ? '' : this.spotNow(moment.decimal);
+    let spot = onRoad ? '' : this.spotNow(moment.decimal);
+    if (!onRoad && this.st.phase === 'home') {
+      const lifeAct = this.readLifeActivityNow();
+      if (lifeAct && (lifeAct.scene || lifeAct.label)) {
+        spot = String(lifeAct.scene || lifeAct.label);
+      }
+    }
     return {
       ok: true,
       city: target,
@@ -1113,9 +1119,58 @@ export const photoMethods: Record<string, any> = {
    * 那就是「在亚龙湾坐了香蕉艇…」那一条（如果沙滩上买了项目）。
    * **只认当天的表**；跨天、以及表还没建好时返回空串，让照片退回风景照。
    */
+  readLifeActivityNow(): {
+    id: string;
+    label: string;
+    scene?: string | null;
+    outfitHint?: string | null;
+    props?: string | null;
+    visualPrompt?: string | null;
+  } | null {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
+      /*
+       * 时间只从 `realNow()` 拿 —— `world*.ts` 里出现 `Date.now()` 会被
+       * `test/journey.test.mjs` 那条「时钟只有一个入口」直接判红（2026-11-18 修的）。
+       */
+      const nowMs = this.realNow().getTime();
+      const upd = Date.parse(String(raw?.updatedAt ?? ''));
+      if (!Number.isFinite(upd) || Math.abs(nowMs - upd) > 30 * 60_000) return null;
+      const a = raw?.activity;
+      if (!a || typeof a !== 'object') return null;
+      const until = Date.parse(String(a.until ?? ''));
+      if (!Number.isFinite(until) || until <= nowMs) return null;
+      return {
+        id: String(a.id ?? ''),
+        label: String(a.label ?? ''),
+        scene: typeof a.scene === 'string' ? a.scene : null,
+        outfitHint: typeof a.outfitHint === 'string' ? a.outfitHint : null,
+        props: typeof a.props === 'string' ? a.props : null,
+        visualPrompt: typeof a.visualPrompt === 'string' ? a.visualPrompt : null,
+      };
+    } catch {
+      return null;
+    }
+  },
+
   photoDoingNow(city: { id: string; tz: string }, hour: number): string {
     const plan = this.plan;
-    if (!plan || plan.cityId !== city.id) return '';
+    if (!plan) {
+      if (this.st.phase === 'home') {
+        const lifeAct = this.readLifeActivityNow();
+        if (lifeAct) {
+          if (lifeAct.visualPrompt) return lifeAct.visualPrompt;
+          return [
+            lifeAct.scene ? `在${lifeAct.scene}` : '',
+            lifeAct.label,
+            lifeAct.outfitHint ? `穿着${lifeAct.outfitHint}` : '',
+            lifeAct.props ? `手边有${lifeAct.props}` : '',
+          ].filter(Boolean).join('，');
+        }
+      }
+      return '';
+    }
+    if (plan.cityId !== city.id) return '';
     if (plan.dateKey !== localMoment(this.worldNow(), city.tz).dateKey) return '';
     const done = plan.beats.filter((b) => b.at <= hour
       && (b.kind === 'activity' || b.kind === 'beat' || b.kind === 'night' || b.kind === 'hotel'));

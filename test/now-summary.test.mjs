@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -115,4 +115,29 @@ test('钱那一行每回合都看得见（2026-11-17）', () => {
   w.st = { ...w.st, spent: 300, earned: 0 };
   /* 没装生活层、预算 0 —— `purseLeft()` 返回 null，就该一个字都不说。 */
   assert.equal(w.purseTravelLine(), '', '没记账时不该提钱');
+});
+
+test('在家拍照联动读取 life-public.json 活动场景与 visualPrompt', () => {
+  const w = staying(null);
+  w.st = { ...w.st, phase: 'home', hereId: 'lanzhou' };
+  w.plan = null;
+  const nowMs = w.realNow().getTime();
+  writeFileSync(join(w.opts.dataDir, 'life-public.json'), JSON.stringify({
+    schema: 2,
+    updatedAt: new Date(nowMs).toISOString(),
+    activity: {
+      id: 'cafe',
+      kind: 'act',
+      label: '去咖啡馆坐坐',
+      until: new Date(nowMs + 30 * 60_000).toISOString(),
+      scene: '街角咖啡馆',
+      outfitHint: '休闲毛衣或风衣',
+      props: '手冲咖啡和书',
+      visualPrompt: '场景：街角咖啡馆（木质暖光）；穿着：日常便装；手边：手冲咖啡和书',
+    },
+  }), 'utf8');
+  const sc = w.photoSceneNow();
+  assert.ok(sc.ok && sc.spot === '街角咖啡馆', '在家拍照 spot 优先取 life 正在进行的活动场景');
+  const doing = w.photoDoingNow({ id: 'lanzhou', tz: 'Asia/Shanghai' }, 13);
+  assert.match(doing, /街角咖啡馆/, 'photoDoingNow 在家时返回 life visualPrompt');
 });

@@ -310,7 +310,18 @@ test('前端产物：没在听歌时不该出现「在放」', async () => {
     const root = new FakeNode('div');
     const ctx = makeCtx(root, async () => ({ ...homeSnap, music: null }));
     await bundle.panels.now.mount(ctx);
-    assert.equal(root.text.includes('在放'), false, '没听歌还写着「在放」');
+    /*
+     * **不能拿整页 text 判断**（2026-11-18 修）。
+     *
+     * 帮助文案里有「四盏灯分别是：…听歌（**在放**什么）」—— 那句是给用户解释四盏灯的，
+     * 跟有没有在放歌毫无关系。整页 `includes('在放')` 会把它当成音乐芯片，
+     * 这条断言从某次改了帮助文案起就一直是红的（不是产品 bug，是断言太宽）。
+     *
+     * 芯片的结构是两个 span：`jr-fact-k` 放 label、`jr-fact-v` 放值。按结构找才准。
+     */
+    const musicChip = root.find((n) => n.className === 'jr-fact-k' && n.textContent === '在放');
+    /* find() 找不到时返回 null，这里用真值判断，不赌它的返回约定。 */
+    assert.ok(!musicChip, '没听歌还画了「在放」这一格');
   } finally { restore(); }
 });
 
@@ -544,5 +555,20 @@ test('前端产物：指到同步盘之后，面板上要看得见那个路径',
     }));
     await bundle.panels.now.mount(ctx2);
     assert.ok(!local.text.includes('D://data//journey'), '没指同步盘却把本机目录写出来了');
+  } finally { restore(); }
+});
+
+test('前端产物：城市名旁边直接显示天气胶囊（无前缀、有则显示）', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const root = new FakeNode('div');
+    const ctx = makeCtx(root, async () => ({
+      ...homeSnap, guideSeen: true, weather: '\n天气：多云，9~16℃',
+    }));
+    await bundle.panels.now.mount(ctx);
+    const badge = root.find((n) => n.className === 'jr-city-weather');
+    assert.ok(badge && !badge.hidden, '城市名旁边应显示天气胶囊');
+    assert.equal(badge.textContent, '多云，9~16℃', '胶囊去掉天气：前缀且无空行');
   } finally { restore(); }
 });
