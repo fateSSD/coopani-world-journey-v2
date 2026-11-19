@@ -504,6 +504,10 @@ const SET = {
     styleCastHint: '留空＝跟上面那个一样。想让风景写实、自拍二次元，就这里填二次元那套前缀 —— 只有她在画面里的照片用它。',
     castChance: '几成照片有她',
     castChanceHint: '0 到 1。1＝每张都有（默认）；填 0.3 就是三成有她、七成纯风景。留空或填 1 行为不变。',
+    useRefs: '用参考图（图鉴）',
+    useRefsHint: '开了之后，图鉴里命中的角色/服饰/场景条目会带上它的参考图，一起发给云端 —— **图片会离开这台机器**，所以默认关。只有火山方舟的 seedream 系认这个字段；别家会跳过并记一行日志。',
+    refs: '额外参考图（每行一个路径）',
+    refsHint: '图鉴为主，这里只是补充 —— 没装模拟鱼生、或者想临时加两张时用。单张上限 4MB、总量 12MB；PNG 自动缩到长边 1600，JPEG 原样发。',
     watermark: '去掉「AI生成」水印',
     watermarkHint: '服务商出图后盖上去的那一条，提示词压不掉。auto＝云端裁底边、本地不动；off＝一律不裁；crop＝一律裁掉底部 8%。',
     watermarks: { auto: '自动', off: '不裁', crop: '都裁' },
@@ -562,6 +566,10 @@ const SET = {
     styleCastHint: 'Empty = same as the style above. Set this to keep scenery photoreal while portraits are anime — only photos with her in them use it.',
     castChance: 'Chance a photo includes her',
     castChanceHint: '0 to 1. 1 = always (default); 0.3 = three in ten. Empty or 1 keeps the old behaviour.',
+    useRefs: 'Use reference images (library)',
+    useRefsHint: 'When on, reference images from matched library entries ride along with the request — the images leave this machine, so it is off by default. Only Volcengine Ark seedream models accept this field; others skip it and log a line.',
+    refs: 'Extra references (one path per line)',
+    refsHint: 'The library is the main source; this is a supplement for people without the life extension. 4MB per file, 12MB total; PNG is scaled to 1600px, JPEG is sent as-is.',
     watermark: 'Remove the “AI generated” mark',
     watermarkHint: 'added by the provider after generation; a prompt cannot remove it. auto = crop on cloud only; off = never; crop = always (bottom 8%).',
     watermarks: { auto: 'Auto', off: 'Never', crop: 'Always' },
@@ -1987,6 +1995,8 @@ export default {
           cast: '',
           styleCast: '',
           castChance: '',
+          useRefs: false,
+          refs: '',
           watermark: 'auto',
           timeoutSec: 0,
           photoDir: '',
@@ -2027,6 +2037,20 @@ export default {
           if (placeholder) input.placeholder = placeholder;
           input.addEventListener('input', () => oninput(input.value), { signal: ctx.signal });
           row.append(input);
+          if (hint) row.append(el('span', 'jr-set-hint', hint));
+          return row;
+        };
+
+        /** 多行输入。参考图路径是「每行一个」，单行框里没法看。 */
+        const areaRow = (label, hint, value, oninput) => {
+          const row = el('div', 'jr-set-row');
+          row.append(el('span', 'jr-set-k', label));
+          const area = el('textarea', 'jr-set-v');
+          area.rows = 3;
+          area.spellcheck = false;
+          area.value = value || '';
+          area.addEventListener('input', () => oninput(area.value), { signal: ctx.signal });
+          row.append(area);
           if (hint) row.append(el('span', 'jr-set-hint', hint));
           return row;
         };
@@ -2214,6 +2238,14 @@ export default {
            */
           otherBox.append(field(S.styleCast, S.styleCastHint, draft.styleCast, (v) => { draft.styleCast = v; }, ''));
           otherBox.append(field(S.castChance, S.castChanceHint, draft.castChance, (v) => { draft.castChance = v; }, ''));
+          /*
+           * 参考图（2026-11-20）。默认关 —— 开了会把本机图片发给云端。
+           * 路径框只在开了之后才显示：关着的时候它还摆在那儿，等于暗示"填了就会用"。
+           */
+          otherBox.append(checkRow(S.useRefs, S.useRefsHint, draft.useRefs, (v) => { draft.useRefs = v; drawOther(); }));
+          if (draft.useRefs) {
+            otherBox.append(areaRow(S.refs, S.refsHint, draft.refs, (v) => { draft.refs = v; }));
+          }
           otherBox.append(chipRow(
             S.watermark, S.watermarkHint,
             [
@@ -2281,6 +2313,8 @@ export default {
           draft.cast = data.cast || '';
           draft.styleCast = data.styleCast || '';
           draft.castChance = typeof data.castChance === 'number' ? String(data.castChance) : '';
+          draft.useRefs = Boolean(data.useRefs);
+          draft.refs = data.refs || '';
           draft.watermark = data.watermark || 'auto';
           draft.timeoutSec = Number(data.timeoutSec) || 0;
           draft.photoDir = data.photoDir || '';
@@ -2349,6 +2383,8 @@ export default {
             const n = Number(draft.castChance);
             if (Number.isFinite(n)) values.imageCastChance = Math.min(1, Math.max(0, n));
           }
+          values.imageUseRefs = draft.useRefs;
+          values.imageRefs = draft.refs.trim();
           values.imageWatermark = draft.watermark;
           values.imageTimeoutSec = draft.timeoutSec;
           values.photoDir = draft.photoDir.trim();

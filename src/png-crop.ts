@@ -219,3 +219,122 @@ export function cropBottom(png: Uint8Array, ratio: number): Uint8Array {
  * 交给上层按协议判断就行（见 `world.ts` 的 `shouldCropWatermark`）。
  */
 export const WATERMARK_CROP_RATIO = 0.08;
+
+/**
+ * 把 PNG 长边缩到 `maxEdge` 以内。已经够小、或格式不认识，原样返回。
+ *
+ * ## 为什么需要它
+ *
+ * 参考图要 base64 之后塞进请求体，**体积按 4/3 膨胀**。手机截的立绘常常
+ * 3000px、两三兆，三张就是十兆的 JSON —— 上传慢、超时、内存也吃。
+ * 缩到 1600 长边，像素数掉到原来的一成多，肉眼仍够模型认人。
+ *
+ * ## 只做 PNG，不碰 JPEG
+ *
+ * 解码 JPEG 要写霍夫曼表和 IDCT，编码要写量化表 —— 那是另一个模块的量级。
+ * 而参考图本来就是"用户自己放进去的图"，JPEG 两兆在方舟的 10MB 限制内能直发。
+ * 所以这里只认自己解码得动的 PNG；JPEG 交给上层按体积闸门处理。
+ *
+ * ## 双线性，不用最近邻
+ *
+ * 最近邻的锯齿会被模型当成"画风"，参考图尤其忌讳 —— 它要的是"这个人长什么样"。
+ * 双线性多二十行，换来边缘不碎。
+ *
+ * 任何一步失败都返回原图：缩不了是小事，把参考图弄坏、或者让拍照直接失败才是大事。
+ */
+export function scalePng(png: Uint8Array, maxEdge: number): Uint8Array {
+  try {
+    if (!(maxEdge > 0)) return png;
+    const chunks = readChunks(png);
+    if (!chunks) return png;
+
+    const ihdr = chunks.find((c) => c.type === 'IHDR');
+    if (!ihdr || ihdr.data.length < 13) return png;
+    const iv = new DataView(ihdr.data.buffer, ihdr.data.byteOffset, ihdr.data.byteLength);
+    const width = iv.getUint32(0);
+    const height = iv.getUint32(4);
+    const bitDepth = ihdr.data[8];
+    const colorType = ihdr.data[9];
+    const interlace = ihdr.data[12];
+    if (bitDepth !== 8 || interlace !== 0) return png;
+    const ch = CHANNELS[colorType];
+    if (!ch) return png;
+
+    const longest = Math.max(width, height);
+    if (longest <= maxEdge) return png;
+    const scale = maxEdge / longest;
+    const nw = Math.max(1, Math.round(width * scale));
+    const nh = Math.max(1, Math.round(height * scale));
+    if (nw >= width && nh >= height) return png;
+
+    const idat = chunks.filter((c) => c.type === 'IDAT');
+    if (!idat.length) return png;
+    const total = idat.reduce((s, c) => s + c.data.length, 0);
+    const packed = new Uint8Array(total);
+    let off = 0;
+    for (const c of idat) { packed.set(c.data, off); off += c.data.length; }
+
+    const raw = new Uint8Array(inflateSync(Buffer.from(packed)));
+    const src = unfilter(raw, width, height, ch);
+    if (!src) return png;
+
+    const dst = new Uint8Array(nw * nh * ch);
+    for (let y = 0; y < nh; y += 1) {
+      // 像素中心对齐：把目标格子的中心映回源图坐标，边缘才不会整体偏半格。
+      const sy = Math.min(height - 1, Math.max(0, (y + 0.5) / scale - 0.5));
+      const y0 = Math.floor(sy);
+      const y1 = Math.min(height - 1, y0 + 1);
+      const fy = sy - y0;
+      for (let x = 0; x < nw; x += 1) {
+        const sx = Math.min(width - 1, Math.max(0, (x + 0.5) / scale - 0.5));
+        const x0 = Math.floor(sx);
+        const x1 = Math.min(width - 1, x0 + 1);
+        const fx = sx - x0;
+        const i00 = (y0 * width + x0) * ch;
+        const i01 = (y0 * width + x1) * ch;
+        const i10 = (y1 * width + x0) * ch;
+        const i11 = (y1 * width + x1) * ch;
+        const o = (y * nw + x) * ch;
+        for (let c = 0; c < ch; c += 1) {
+          const top = src[i00 + c] + (src[i01 + c] - src[i00 + c]) * fx;
+          const bot = src[i10 + c] + (src[i11 + c] - src[i10 + c]) * fx;
+          dst[o + c] = Math.round(top + (bot - top) * fy);
+        }
+      }
+    }
+
+    const stride = nw * ch;
+    const body = new Uint8Array(nh * (stride + 1));
+    for (let y = 0; y < nh; y += 1) {
+      const row = y * (stride + 1);
+      const s0 = y * stride;
+      body[row] = 1;
+      for (let x = 0; x < stride; x += 1) {
+        const left = x >= ch ? dst[s0 + x - ch] : 0;
+        body[row + 1 + x] = (dst[s0 + x] - left) & 0xff;
+      }
+    }
+
+    const newIhdr = new Uint8Array(13);
+    const nv = new DataView(newIhdr.buffer);
+    nv.setUint32(0, nw);
+    nv.setUint32(4, nh);
+    newIhdr.set(ihdr.data.subarray(8, 13), 8);
+
+    const parts: Uint8Array[] = [Uint8Array.from(PNG_SIG), makeChunk('IHDR', newIhdr)];
+    for (const c of chunks) {
+      if (c.type === 'IHDR' || c.type === 'IDAT' || c.type === 'IEND') continue;
+      parts.push(makeChunk(c.type, c.data));
+    }
+    parts.push(makeChunk('IDAT', new Uint8Array(deflateSync(Buffer.from(body), { level: 9 }))));
+    parts.push(makeChunk('IEND', new Uint8Array(0)));
+
+    const size = parts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(size);
+    let p = 0;
+    for (const part of parts) { out.set(part, p); p += part.length; }
+    return out;
+  } catch {
+    return png;
+  }
+}

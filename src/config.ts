@@ -256,6 +256,26 @@ export interface JourneyConfigSection extends WorldSection {
    */
   imageCastChance: number;
   /**
+   * **参考图总开关，默认关**（2026-11-20）。
+   *
+   * 开了之后：命中的图鉴条目（`characters / outfits / scenes`）里的 `ref-*.png`
+   * 会被读出来、压到长边 1600、base64 塞进生图请求。**图会离开这台机器**，
+   * 发给云端服务商并过它的内容审核 —— 所以必须由人主动打开，不能默认替人决定。
+   *
+   * 只有火山方舟系（`imagePreset: 'doubao'`，或域名/模型名指向方舟）才真的发图；
+   * 其余服务商发了会被拒，代码会跳过并写日志。本地 ComfyUI 不走这条（它有自己的 workflow）。
+   */
+  imageUseRefs: boolean;
+  /**
+   * 手填的参考图路径，**每行一个**。图鉴为主、这里是补充。
+   *
+   * 为什么手填不是主路：路径是本机的，换台设备就断；而图鉴库跟着
+   * `libraryDir` 走（可以指到同步盘），换设备也还在。手填只留给没装模拟鱼生的人。
+   *
+   * 单个文件上限 4MB、总量 12MB；PNG 会自动缩到长边 1600，JPEG 原样发。
+   */
+  imageRefs: string;
+  /**
    * 出图尺寸，`宽x高`，如 `1664x928`。留空 = `1024x1024`（老行为）。
    *
    * 2026-11-04 Mr.Q：「画布写死的正方形，手机拍出来的照片基本是竖的 3:4、
@@ -377,6 +397,9 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   imageStyleCast: '',
   /* 1 = 每张都有她。填了 `imageCast` 才生效。 */
   imageCastChance: 1,
+  /* 参考图默认关：图会离开本机，得由人自己开。 */
+  imageUseRefs: false,
+  imageRefs: '',
   imageSize: '',
   imageWatermark: 'auto',
   imageKey: '',

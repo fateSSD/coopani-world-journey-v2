@@ -409,6 +409,9 @@ export const webUiMethods: Record<string, any> = {
       castChance: Number.isFinite(Number(c.imageCastChance))
         ? Math.min(1, Math.max(0, Number(c.imageCastChance)))
         : 1,
+      /* 参考图：开关默认关，路径每行一个（2026-11-20）。 */
+      useRefs: Boolean(c.imageUseRefs),
+      refs: (c.imageRefs ?? '').trim(),
       watermark: (c.imageWatermark ?? 'auto').trim() || 'auto',
       timeoutSec: Number(c.imageTimeoutSec) || 0,
       photoDir: (c.photoDir ?? '').trim(),
@@ -458,6 +461,7 @@ export const webUiMethods: Record<string, any> = {
       'imageProtocol', 'imagePreset', 'imageApi', 'imageModel', 'imageSize',
       'imageWorkflow', 'imagePromptNode', 'comfyNegative', 'comfyNegativeNode', 'imageKey',
       'imageMinimal', 'imageStyle', 'imageCast', 'imageStyleCast', 'imageCastChance',
+      'imageUseRefs', 'imageRefs',
       'imageWatermark', 'imageTimeoutSec', 'photoDir',
     ]);
     /*
@@ -467,7 +471,7 @@ export const webUiMethods: Record<string, any> = {
      * `String()` 化会把 `false` 变成字符串 `'false'`，而它是**真值**，
      * 于是「关掉极简提示词」会变成「打开」，且不报错。这种错比崩了难查得多。
      */
-    const booleans = new Set(['imageMinimal']);
+    const booleans = new Set(['imageMinimal', 'imageUseRefs']);
     const numbers = new Set(['imageTimeoutSec']);
     /*
      * 0–1 的小数**不能进 `numbers`** —— 那里会 `Math.round`，0.3 变成 0，
@@ -943,7 +947,7 @@ export const webUiMethods: Record<string, any> = {
           city, hour, old.dateKey, old.spot, this.plan?.weather ?? null,
           // 不判重：他要的就是「这一张再来一次」。
           true, onRoad, '', 'ground', 'ground', '', '',
-          { prompt, replaceHandle: handle, title: old.title },
+          { prompt, replaceHandle: handle, title: old.title, ...(old.refs?.length ? { refs: [...old.refs] } : {}) },
         );
         if (!res.ok) throw new Error(res.reason ?? '没拍成');
         return { photos: this.uiSnapshot().photos, dir: this.uiSnapshot().photoDir };

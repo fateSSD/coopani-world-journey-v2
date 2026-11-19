@@ -68,7 +68,8 @@ import {
   pickPosters, posterPrompt, yearlyHtml, type MonthlyPoster, type MonthlyPhoto, type MonthlyEntry,
   type YearlyTaste,
 } from './monthly.ts';
-import { shootPhoto, photoPrompt, photoTitle, spotFromBeat, skyOf, nightNegative, shotIsNight, imagePixelSize, type SkyView, type PhotoSubject } from './photo.ts';
+import { shootPhoto, photoPrompt, photoTitle, spotFromBeat, skyOf, nightNegative, shotIsNight, imagePixelSize, sniffImage, type SkyView, type PhotoSubject } from './photo.ts';
+import { scalePng } from './png-crop.ts';
 import { shootComfy, parseSize } from './comfy.ts';
 import { resolveImageBackend, presetDefaults } from './image-backend.ts';
 import { cropBottom, WATERMARK_CROP_RATIO } from './png-crop.ts';
@@ -99,6 +100,88 @@ import {
   pilgrimNote, beatText,
 } from './helpers.ts';
 export * from './helpers.ts';
+
+/* ---------------- 参考图：图鉴条目、体积闸门 ---------------- */
+
+/**
+ * 参考图上限，全是量过的保守值：
+ * - `REF_MAX_COUNT`：方舟系最多 10 张（5.5 / 5.0 pro / 5.0 flash），
+ *   5.0 lite / 4.5 / 4.0 是 14 张 —— 按最小的那个来，换模型不用重配。
+ * - `REF_MAX_EDGE`：长边 1600，像素数掉到原图一成多，模型仍认得出人。
+ * - `REF_MAX_BYTES` / `REF_MAX_TOTAL`：base64 膨胀 4/3，单张 4MB、总量 12MB
+ *   对应约 5.3MB / 16MB 的请求体。再大就该考虑是不是把原图直接塞进去了。
+ */
+const REF_MAX_COUNT = 10;
+const REF_MAX_EDGE = 1600;
+const REF_MAX_BYTES = 4 * 1024 * 1024;
+const REF_MAX_TOTAL = 12 * 1024 * 1024;
+
+interface LibEntry {
+  id: string;
+  name: string;
+  aliases: string[];
+  appearance: string;
+  images: string[];
+}
+
+/** 读一个分类下的全部条目。目录不存在、单条坏掉都跳过，不抛错。 */
+function loadLibraryCategory(root: string, cat: string): LibEntry[] {
+  const dir = join(root, cat);
+  if (!existsSync(dir)) return [];
+  const out: LibEntry[] = [];
+  for (const sub of readdirSync(dir).sort()) {
+    const fp = join(dir, sub, 'entry.json');
+    if (!existsSync(fp)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(fp, 'utf8')) as Record<string, unknown>;
+      const appearance = String(raw.appearance ?? '').replace(/\s+/g, ' ').trim();
+      const name = String(raw.name ?? '').trim();
+      const aliases = Array.isArray(raw.aliases)
+        ? raw.aliases.map((x) => String(x ?? '').trim()).filter(Boolean)
+        : [];
+      const images = Array.isArray(raw.images)
+        ? raw.images.map((x) => String(x ?? '').trim()).filter(Boolean)
+        : [];
+      if (!appearance && !images.length) continue;
+      out.push({ id: String(raw.id ?? sub), name, aliases, appearance, images });
+    } catch {
+      // 跳过损坏的单条记录
+    }
+  }
+  return out;
+}
+
+/**
+ * 按名字/别名匹配一条。三级：精确 → 子串 → （仅当没给任何线索且分类下只有一条）兜底。
+ *
+ * `allowSingleFallback` 只给人物开：只放了一个角色时，哪怕没报名字也该是她。
+ * 服饰和场景不开 —— 那是「张冠李戴」的高发区。
+ */
+function matchLibraryEntry(
+  entries: readonly LibEntry[],
+  hints: readonly string[],
+  allowSingleFallback: boolean,
+): LibEntry | null {
+  if (!entries.length) return null;
+  const valid = hints.map((h) => String(h ?? '').trim()).filter(Boolean);
+  for (const h of valid) {
+    const lower = h.toLowerCase();
+    const exact = entries.find(
+      (e) => e.name.toLowerCase() === lower || e.aliases.some((a) => a.toLowerCase() === lower),
+    );
+    if (exact) return exact;
+  }
+  for (const h of valid) {
+    const lower = h.toLowerCase();
+    const sub = entries.find((e) => {
+      const keys = [e.name, ...e.aliases].filter(Boolean).map((k) => k.toLowerCase());
+      return keys.some((k) => lower.includes(k) || k.includes(lower));
+    });
+    if (sub) return sub;
+  }
+  if (allowSingleFallback && entries.length === 1 && valid.length === 0) return entries[0];
+  return null;
+}
 
 export const photoMethods: Record<string, any> = {
   /* ---------------- 跟着日记一起同步 ---------------- */
@@ -425,7 +508,13 @@ export const photoMethods: Record<string, any> = {
     focus = '',
     /** 她自己写的画面内容（2026-11-10）。放最后，理由同 `focus`。 */
     describe = '',
-    override?: { prompt: string; replaceHandle: string; title?: string },
+    override?: {
+      prompt: string;
+      replaceHandle: string;
+      title?: string;
+      /** 这张当初用的参考图名单（文件名）。重拍沿用它，换了图鉴也不换脸。 */
+      refs?: string[];
+    },
     /** 外部取消信号（如工具被打断时中止请求）。 */
     signal?: AbortSignal,
   ): Promise<{ ok: boolean; reason?: string; title?: string; sky?: SkyView }> {
@@ -565,6 +654,29 @@ export const photoMethods: Record<string, any> = {
       const castOn = !!this.cfg.imageCast
         && seededRandom(`${dateKey}:${sceneId}:cast`)() <= this.cfg.imageCastChance;
       /*
+       * 参考图（2026-11-20）。**默认关**，开了才读图鉴与手填路径。
+       *
+       * 重拍优先用这张记录里存下的名单 —— 换过图鉴之后重拍，也不能把脸换掉。
+       * 名单里的文件找不到（用户删了、换了库目录），回退到当前配置重新收集，
+       * 并在日志里说一句，免得他以为"重拍还是原来那张脸"。
+       */
+      const refPick = (() => {
+        if (!this.cfg.imageUseRefs) return { paths: [] as string[], labels: [] as string[], dropped: [] as string[] };
+        const remembered = override?.refs ?? [];
+        if (remembered.length) {
+          const found = this.findLibraryRefsByName(remembered);
+          if (found.length) return { paths: found, labels: remembered, dropped: [] as string[] };
+          this.log?.info(`重拍沿用的参考图已不在图鉴里（${remembered.join('、')}），改按当前配置重新取。`);
+        }
+        return this.collectRefPaths(subject, castOn, spot, String(this.cfg.imageCast ?? ''), this.photoDoingNow(city, hour));
+      })();
+      const refPack = this.loadRefDataUrls(refPick.paths);
+      if (refPick.dropped.length || refPack.dropped.length) {
+        const gone = [...refPick.dropped, ...refPack.dropped];
+        this.log?.warn(`参考图跳过 ${gone.length} 张（读不到或太大，单张上限 4MB）：${gone.slice(0, 3).join('、')}`);
+      }
+      const refsOn = refPack.urls.length > 0;
+      /*
        * 有人那几张可以用另一套风格（`imageStyleCast`）。留空就还是 `imageStyle`。
        * 这样「风景写实 + 自拍二次元」才成立 —— 风格和有没有人本来就是两件事。
        */
@@ -598,8 +710,12 @@ export const photoMethods: Record<string, any> = {
          * 这一格把这套开关接到那条路上。默认关，见 `imageMinimal` 的定义。
          */
         minimal: this.cfg.imageMinimal,
-        // 留空 = 画面里没有人。填了才画人。
-        cast: castOn ? this.cfg.imageCast : '',
+        /*
+         * 有参考图时**不写人物描述**：两套外观同时给，模型会各听一半。
+         * 外观交给图，提示词只留「画面里只有这一个人」这条存在性约束。
+         */
+        cast: castOn && !refsOn ? this.cfg.imageCast : '',
+        ...(castOn && refsOn ? { castFromRef: true } : {}),
         // 抬头还是看脚下。天空照仍受当地时刻和天气约束。
         view,
         /* 她自己写的那一句（2026-11-10）。空 = 不出现，老行为不变。 */
@@ -767,7 +883,17 @@ export const photoMethods: Record<string, any> = {
             ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
             ...(signal ? { signal } : {}),
             size: backend.size,
+            ...(refsOn && this.refsAllowedBackend(backend) ? { refs: refPack.urls } : {}),
           });
+      if (refsOn && !this.refsAllowedBackend(backend)) {
+        this.log?.warn(
+          `配了 ${refPack.urls.length} 张参考图，但当前服务端（${backend.model || backend.api}）不认 image 字段，`
+          + '这一张按纯文生图发；要用参考图请换成火山方舟的 seedream 系模型。',
+        );
+      }
+      if (shot.refsDropped) {
+        this.log?.warn('服务端拒收参考图（image 字段），已去掉重发；这一张不是按参考图生成的。');
+      }
       if (shot.usage) {
         this.host?.reportUsage?.(shot.usage, {
           ...(backend.model ? { model: backend.model } : {}),
@@ -883,6 +1009,7 @@ export const photoMethods: Record<string, any> = {
        */
       const rec: PhotoRecord = {
         handle,
+        ...(refPack.names.length ? { refs: refPack.names } : {}),
         cityId: sceneId,
         cityName: onRoad ? '路上' : city.name,
         dateKey,
@@ -1293,109 +1420,190 @@ export const photoMethods: Record<string, any> = {
   ): string {
     if (subject === 'sky') return '';
     try {
-      let libRoot = join(this.opts.dataDir, 'image-library');
-      let lifeOutfitHint = '';
-      const pubFile = join(this.opts.dataDir, 'life-public.json');
-      if (existsSync(pubFile)) {
-        try {
-          const pub = JSON.parse(readFileSync(pubFile, 'utf8')) as {
-            libraryDir?: unknown;
-            activity?: { outfitHint?: unknown } | null;
-          };
-          if (typeof pub.libraryDir === 'string' && pub.libraryDir.trim()) {
-            libRoot = pub.libraryDir.trim();
-          }
-          if (typeof pub.activity?.outfitHint === 'string') {
-            lifeOutfitHint = pub.activity.outfitHint.trim();
-          }
-        } catch {
-          // 忽略破损的快照文件，回退默认目录
-        }
-      }
-      if (!existsSync(libRoot)) return '';
-
-      interface LibEntry {
-        name: string;
-        aliases: string[];
-        appearance: string;
-      }
-      const loadCat = (cat: string): LibEntry[] => {
-        const dir = join(libRoot, cat);
-        if (!existsSync(dir)) return [];
-        const out: LibEntry[] = [];
-        for (const sub of readdirSync(dir).sort()) {
-          const fp = join(dir, sub, 'entry.json');
-          if (!existsSync(fp)) continue;
-          try {
-            const raw = JSON.parse(readFileSync(fp, 'utf8')) as Record<string, unknown>;
-            const appearance = String(raw.appearance ?? '').replace(/\s+/g, ' ').trim();
-            if (!appearance) continue;
-            const name = String(raw.name ?? '').trim();
-            const aliases = Array.isArray(raw.aliases)
-              ? raw.aliases.map((x) => String(x ?? '').trim()).filter(Boolean)
-              : [];
-            out.push({ name, aliases, appearance });
-          } catch {
-            // 跳过损坏的单条记录
-          }
-        }
-        return out;
-      };
-
-      const matchCat = (cat: string, hints: string[], allowSingleFallback: boolean): string => {
-        const entries = loadCat(cat);
-        if (entries.length === 0) return '';
-        const validHints = hints.map((h) => h.trim()).filter(Boolean);
-        // 1. 精确匹配 name 或 alias
-        for (const h of validHints) {
-          const lower = h.toLowerCase();
-          const exact = entries.find(
-            (e) => e.name.toLowerCase() === lower || e.aliases.some((a) => a.toLowerCase() === lower),
-          );
-          if (exact) return exact.appearance;
-        }
-        // 2. 子串包含匹配（hint 含条目名/别名，或条目名/别名含 hint）
-        for (const h of validHints) {
-          const lower = h.toLowerCase();
-          const sub = entries.find((e) => {
-            const keys = [e.name, ...e.aliases].filter(Boolean).map((k) => k.toLowerCase());
-            return keys.some((k) => lower.includes(k) || k.includes(lower));
-          });
-          if (sub) return sub.appearance;
-        }
-        // 3. 仅当确实没有传任何角色线索（validHints 为空）且分类下只有唯一一条记录时才兜底；
-        // 若已知当前角色名却与唯一条目名称和别名均不匹配，绝不张冠李戴
-        if (allowSingleFallback && entries.length === 1 && validHints.length === 0) {
-          return entries[0].appearance;
-        }
-        return '';
-      };
-
+      const pack = this.libraryPack();
+      if (!pack) return '';
       const parts: string[] = [];
       if (castOn) {
-        const ch = matchCat(
-          'characters',
+        const ch = matchLibraryEntry(
+          loadLibraryCategory(pack.root, 'characters'),
           [castHint, this.opts.botName ?? ''],
           true,
         );
-        if (ch) parts.push(ch);
-        const out = matchCat(
-          'outfits',
-          [lifeOutfitHint, doing, castHint],
+        if (ch) parts.push(ch.appearance);
+        const out = matchLibraryEntry(
+          loadLibraryCategory(pack.root, 'outfits'),
+          [pack.outfitHint, doing, castHint],
           false,
         );
-        if (out && !parts.includes(out)) parts.push(out);
+        if (out && !parts.includes(out.appearance)) parts.push(out.appearance);
       }
       if (spot) {
-        const sc = matchCat('scenes', [spot], false);
-        if (sc && !parts.includes(sc)) parts.push(sc);
+        const sc = matchLibraryEntry(loadLibraryCategory(pack.root, 'scenes'), [spot], false);
+        if (sc && !parts.includes(sc.appearance)) parts.push(sc.appearance);
       }
-      const combined = parts.join('，');
+      const combined = parts.filter(Boolean).join('，');
       if (!combined) return '';
       return combined.length > 90 ? `${combined.slice(0, 90)}…` : combined;
     } catch {
       return '';
     }
+  },
+
+  /**
+   * 图鉴库定位：优先 `life-public.json` 暴露的绝对路径（跨盘、跨设备都能对上），
+   * 否则回退本扩展 dataDir 下的 `image-library`。顺手带出 `activity.outfitHint`。
+   */
+  libraryPack(): { root: string; outfitHint: string } | null {
+    let root = join(this.opts.dataDir, 'image-library');
+    let outfitHint = '';
+    const pubFile = join(this.opts.dataDir, 'life-public.json');
+    if (existsSync(pubFile)) {
+      try {
+        const pub = JSON.parse(readFileSync(pubFile, 'utf8')) as {
+          libraryDir?: unknown;
+          activity?: { outfitHint?: unknown } | null;
+        };
+        if (typeof pub.libraryDir === 'string' && pub.libraryDir.trim()) root = pub.libraryDir.trim();
+        if (typeof pub.activity?.outfitHint === 'string') outfitHint = pub.activity.outfitHint.trim();
+      } catch {
+        // 破损快照：回退默认目录，不因为一个 JSON 坏了就不拍照
+      }
+    }
+    if (!existsSync(root)) return null;
+    return { root, outfitHint };
+  },
+
+  /**
+   * 收集参考图**路径**（还没读字节）。
+   *
+   * 来源分两处，图鉴为主、手填为补充：
+   *   1. 图鉴库命中的 `characters / outfits / scenes` 条目里的 `ref-*.png`；
+   *   2. 配置 `imageRefs` 里手填的路径（每行一个）。
+   *
+   * 为什么不让用户手填为主：手填的是本机绝对路径，换台设备就断；而图鉴库
+   * 本来就跟着 `libraryDir` 走（可以指到同步盘）。手填只留给没装模拟鱼生的人。
+   */
+  collectRefPaths(
+    subject: PhotoSubject,
+    castOn: boolean,
+    spot: string,
+    castHint: string,
+    doing: string,
+  ): { paths: string[]; labels: string[]; dropped: string[] } {
+    const out: { paths: string[]; labels: string[]; dropped: string[] } = { paths: [], labels: [], dropped: [] };
+    if (!this.cfg.imageUseRefs) return out;
+    // 抬头拍天：带人物参考图只会让模型往天上塞人。
+    if (subject === 'sky') return out;
+
+    const addEntry = (root: string, cat: string, entry: LibEntry | null, max: number): void => {
+      if (!entry) return;
+      let n = 0;
+      for (const img of entry.images) {
+        if (n >= max) break;
+        if (!/^ref-.*\.(png|jpe?g|webp)$/i.test(img)) continue;
+        const fp = join(root, cat, entry.id, img);
+        if (out.paths.includes(fp)) continue;
+        out.paths.push(fp);
+        out.labels.push(img);
+        n += 1;
+      }
+    };
+
+    try {
+      const pack = this.libraryPack();
+      if (pack) {
+        // 人物最多两张：第一张定脸，第二张补侧面/全身；再多只是把请求体撑大。
+        addEntry(pack.root, 'characters', castOn ? matchLibraryEntry(
+          loadLibraryCategory(pack.root, 'characters'), [castHint, this.opts.botName ?? ''], true,
+        ) : null, 2);
+        addEntry(pack.root, 'outfits', castOn ? matchLibraryEntry(
+          loadLibraryCategory(pack.root, 'outfits'), [pack.outfitHint, doing, castHint], false,
+        ) : null, 1);
+        addEntry(pack.root, 'scenes', matchLibraryEntry(
+          loadLibraryCategory(pack.root, 'scenes'), [spot], false,
+        ), 1);
+      }
+    } catch {
+      // 图鉴读坏了不影响拍照：当没有参考图
+    }
+
+    // 手填补充
+    for (const line of String(this.cfg.imageRefs ?? '').split(/\r?\n/)) {
+      const raw = line.trim();
+      if (!raw) continue;
+      const fp = raw.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(raw) ? raw : resolve(this.opts.dataDir, raw);
+      if (out.paths.includes(fp)) continue;
+      out.paths.push(fp);
+      out.labels.push(fp);
+    }
+    return out;
+  },
+
+  /**
+   * 把路径读成 data URI。读不到、解不出图片、太大，都**跳过并记账**，绝不抛错。
+   *
+   * 体积闸门是必要的：base64 之后按 4/3 膨胀，十张两兆就是二十多兆的请求体，
+   * 上传超时比"少带一张参考图"严重得多。PNG 先缩到长边 1600，JPEG 不重编码
+   * （写 JPEG 编码器是另一个模块的量级，而两兆的 JPEG 在方舟 10MB 内能直发）。
+   */
+  loadRefDataUrls(paths: readonly string[]): { urls: string[]; names: string[]; dropped: string[] } {
+    const urls: string[] = [];
+    const names: string[] = [];
+    const dropped: string[] = [];
+    let total = 0;
+    for (const fp of paths) {
+      if (urls.length >= REF_MAX_COUNT) { dropped.push(fp); continue; }
+      try {
+        let bytes = new Uint8Array(readFileSync(fp));
+        const mime = sniffImage(bytes);
+        if (!mime) { dropped.push(fp); continue; }
+        if (mime === 'image/png') bytes = scalePng(bytes, REF_MAX_EDGE);
+        if (bytes.length > REF_MAX_BYTES) { dropped.push(fp); continue; }
+        if (total + bytes.length > REF_MAX_TOTAL) { dropped.push(fp); continue; }
+        total += bytes.length;
+        urls.push(`data:${mime};base64,${Buffer.from(bytes).toString('base64')}`);
+        names.push(fp.split(/[\\/]/).pop() ?? fp);
+      } catch {
+        dropped.push(fp);
+      }
+    }
+    return { urls, names, dropped };
+  },
+
+  /**
+   * 这个后端吃不吃 `image` 数组？**只认火山方舟系**。
+   *
+   * 方舟 `/images/generations` 的 `image` 支持 string / string[]（5.5 / 5.0 pro /
+   * 5.0 flash 上限 10 张，5.0 lite / 4.5 / 4.0 是 14 张）；OpenAI 官方把图生图
+   * 放在 `/images/edits`（multipart），硅基流动那一支字段叫 `image` 或 `input_image`
+   * 且看模型。**无条件发等于把不是方舟的用户打挂**，所以只按明示的 preset /
+   * 域名 / 模型名放行，其余一律不发图。
+   */
+  refsAllowedBackend(backend: { api?: string; model?: string }): boolean {
+    if (String(this.cfg.imagePreset ?? '').trim() === 'doubao') return true;
+    const host = String(backend.api ?? '').toLowerCase();
+    const model = String(backend.model ?? '').toLowerCase();
+    return /volces\.com|ark\.cn-beijing/.test(host) || /doubao-seedream/.test(model);
+  },
+
+  /** 按文件名在库内找回参考图（重拍沿用旧名单用）。找不到就返回空，交给调用方回退。 */
+  findLibraryRefsByName(names: readonly string[]): string[] {
+    if (!names.length) return [];
+    const pack = this.libraryPack();
+    if (!pack) return [];
+    const out: string[] = [];
+    for (const cat of ['characters', 'outfits', 'scenes', 'props']) {
+      const dir = join(pack.root, cat);
+      if (!existsSync(dir)) continue;
+      for (const sub of readdirSync(dir).sort()) {
+        for (const nm of names) {
+          if (!nm || nm.includes('/') || nm.includes('\\')) continue;
+          const fp = join(dir, sub, nm);
+          if (existsSync(fp) && !out.includes(fp)) out.push(fp);
+        }
+      }
+    }
+    return out;
   },
 
   photoDoingNow(city: { id: string; tz: string }, hour: number): string {

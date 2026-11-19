@@ -130,6 +130,11 @@ export interface PhotoScene {
    */
   readonly cast?: string;
   /**
+   * 有人出镜，但**外观交给参考图**。此时不再写人物描述 ——
+   * 两套外观同时给，模型会各听一半，出来最难看。
+   */
+  readonly castFromRef?: boolean;
+  /**
    * 镜头朝哪：`ground`（默认，脚下的景）还是 `sky`（抬头看天）。
    *
    * 2026-11-05 加。起因是 Mr.Q 要一张星空，她在九寨沟晚上八点 —— 拍出来只有脚边的
@@ -182,6 +187,12 @@ export interface PhotoRequest {
   readonly timeoutMs?: number;
   /** 外部取消信号（如工具被打断时中止请求）。 */
   readonly signal?: AbortSignal;
+  /**
+   * 参考图（`data:image/...;base64,...`）。**只有确认服务端吃这个字段时才传** ——
+   * 见 `world-photo.ts` 的 `refsAllowed()`：方舟系认 `image`，OpenAI 官方与
+   * 硅基流动那一支要么走 `/images/edits`、要么字段叫别的名字。
+   */
+  readonly refs?: readonly string[];
 }
 
 /** 生成结果。字节直接交给宿主，由它算哈希、落 `data/media/`。 */
@@ -195,6 +206,11 @@ export interface PhotoBytes {
     readonly cacheHitTokens: number;
     readonly cacheMissTokens: number;
   };
+  /**
+   * 服务端不收 `image` 字段，已去掉参考图重发成功。
+   * 上层据此把「参考图没生效」写进日志 —— 静默降级会让用户以为图鉴没配好。
+   */
+  readonly refsDropped?: boolean;
 }
 
 /** 默认模型。多数兼容接口都认 `gpt-image-1` 这一套请求体。 */
@@ -1807,7 +1823,9 @@ function minimalPrompt(scene: PhotoScene): string {
   const doingLine = doing && subject !== 'sky' && !describe.includes(doing) ? `${doing}。` : '';
   const tail = cast
     ? `画面里有一个人：${cast}。不要出现可读的文字。`
-    : '没有人物，没有文字。';
+    : scene.castFromRef
+      ? '画面里这个人以参考图为准，保持脸型、发型与服装一致。不要出现可读的文字。'
+      : '没有人物，没有文字。';
 
   const parts = [
     lead,
@@ -2430,6 +2448,7 @@ export function photoPrompt(scene: PhotoScene): string {
     /* 她正在做的事（2026-11-08）。先定场景，再说人。 */
     doingNow ? `正在发生的事：${doingNow.replace(/。+$/, '')}。` : '',
     cast ? `画面里有一个人：${cast}。` : '',
+    scene.castFromRef ? '人物以参考图为准，保持脸型、发型与服装一致。' : '',
     libHintNow && !sky ? `${libHintNow}。` : '',
     skyInfo ? `头顶：${skyInfo.told}。` : '',
     /*
@@ -2465,7 +2484,7 @@ export function photoPrompt(scene: PhotoScene): string {
             ? '胶片颗粒，光偏白，暗部还看得清。'
             : sun.daylit ? '胶片颗粒，轻微过曝。' : '手机夜拍，暗部收敛。')
       : '',
-    cast ? '画面里只有这一个人，不要出现其他人。'
+    (cast || scene.castFromRef) ? '画面里只有这一个人，不要出现其他人。'
       : (sky || scene.onRoad) ? `${NO_PEOPLE}。`
       : spotIndoor ? '远处有几个观众，背对着镜头，看不清脸。'
       : `${FAR_PEOPLE}。`,
@@ -2810,6 +2829,13 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
     prompt: req.prompt,
     response_format: 'b64_json',
   };
+  /*
+   * 参考图。只收 data URI —— 传路径或 URL 的服务端行为各不相同，
+   * 而这里的图全来自本机文件，直传 base64 最不容易出岔子。
+   */
+  const refs = (req.refs ?? []).filter((u) => typeof u === 'string' && u.startsWith('data:image/'));
+  let withRefs = refs.length > 0;
+  if (withRefs) body.image = refs;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (req.key.trim()) headers.authorization = `Bearer ${req.key.trim()}`;
   const timeout = req.timeoutMs ?? PHOTO_TIMEOUT_MS;
@@ -2849,6 +2875,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
     const payload: Record<string, unknown> = { ...body };
     if (withN) payload.n = 1;
     if (!withFormat) delete payload.response_format;
+    if (!withRefs) delete payload.image;
     if (withWatermark) payload.watermark = false;
     if (sizeField) payload[sizeField] = sizeValue;
     return payload;
@@ -2863,7 +2890,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
      */
     for (let i = 0; i < 3 && res.status === 400; i++) {
       const peek = (await res.clone().text()).slice(0, 400);
-      const before = `${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}`;
+      const before = `${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}|${withRefs}`;
       if (/image_size/i.test(peek) && sizeField !== 'image_size') {
         // 硅基流动、阿里百炼那一支：只认 image_size，传 size 直接拒
         sizeField = 'image_size';
@@ -2886,6 +2913,14 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
       } else if (/response_format/i.test(peek) && withFormat) {
         // 不认识这个字段的服务：去掉它，回头看 data[0].url 也能取图
         withFormat = false;
+      } else if (withRefs && /image/i.test(peek)
+        && /(too many|invalid|unsupported|not support|exceed|maximum|超出|不支持|无效)/i.test(peek)) {
+        /*
+         * 服务端不收参考图（或张数超了）。**去掉 image 重发一次** ——
+         * 宁可这一张按纯文生图出来，也不能让拍照整个失败。
+         * 上层会看到 `refsDropped`，把「参考图没生效」写进日志。
+         */
+        withRefs = false;
       } else if (/watermark|水印/i.test(peek) && withWatermark) {
         // 不认识这个字段的服务：去掉，把那一点点水印忍了
         withWatermark = false;
@@ -2893,7 +2928,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
         // 尺寸值本身它不收：什么尺寸都不带，让它用自己的默认值
         sizeField = null;
       }
-      if (`${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}` === before) break;   // 认不出该改什么，别乱试
+      if (`${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}|${withRefs}` === before) break;   // 认不出该改什么，别乱试
       res = await send(build());
     }
   } catch (e) {
@@ -2950,7 +2985,8 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
       const head = Buffer.from(bytes.slice(0, 16)).toString('hex');
       throw new Error(`b64 解出来不是图片（前 16 字节 ${head || '空'}）—— 中转站可能返回了占位符或截断的数据`);
     }
-    return usage ? { bytes, mime, usage } : { bytes, mime };
+    const dropped = refs.length > 0 && !withRefs ? { refsDropped: true as const } : {};
+    return usage ? { bytes, mime, usage, ...dropped } : { bytes, mime, ...dropped };
   }
   if (typeof first.url === 'string' && /^https?:\/\//.test(first.url)) {
     try {
@@ -2962,7 +2998,8 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
       const mime = header.startsWith('image/') && !header.includes('octet-stream')
         ? header
         : sniffImage(buf) ?? 'image/png';
-      return usage ? { bytes: buf, mime, usage } : { bytes: buf, mime };
+      const dropped2 = refs.length > 0 && !withRefs ? { refsDropped: true as const } : {};
+      return usage ? { bytes: buf, mime, usage, ...dropped2 } : { bytes: buf, mime, ...dropped2 };
     } catch (e) {
       if (req.signal?.aborted) throw new Error('生图已取消');
       throw new Error(`拿到了图片地址但下载失败（${e instanceof Error ? e.message : '未知'}）`);

@@ -45,6 +45,15 @@ export interface PhotoRecord {
    * 前端见到空串就说明这张拍得早、没留下提示词。
    */
   readonly prompt?: string;
+  /**
+   * 生成这张时用到的参考图**名单**（文件名，不含目录）。
+   *
+   * 存名单而不是"当前配置"：重拍要复现同一张脸。要是重拍时临时去读现在的
+   * 图鉴配置，用户中途换过参考图，出来的就是另一个人，而相册里还显示同一张。
+   *
+   * 老记录没有这一格，读出来是 undefined —— 按「没有参考图」处理。
+   */
+  readonly refs?: string[];
 }
 
 export class PhotoBook {
