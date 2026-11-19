@@ -1,5 +1,11 @@
 # 更新日志
 
+## 2.0.0 — 2026-11-19（生图极简 v2 重构 + Cortico API v6 原语对齐 + 提示词与 Schema 瘦身）
+
+- **生图提示词重构（Option B）**：`minimalPrompt(scene)` 覆盖全部 6 种 `subject` 与 `onRoad`（含在途 `food`/`detail` 题材优先分支），剔除 6 类画质杀手（元指令废话、季节废话、画质自残词、高速行人、房评 `doing` 噪音、冗余长否定），保留正常酒店窗边/夜间作息句；`describe` 上限扩至 120 字；极简与详细模式均支持 `life-public.json` 暴露的 `libraryDir`（或 `<dataDir>/image-library/`）按名称/别名匹配角色、服饰与场景图鉴；
+- **Cortico API v6 对齐**：`journey_photo` 接入 `interruptible: true` 与 `AbortSignal` 取消（含 ComfyUI 下载阶段快速跳出），接入生图响应 `usage` 至 `host.reportUsage` 与 `host.modelFacts` 看图能力判断；`journey.beat`/`journey.road` 支持 `pushDeferred` + `['snapshot']` 标签且 `journey.road` 延迟渲染实时重算旅途进度；新增同步 `onHandoffEnded()`（独立 `journey.handoff` 事件，`piggyback` + `['snapshot']` 延迟重算）与 `webUi().storage`（`StoragePart[]` 四项 `clear()` 同步重置内存状态、相册索引、多目录日记与跨设备记忆）；
+- **前缀与 Schema 瘦身**：`ENV_PROMPT.md` 由 8,583 字压至 2,825 字；`describe.ts` / `describe.json` 单源同步瘦身并给快照工具打上 `snapshot` 标签。
+
 ## 1.12.18 — 2026-11-18（主谓一致：`you wants` → `you want`）
 
 读者 zzy1053 报的：1.12.14 那次批量把 `she/her` 换成 `you/your`，**只换了代词，动词没跟着变**：

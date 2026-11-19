@@ -17,7 +17,7 @@
  * 之后所有城市都没有照片。所以用的是**她那里的日期**。
  */
 import {
-  existsSync, mkdirSync, readFileSync, renameSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 
@@ -50,10 +50,16 @@ export interface PhotoRecord {
 export class PhotoBook {
   private readonly file: string;
   private items: PhotoRecord[] = [];
+  private gen = 0;
 
   constructor(private readonly dir: string) {
     this.file = join(dir, 'photos.json');
     this.load();
+  }
+
+  /** 当前图鉴代数（每次 clear() 自增，用于拦截在途生图跨清理写回）。 */
+  generation(): number {
+    return this.gen;
   }
 
   list(): readonly PhotoRecord[] {
@@ -69,9 +75,11 @@ export class PhotoBook {
     return this.items.some((p) => p.dateKey === dateKey && p.cityId === cityId);
   }
 
-  add(rec: PhotoRecord): void {
-    this.items = [rec, ...this.items];
-    this.save();
+  add(rec: PhotoRecord, replaceDay?: { dateKey: string; cityId: string }): void {
+    const rest = replaceDay
+      ? this.items.filter((p) => p.dateKey !== replaceDay.dateKey || p.cityId !== replaceDay.cityId)
+      : this.items;
+    this.commit([rec, ...rest]);
   }
 
   /**
@@ -86,10 +94,9 @@ export class PhotoBook {
    * 想彻底删就去媒体目录自己删 —— 面板只负责让它别碍眼。
    */
   remove(handle: string): boolean {
-    const before = this.items.length;
-    this.items = this.items.filter((p) => p.handle !== handle);
-    if (this.items.length === before) return false;
-    this.save();
+    const next = this.items.filter((p) => p.handle !== handle);
+    if (next.length === this.items.length) return false;
+    this.commit(next);
     return true;
   }
 
@@ -112,15 +119,14 @@ export class PhotoBook {
    * 最前面就是最新的），其余全删。这样不论新旧 handle 是否相同都收敛到一条。
    */
   replaceDay(dateKey: string, cityId: string, keepHandle: string): number {
-    const before = this.items.length;
     let kept = false;
-    this.items = this.items.filter((p) => {
+    const next = this.items.filter((p) => {
       if (p.dateKey !== dateKey || p.cityId !== cityId) return true;
       if (p.handle === keepHandle && !kept) { kept = true; return true; }
       return false;
     });
-    const removed = before - this.items.length;
-    if (removed) this.save();
+    const removed = this.items.length - next.length;
+    if (removed) this.commit(next);
     return removed;
   }
 
@@ -134,9 +140,17 @@ export class PhotoBook {
   update(handle: string, rec: PhotoRecord): boolean {
     const i = this.items.findIndex((p) => p.handle === handle);
     if (i < 0) return false;
-    this.items[i] = rec;
-    this.save();
+    const next = [...this.items];
+    next[i] = rec;
+    this.commit(next);
     return true;
+  }
+
+  /** 清空相册索引文件与内存列表（不吞删除异常，供宿主存储管理调用）。 */
+  clear(): void {
+    this.gen += 1;
+    if (existsSync(this.file)) unlinkSync(this.file);
+    this.items = [];
   }
 
   private load(): void {
@@ -173,12 +187,22 @@ export class PhotoBook {
     }
   }
 
-  private save(): void {
+  /** 单次原子提交：写盘失败就恢复内存，不能留下「界面成功、重开丢失」的半状态。 */
+  private commit(next: PhotoRecord[]): void {
+    const before = this.items;
+    this.items = next;
     try {
-      mkdirSync(this.dir, { recursive: true });
-      const tmp = `${this.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ items: this.items }, null, 2), 'utf8');
-      renameSync(tmp, this.file);
-    } catch { /* 写不进去不影响旅行，下一张再试 */ }
+      this.save();
+    } catch (e) {
+      this.items = before;
+      throw e;
+    }
+  }
+
+  private save(): void {
+    mkdirSync(this.dir, { recursive: true });
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ items: this.items }, null, 2), 'utf8');
+    renameSync(tmp, this.file);
   }
 }

@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import type {
-  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, TriggerMode, BlobInput, EventEnvelope, WorldLamp,
+  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, TriggerMode, BlobInput, EventEnvelope, WorldLamp, StoragePart,
 } from 'cortico/core/types.ts';
 import { JOURNEY_ID, journeyConfigGroups, type JourneyConfigSection } from './config.ts';
 import { cityByName, cityById, CITIES, terrainOf, type City } from './geo/cities.ts';
@@ -208,6 +208,95 @@ export const webUiMethods: Record<string, any> = {
           { name: 'journey.actions', description: '当前这套立绘认识的动作名（从 figure.json 现读）。' },
         ],
       }],
+      storage: [
+        {
+          key: 'journey.state',
+          label: '当前行程与状态',
+          kind: 'disk',
+          location: join(this.opts.dataDir, 'state.json'),
+          danger: true,
+          note: '清除后下次启动会从出发地重新规划旅程，不会影响已写的日记文件。',
+          stat: () => {
+            const fp = join(this.opts.dataDir, 'state.json');
+            return existsSync(fp) ? `${Math.max(1, Math.ceil(statSync(fp).size / 1024))} KB（${this.st.phase}）` : '未生成';
+          },
+          clear: () => {
+            const fp = join(this.opts.dataDir, 'state.json');
+            if (existsSync(fp)) unlinkSync(fp);
+            const pubFp = join(this.opts.dataDir, PUBLIC_FILE);
+            if (existsSync(pubFp)) unlinkSync(pubFp);
+            const home = this.resolveHome().city;
+            this.st = {
+              ...initialState(home.id),
+              everVisited: this.st.everVisited,
+              wishes: this.st.wishes,
+              spent: this.st.spent,
+              earned: this.st.earned,
+              pets: this.st.pets,
+              taste: this.st.taste,
+            };
+            this.plan = null;
+            this.pendingBeats.clear();
+            this.photoGeneration += 1;
+            this.pushedKeys.clear();
+            this.writePublic();
+            return '已清除行程状态并回到出发地。';
+          },
+        },
+        {
+          key: 'journey.photos',
+          label: '旅途相册索引',
+          kind: 'disk',
+          location: join(this.opts.dataDir, 'photos.json'),
+          danger: true,
+          note: '清空扩展内相册记录索引（宿主媒体库中的原图文件不受影响）。',
+          stat: () => `${this.photos.count()} 张`,
+          clear: () => {
+            this.photoGeneration += 1;
+            this.photos.clear();
+            return '已清除旅途相册索引。';
+          },
+        },
+        {
+          key: 'journey.diary',
+          label: '旅行日记目录',
+          kind: 'disk',
+          location: this.diary.current.dir,
+          danger: true,
+          note: '不可逆删除所有旅行日记 .md 文件。',
+          stat: () => `${this.diary.count()} 天`,
+          clear: () => {
+            const n = this.diary.clearAll();
+            return `已清理 ${n} 份旅行日记文件。`;
+          },
+        },
+        {
+          key: 'journey.memory',
+          label: '旅行足迹与记忆',
+          kind: 'disk',
+          location: this.travelMemory.file,
+          danger: true,
+          note: '清除曾到访城市、想去清单、花销累计与旅伴印象记录。',
+          stat: () => `${this.st.everVisited.length} 城 / ${this.st.wishes.length} 心愿`,
+          clear: () => {
+            this.travelMemory.clear();
+            this.st = {
+              ...this.st,
+              everVisited: [],
+              wishes: [],
+              spent: 0,
+              earned: 0,
+              pets: {},
+              taste: emptyTaste(),
+            };
+            if (existsSync(join(this.opts.dataDir, 'state.json'))) {
+              this.store.save(this.st);
+            }
+            this.writePublic();
+            return '已清除旅行足迹与记忆文件。';
+          },
+        },
+      ] satisfies StoragePart[],
     };
   },
 

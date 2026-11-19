@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import type {
-  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, TriggerMode, BlobInput, EventEnvelope, WorldLamp,
+  Logger, ToolDef, World, WorldHost, WorldWebUiDecl, TriggerMode, BlobInput, EventEnvelope, WorldLamp, EventTag,
 } from 'cortico/core/types.ts';
 import { JOURNEY_ID, journeyConfigGroups, type JourneyConfigSection } from './config.ts';
 import { cityByName, cityById, CITIES, terrainOf, type City } from './geo/cities.ts';
@@ -240,6 +240,10 @@ export class JourneyWorld implements World {
    * 「今天还没拍」，就会同一张照片付两次钱。
    */
   private shooting = false;
+  /** 每次发起拍照或清空相册/状态时递增，阻止在途生图跨取消/清空写回。 */
+  private photoGeneration = 0;
+  /** senderKey → 尚未结算的 journey.beat 键；A/B 反序结算时只释放各自那一条。 */
+  private pendingBeats = new Map<string, string>();
 
   /** 「尺寸被抬到合规值」这类说明只说一遍。 */
   private imageSizeNoted = false;
@@ -796,6 +800,48 @@ export class JourneyWorld implements World {
     this.versionTimer = null;
     this.host = null;
     this.log = null;
+  }
+
+  /**
+   * 交接结束钩子：同步搭车入队一条当前位置快照事件（piggyback + snapshot），
+   * 在投递当下的 render() 中实时重算最新位置与旅途进度。
+   */
+  onHandoffEnded(): void {
+    const host = this.host;
+    if (!host) return;
+    const senderKey = `handoff-${this.realNow().getTime().toString(36)}`;
+    const renderHandoff = (): string => {
+      const now = this.worldNow();
+      const st = this.st;
+      if (st.phase === 'traveling' && st.leg) {
+        const { from, to } = citiesOf(st.leg);
+        const p = Math.round(progressOf(st.leg, now) * 100);
+        return `[交接恢复位置快照] 正在前往${to?.name ?? st.leg.toId}的途中（已走 ${p}%，从${from?.name ?? st.leg.fromId}出发）。`;
+      }
+      const here = this.cityOrNull(st.hereId);
+      const m = here ? localMoment(now, here.tz) : null;
+      const clock = m ? `当地 ${fmtHour(m.decimal)}` : '';
+      return `[交接恢复位置快照] 目前在${here?.name ?? '当前城市'}${clock ? `（${clock}）` : ''}，处于${st.phase === 'home' ? '在家' : '驻留'}状态。`;
+    };
+    void this.push(
+      'journey.handoff',
+      senderKey,
+      renderHandoff(),
+      'piggyback',
+      undefined,
+      { dedupe: false, tags: ['snapshot'], deferredRender: renderHandoff },
+    );
+  }
+
+  /**
+   * 宿主事件结算回执：journey.beat 结算后释放待投递标记。
+   */
+  onEventsSettled(events: readonly EventEnvelope[], _outcome?: 'delivered' | 'discarded'): void {
+    for (const ev of events) {
+      if (ev.type === 'journey.beat') {
+        this.pendingBeats.delete(ev.senderKey);
+      }
+    }
   }
 
 
@@ -1643,7 +1689,19 @@ export class JourneyWorld implements World {
     const song = idx === 1 ? songLine(this.currentSong()) : '';
     // 剩余时间按**真实进度**算，不再用 idx 反推（短途用 idx=1 反推会差一截）。
     const text = roadText(mode.id, idx, leg, from, to, hour, p) + song;
-    await this.push('journey.road', `road-${key}`, text, 'debounce');
+    const legId = leg.id;
+    await this.push('journey.road', `road-${key}`, text, 'debounce', undefined, {
+      tags: ['snapshot'],
+      deferredRender: () => {
+        const curLeg = this.st.leg;
+        if (this.st.phase !== 'traveling' || !curLeg || curLeg.id !== legId) return null;
+        const curNow = this.worldNow();
+        const curP = progressOf(curLeg, curNow);
+        const curHour = localHour(curNow, from.tz);
+        const curSong = idx === 1 ? songLine(this.currentSong()) : '';
+        return roadText(mode.id, idx, curLeg, from, to, curHour, curP) + curSong;
+      },
+    });
 
     /*
      * 路上也拍一张。
@@ -2809,22 +2867,13 @@ export class JourneyWorld implements World {
    * 内存集合够用：重启后 `pledge` 已经落盘结清，不会重新走到那里。
    * 真需要跨重启去重时再落盘 —— 现在加上只会让 state 多一份要维护的东西。
    */
-  private async push(
+  async push(
     type: string,
     senderKey: string,
     text: string,
     trigger: TriggerMode,
     blobs?: BlobInput[],
-    /**
-     * `dedupe: false` = 这条不参与去重。
-     *
-     * 只给**带副作用、且「重复」本身是合法操作**的事件用 —— 目前只有照片：
-     * 他点了「重拍」、或者让她「再拍一张」，两次的 key 都是
-     * `photo-<日期>-<场景>`，去重会把它当成重放吞掉，而用户看到的是
-     * 「宿主没返回图片句柄」—— 一个和真正原因毫无关系的报错
-     * （2026-11-15，GitHub Discussion #586）。
-     */
-    opts?: { dedupe?: boolean },
+    opts?: { dedupe?: boolean; tags?: EventTag[]; deferredRender?: () => string | null },
   ): Promise<EventEnvelope | null> {
     const host = this.host;
     if (!host) return null;
@@ -2835,13 +2884,29 @@ export class JourneyWorld implements World {
       }
       this.pushedKeys.add(senderKey);
     }
+    if (opts?.deferredRender && typeof host.pushDeferred === 'function' && host.pushDeferred.length > 0 && !(blobs && blobs.length)) {
+      const renderFn = opts.deferredRender;
+      host.pushDeferred({
+        type,
+        senderKey,
+        ...(opts.tags?.length ? { tags: opts.tags } : {}),
+        render: () => {
+          const out = renderFn();
+          return out ? { text: out } : null;
+        },
+      }, { trigger });
+      return null;
+    }
+    const finalText = opts?.deferredRender ? opts.deferredRender() : text;
+    if (!finalText) return null;
     return await host.pushEvent({
       type,
       source: this.id,
       senderKey,
       // 事件时间戳用真实时刻：宿主用它排序和补投，跟世界时间不是一条轴。
       ts: this.realNow().toISOString(),
-      text,
+      text: finalText,
+      ...(opts?.tags?.length ? { tags: opts.tags } : {}),
       ...(blobs && blobs.length ? { blobs } : {}),
     }, { trigger });
   }
@@ -2974,22 +3039,12 @@ export class JourneyWorld implements World {
         description: decl[6].description,
         parameters: decl[6].parameters,
         tags: [...decl[6].tags],
-        handler: async (args) => {
+        interruptible: true,
+        handler: async (args, ctx) => {
           const a = (args ?? {}) as { view?: string; subject?: string; focus?: string; describe?: string };
-          /*
-           * 题材优先看 `subject`；没给就退回老的 `view` 语义（2026-11-06）。
-           * 用户说「拍晚饭」，模型会给 subject=food —— 这一格就是为了那句话。
-           */
           const subject = (a.subject ?? (a.view === 'sky' ? 'sky' : 'ground')) as PhotoSubject;
-          /*
-           * `view` 和 `subject` 是两条独立的线，但 `sky` 同时属于两边。
-           *
-           * 2026-11-06 补：只传了 `a.view`，模型若写 `subject="sky"` 而不写 `view`
-           * （工具描述允许这样），`view` 就退回 `ground` —— 提示词在拍天，
-           * 回执里却没有星的判定，她只能瞎说。两边任一为 sky 都算抬头。
-           */
           const view = (a.view === 'sky' || subject === 'sky' ? 'sky' : 'ground') as 'ground' | 'sky';
-          return this.takePhotoForUser(view, subject, a.focus ?? '', a.describe ?? '');
+          return this.takePhotoForUser(view, subject, a.focus ?? '', a.describe ?? '', ctx?.signal);
         },
       },
       {

@@ -1508,7 +1508,7 @@ export const purseMethods: Record<string, any> = {
        * 默认 `en`，老用户一个字节不变。
        */
       'journey.imageLang': this.cfg.imagePromptLang === 'zh'
-        ? '中文。这个后端读中文（Qwen-Image / Kolors 这类），写中文细节不会丢 —— 而且中文更短，不容易撞 `describe` 的 60 字上限。'
+        ? '中文。这个后端原生理解中文，写中文细节更准、也不易撞 `describe` 的 120 字上限。'
         : '英文。这个后端是 CLIP 系（SDXL / SD1.5 / Flux），写中文会出乱码和画笔字水印。',
       /*
        * **「只有她一个人」这句话太弱，模型会自己补一个同行者（2026-11-11）。**

@@ -26,12 +26,13 @@ import { DatabaseSync } from 'node:sqlite';
 
 const worker = (await import('../cloud/sight-cf/src/worker.js')).default;
 
-const POOL_KEY = 'https://sight.test/__pool-count';
+const POOL_CACHE_MS = 15 * 60_000;
+const poolKey = () => `https://sight-count.internal/v2/${Math.floor(Date.now() / POOL_CACHE_MS)}`;
 
 /**
- * 真 SQLite 当 D1，顺便数一下「贵查询」跑了几次。
+ * 真 SQLite 当 D1，顺便数一下「贵查询」（`poolToday` 今日全池去重计数）跑了几次。
  *
- * 只数 `COUNT(DISTINCT uid)` —— 那才是要省的那条。
+ * 只数全池今日 `COUNT(DISTINCT uid)`（不带 `city = ?1`，且起点为 UTC 零点）—— 那才是 15 分钟缓存要省的那条。
  */
 function makeDB() {
   const db = new DatabaseSync(':memory:');
@@ -40,10 +41,20 @@ function makeDB() {
   const api = {
     stats,
     prepare(sql) {
-      if (sql.includes('COUNT(DISTINCT uid)')) stats.poolQueries += 1;
       let args = [];
       const stmt = {
-        bind(...a) { args = a; return stmt; },
+        bind(...a) {
+          args = a;
+          if (
+            sql.includes('COUNT(DISTINCT uid)')
+            && !sql.includes('city =')
+            && typeof a[0] === 'string'
+            && a[0].endsWith('T16:00:00.000Z')
+          ) {
+            stats.poolQueries += 1;
+          }
+          return stmt;
+        },
         async first() { return db.prepare(sql).get(...args) ?? undefined; },
         async all() { return { results: db.prepare(sql).all(...args) }; },
         async run() {
@@ -147,19 +158,19 @@ test('三处调用共享同一份缓存：status / 邻居 / 落地页', async (t
 
 test('缓存里是坏数据 → 当没命中，照常查库', async (t) => {
   const cache = fakeCache();
-  cache.store.set(POOL_KEY, { body: 'not json at all', headers: {} });
+  cache.store.set(poolKey(), { body: 'not json at all', headers: {} });
   withCache(t, cache);
   const env = { DB: makeDB() };
 
   const r = await worker.fetch(statusReq(), env, {});
   assert.equal(r.status, 200);
   assert.equal(r.headers.get('x-pool-cache'), 'miss');
-  assert.equal(env.DB.stats.poolQueries, 2, '坏缓存要退回直查（两条查询）');
+  assert.equal(env.DB.stats.poolQueries, 1, '坏缓存要退回直查 poolToday');
 });
 
 test('缓存层自己抛异常 → 当没命中，照常查库', async (t) => {
   const cache = fakeCache();
-  cache.store.set(POOL_KEY, new Error('cache exploded'));
+  cache.store.set(poolKey(), new Error('cache exploded'));
   withCache(t, cache);
   const env = { DB: makeDB() };
 
@@ -174,7 +185,7 @@ test('查库失败时不往缓存里写脏数（额度耗尽就靠这条）', as
 
   /*
    * 造一个「D1 拒绝查询」的库：真额度耗尽时就是抛错。
-   * 关键断言是**缓存里什么都没留下** —— 否则一次失败会被放大成 60 秒的「池子 0 只」。
+   * 关键断言是**缓存里什么都没留下** —— 否则一次失败会被放大成 15 分钟的「池子 0 只」。
    */
   const env = {
     DB: {
@@ -184,5 +195,5 @@ test('查库失败时不往缓存里写脏数（额度耗尽就靠这条）', as
 
   const r = await worker.fetch(statusReq(), env, {});
   assert.equal(r.status, 500);
-  assert.equal(cache.store.has(POOL_KEY), false, '失败结果绝不能进缓存');
+  assert.equal(cache.store.has(poolKey()), false, '失败结果绝不能进缓存');
 });

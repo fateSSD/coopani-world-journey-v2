@@ -81,6 +81,8 @@ export interface ComfyRequest {
   /** 反代加了鉴权才要。本地 ComfyUI 一般是空的。 */
   readonly key?: string;
   readonly timeoutMs?: number;
+  /** 外部取消信号（如工具被打断时中止轮询）。 */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -688,12 +690,16 @@ export async function shootComfy(req: ComfyRequest): Promise<PhotoBytes> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (req.key?.trim()) headers.authorization = `Bearer ${req.key.trim()}`;
 
-  const send = (path: string, init?: RequestInit): Promise<Response> =>
-    fetch(`${base}${path}`, {
+  if (req.signal?.aborted) throw new Error('生图已取消');
+  const send = (path: string, init?: RequestInit): Promise<Response> => {
+    const to = AbortSignal.timeout(Math.min(timeout, 60_000));
+    const sig = req.signal ? AbortSignal.any([to, req.signal]) : to;
+    return fetch(`${base}${path}`, {
       ...init,
       headers: init?.headers ?? headers,
-      signal: AbortSignal.timeout(Math.min(timeout, 60_000)),
+      signal: sig,
     });
+  };
 
   // ---- 1. 提交 ----
   let promptId = '';
@@ -728,6 +734,7 @@ export async function shootComfy(req: ComfyRequest): Promise<PhotoBytes> {
       throw new Error('ComfyUI 收下了但没给 prompt_id，取不到结果');
     }
   } catch (e) {
+    if (req.signal?.aborted) throw new Error('生图已取消');
     if (ours) throw e;
     throw connectError(e, base);
   }
@@ -746,6 +753,7 @@ export async function shootComfy(req: ComfyRequest): Promise<PhotoBytes> {
   const deadline = Date.now() + timeout;
   let history: unknown = {};
   for (;;) {
+    if (req.signal?.aborted) throw new Error('生图已取消');
     try {
       const res = await send(`/history/${promptId}`);
       if (res.ok) history = await res.json();
@@ -753,6 +761,7 @@ export async function shootComfy(req: ComfyRequest): Promise<PhotoBytes> {
       // 轮询期间偶发断连不算失败，下一轮再说
     }
     if (historyEntry(history, promptId)) break;
+    if (req.signal?.aborted) throw new Error('生图已取消');
     if (Date.now() > deadline) {
       throw new Error(
         `等了 ${Math.round(timeout / 1000)} 秒还没画完。首次运行要加载模型，慢是正常的 —— `
@@ -776,6 +785,7 @@ export async function shootComfy(req: ComfyRequest): Promise<PhotoBytes> {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     bytes = new Uint8Array(await res.arrayBuffer());
   } catch (e) {
+    if (req.signal?.aborted) throw new Error('生图已取消');
     const why = e instanceof Error ? e.message : '未知';
     throw new Error(`图生成了但下不回来（${why}）`);
   }

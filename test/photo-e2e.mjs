@@ -135,7 +135,15 @@ function fakeHost() {
 
 async function makeWorld(cfgOver = {}, now) {
   const dir = mkdtempSync(join(tmpdir(), 'jr-photo-'));
-  const cfg = { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', ...cfgOver };
+  // 这些用例测的是完整生图链路；只填 imageApi 时补齐其余必填项。
+  // 显式传空字符串的用例仍覆盖「未配置 / 缺模型」本身，不被这层默认值盖住。
+  const cfg = {
+    ...JOURNEY_DEFAULTS(),
+    enabled: true,
+    homeCity: '兰州',
+    ...(cfgOver.imageApi ? { imageKey: 'sk-test', imageModel: 'gpt-image-1' } : {}),
+    ...cfgOver,
+  };
   const world = new JourneyWorld({
     cfg, dataDir: dir, botName: '大肥鱼', now: now ?? (() => new Date('2026-10-31T12:00:00Z')),
   });
@@ -507,7 +515,7 @@ test('在路上点「现在补一张」：拍窗外，不拍出发城市的街�
     });
 
     const world = new JourneyWorld({
-      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', imageApi: api.api, imageKey: 'sk-test' },
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', imageApi: api.api, imageKey: 'sk-test', imageModel: 'gpt-image-1' },
       dataDir: dir, botName: '大肥鱼',
       now: () => new Date('2026-11-03T04:00:00Z'), // 北京 12:00
     });
@@ -536,7 +544,7 @@ test('在路上点「现在补一张」：拍窗外，不拍出发城市的街�
 
 const photoTool = (world) => world.tools().find((t) => t.name === 'journey_photo');
 
-test('工具表里有 journey_photo：两个可选参数 view + subject', async () => {
+test('工具表里有 journey_photo：四个可选参数 view + subject + describe + focus', async () => {
   const { world } = await makeWorld();
   const tool = photoTool(world);
   assert.ok(tool, '工具表里没有 journey_photo —— 她还是只能让人去点按钮');
@@ -595,8 +603,8 @@ test('工具表里有 journey_photo：两个可选参数 view + subject', async 
    * 只说「写一句画面」等于给她一支笔，她会拿去写不存在的花和雪。
    */
   const descDesc = String(tool.parameters.properties.describe?.description ?? '');
-  assert.match(descDesc, /60/, '没说清 60 字上限');
-  assert.match(descDesc, /WHAT IS IN THE FRAME/i, '没说清它管画面内容');
+  assert.match(descDesc, /120/, '没说清 120 字上限');
+  assert.match(descDesc, /frame content|WHAT IS IN THE FRAME/i, '没说清它管画面内容');
   assert.match(descDesc, /Never add|do not have/i,
     '没写「不许加本来不在那儿的东西」—— 这条边界一松，真实性就没了');
   /*
@@ -605,7 +613,7 @@ test('工具表里有 journey_photo：两个可选参数 view + subject', async 
    */
   const focusDesc = String(tool.parameters.properties.focus?.description ?? '');
   assert.match(focusDesc, /framing|HOW to frame/i, '没说清 focus 管取景');
-  assert.match(focusDesc, /not actually there|do not use it to add/i,
+  assert.match(focusDesc, /never add absent|not actually there|do not use it to add/i,
     '没写「不许加本来不在那儿的东西」—— 这条边界一松，真实性就没了');
   assert.deepEqual(tool.parameters.required ?? [], [], '都不能是必填 —— 不填就是脚下那张');
   assert.ok(tool.tags.includes('write'), '它会花钱、会写照片簿，不该标成只读');
@@ -613,7 +621,7 @@ test('工具表里有 journey_photo：两个可选参数 view + subject', async 
    * 描述是模型挑工具时读的第一手材料。只写「拍一张照片」，她仍可能客气地
    * 让人去点按钮 —— 那正是这次反馈要堵的那句话。
    */
-  assert.match(String(tool.description), /never tell them to press a button/i,
+  assert.match(String(tool.description), /never tell (them|the user) to press a (UI )?button/i,
     '描述里没堵住「让他去点按钮」这条路');
   // 抬头那张的边界必须写在描述里，否则她会以为「要什么就有什么」。
   assert.match(String(tool.description), /view="sky"/i, '描述里没说清楚抬头怎么拍');
@@ -726,7 +734,7 @@ test('她在路上被要照片：拍窗外，不拍出发城市的街景', async
       tripStartedAt: '2026-11-01T00:00:00Z',
     });
     const world = new JourneyWorld({
-      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', imageApi: api.api, imageKey: 'sk-test' },
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', imageApi: api.api, imageKey: 'sk-test', imageModel: 'gpt-image-1' },
       dataDir: dir, botName: '大肥鱼',
       now: () => new Date('2026-11-03T04:00:00Z'), // 当地 12:00
     });

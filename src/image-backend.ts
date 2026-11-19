@@ -192,3 +192,10 @@ export function resolveImageBackend(cfg: {
       : '',
   };
 }
+
+/** 根据后端预设推荐极简提示词与语言模式。 */
+export function presetHints(preset?: string): { readonly minimal: boolean; readonly lang: 'zh' | 'en' } {
+  const key = (preset ?? '').trim().toLowerCase();
+  if (key === 'doubao') return { minimal: true, lang: 'zh' };
+  return { minimal: false, lang: 'en' };
+}

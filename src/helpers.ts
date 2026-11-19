@@ -178,15 +178,20 @@ export function clockInText(t: string): number | null {
  * 不做时间轴解析。
  */
 export function stripClashClock(what: string, at: number): string {
-  const found = clockInText(what);
+  const re = /(\d{1,2})\s*[:：]\s*(\d{2})|([一二两三四五六七八九十]{1,3})点(半)?/;
+  const m = re.exec(what);
+  if (!m) return what;
+  // 豁免「当地日出 七点半」「当地日落 六点」这类日出日落附注，不能当成与格子时刻冲突剥除
+  const before = what.slice(0, m.index);
+  if (/(?:日出|日落)\s*$/.test(before)) return what;
+  const found = clockInText(m[0]);
   /*
    * 3 分钟以内不算矛盾。人写钟点会取整会手滑，而 `findSlotBeat` 那头的精确匹配
    * 用的是 1.2 分钟（找格子要准），**判冲突不需要那么准** —— 用同一个阈值会把
    * 「7:02 起床」当成冲突剥掉，正好剥掉她本来写对的东西。
    */
   if (found === null || Math.abs(found - at) < 0.05) return what;
-  const clean = what
-    .replace(/(\d{1,2})\s*[:：]\s*(\d{2})|[一二两三四五六七八九十]{1,3}点(半)?/, '')
+  const clean = (what.slice(0, m.index) + what.slice(m.index + m[0].length))
     .replace(/[，,]{2,}/g, '，')
     .replace(/^[，,、\s]+/, '')
     .trim();

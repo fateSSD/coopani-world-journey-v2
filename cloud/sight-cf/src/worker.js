@@ -170,10 +170,14 @@ async function poolToday(db, ctx) {
   const cache = typeof caches === 'object' && caches.default ? caches.default : null;
   const key = new Request(`https://sight-count.internal/v2/${Math.floor(Date.now() / POOL_CACHE_MS)}`);
   if (cache) {
-    const hit = await cache.match(key);
-    if (hit) {
-      const j = await hit.json().catch(() => null);
-      if (j && Number.isFinite(j.pool)) return j.pool;
+    try {
+      const hit = await cache.match(key);
+      if (hit) {
+        const j = await hit.json().catch(() => null);
+        if (j && Number.isFinite(j.pool)) return { pool: j.pool, cache: 'hit' };
+      }
+    } catch {
+      // 缓存层异常时降级直查 D1，不拖垮接口
     }
   }
 
@@ -182,15 +186,22 @@ async function poolToday(db, ctx) {
   ).bind(todayStartIso()).first();
   const pool = Number(row?.n ?? 0) || 0;
 
-  if (cache && ctx && typeof ctx.waitUntil === 'function') {
-    ctx.waitUntil(cache.put(key, new Response(JSON.stringify({ pool }), {
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        'cache-control': `public, max-age=${Math.round(POOL_CACHE_MS / 1000)}`,
-      },
-    })));
+  if (cache) {
+    const putTask = Promise.resolve()
+      .then(() => cache.put(key, new Response(JSON.stringify({ pool }), {
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': `public, max-age=${Math.round(POOL_CACHE_MS / 1000)}`,
+        },
+      })))
+      .catch(() => {});
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(putTask);
+    } else {
+      await putTask;
+    }
   }
-  return pool;
+  return { pool, cache: 'miss' };
 }
 
 /** 此刻在线多少只。只扫最近 30 分钟，便宜到可以每次现算。 */
@@ -202,8 +213,8 @@ async function onlineNow(db) {
 }
 
 async function poolAndOnline(db, ctx) {
-  const [pool, online] = await Promise.all([poolToday(db, ctx), onlineNow(db)]);
-  return { pool, online };
+  const [poolRes, online] = await Promise.all([poolToday(db, ctx), onlineNow(db)]);
+  return { pool: poolRes.pool, online, cache: poolRes.cache };
 }
 
 const CORS = {
@@ -218,10 +229,10 @@ const CORS = {
   'access-control-max-age': '86400',
 };
 
-const reply = (status, body) => new Response(JSON.stringify(body), {
+const reply = (status, body, extraHeaders = {}) => new Response(JSON.stringify(body), {
   status,
   // 接口数据一律不缓存：改名之后要立刻看到新名字，不能被浏览器或边缘拿旧响应糊过去。
-  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...CORS },
+  headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...CORS, ...extraHeaders },
 });
 
 /* ------------------------------------------------------------------
@@ -1412,7 +1423,7 @@ async function statusRoute(request, env, url, ctx) {
         meet: clean(r.meet_city, 40),
         pace: Number(r.pace) || 0,
       })),
-    });
+    }, { 'x-pool-cache': counts.cache ?? 'miss' });
   } catch (e) {
     recordError(env, null, '[sight status]', e, '/sight/status');
     return reply(500, { ok: false, error: 'server error' });
@@ -1579,19 +1590,16 @@ const maskUid = (uid) => (typeof uid === 'string' && uid.length > 8
  * 所以根路径给人看，未知子路径照旧 404（不给扫描器留探测面）。
  * 顺手把「今天池子里有几只」打出来 —— 这是最快能证明「服务活着」的数字。
  */
-async function landingPage(env, url) {
+async function landingPage(env, url, ctx) {
   const today = new Date().toISOString().slice(0, 10);
   let pool = 0;
   let online = 0;
   try {
-    const [a, b] = await Promise.all([
-      env?.DB?.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?')
-        .bind(todayStartIso()).first(),
-      env?.DB?.prepare('SELECT COUNT(DISTINCT uid) AS n FROM presence INDEXED BY idx_presence_at_uid WHERE at >= ?')
-        .bind(onlineSinceIso()).first(),
-    ]);
-    pool = Number(a?.n ?? 0) || 0;
-    online = Number(b?.n ?? 0) || 0;
+    if (env?.DB) {
+      const counts = await poolAndOnline(env.DB, ctx);
+      pool = counts.pool;
+      online = counts.online;
+    }
   } catch { /* 数据库没就绪也不该让这页 500 —— 它只是说明页 */ }
 
   const origin = url.origin;
@@ -2182,7 +2190,7 @@ export default {
     /* 本城设定：公开只读。给目录、健康检查、别的城用（§4.18）。 */
     if (path === '/town/info') return townInfoRoute(env);
     // 根路径给人看（浏览器里打开的那种），别回一句 not found。
-    if (path === '/' && (method === 'GET' || method === 'HEAD')) return landingPage(env, url);
+    if (path === '/' && (method === 'GET' || method === 'HEAD')) return landingPage(env, url, ctx);
     // 管鱼页：同一个域名发出去，国内能打开；页面里地址栏会自动填成它自己。
     /*
      * 管鱼页有**两个地址**（2026-11-11）：

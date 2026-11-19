@@ -511,11 +511,29 @@ export const planMethods: Record<string, any> = {
      */
     const patched = this.applyPlanPatches(fresh, c.id, moment.dateKey);
     const pushedAt = this.lastPushedAt(moment.dateKey);
+    const lodgingChanged = Boolean(
+      prevPlan
+      && (prevPlan.lodging?.name !== patched.lodging?.name || prevPlan.lodging?.price !== patched.lodging?.price),
+    );
+    const pendingKeys = new Set(
+      [...this.pendingBeats.values()].filter((key: string) => key.startsWith(`${fresh.dateKey}|`)),
+    );
     this.plan = prevPlan && prevPlan.dateKey === fresh.dateKey && pushedAt !== null
       ? {
           ...patched,
           beats: [
-            ...prevPlan.beats.filter((b) => b.at <= pushedAt),
+            ...prevPlan.beats
+              .filter((b) => b.at <= pushedAt)
+              .map((b) => {
+                // 尚未真投递的 deferred 节点或因 changeLodging() 换店的 hotel 节点，不再锁定旧文案
+                const isPendingBeat = pendingKeys.has(`${fresh.dateKey}|${b.kind}|${b.at}`);
+                if (isPendingBeat || (lodgingChanged && b.kind === 'hotel')) {
+                  return patched.beats.find((nb) => nb.kind === b.kind && nb.at === b.at)
+                    ?? (b.kind === 'hotel' ? patched.beats.find((nb) => nb.kind === 'hotel') : undefined)
+                    ?? b;
+                }
+                return b;
+              }),
             ...patched.beats.filter((b) => b.at > pushedAt),
           ],
         }
@@ -637,7 +655,37 @@ export const planMethods: Record<string, any> = {
     //   `arrive` —— 由 `journey.arrive` 事件负责，再推一遍就是同一件事说两遍。
     if (last.kind === 'sleep' || last.kind === 'arrive') return;
     const trigger: TriggerMode = last.kind === 'hotel' || last.kind === 'sunrise' ? 'flush' : 'debounce';
-    await this.push('journey.beat', `beat-${dateKey}-${last.kind}-${last.at}`, text, trigger);
+    const usesDeferred = Boolean(
+      this.host && typeof this.host.pushDeferred === 'function' && this.host.pushDeferred.length > 0,
+    );
+    const senderKey = `beat-${dateKey}-${last.kind}-${last.at}`;
+    if (usesDeferred) this.pendingBeats.set(senderKey, key);
+    const clearPending = () => {
+      if (this.pendingBeats.get(senderKey) === key) this.pendingBeats.delete(senderKey);
+    };
+    await this.push('journey.beat', senderKey, text, trigger, undefined, {
+      tags: ['snapshot'],
+      deferredRender: () => {
+        if (this.st.lastBeatKey !== key || this.st.phase !== 'staying' || !this.plan) {
+          clearPending();
+          return null;
+        }
+        const liveCity = cityById(this.st.hereId ?? '');
+        if (!liveCity || liveCity.id !== city.id) {
+          clearPending();
+          return null;
+        }
+        const liveRest = this.st.rest;
+        const isResting = liveRest && liveRest.dateKey === dateKey;
+        const liveBeat = this.plan.beats.find((b) => b.kind === last.kind && b.at === last.at)
+          ?? (last.kind === 'hotel' ? this.plan.beats.find((b) => b.kind === 'hotel') : undefined);
+        if (!liveBeat || (isResting && liveBeat.kind === 'activity' && liveBeat.at >= liveRest.from)) {
+          clearPending();
+          return null;
+        }
+        return beatText(liveCity, this.plan, liveBeat.kind, liveBeat.at, liveBeat.what, liveBeat.pilgrim) + skippedNote;
+      },
+    });
 
     /* 旅行节点反哺 life 五维（不扣钱，请客模式同样生效）。 */
     const tier = plan.lodging?.tier ?? 'budget';

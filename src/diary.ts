@@ -29,7 +29,7 @@
  *    "配了但用不了"是错误 —— 共用一个字段，用户要么忽略真错误，要么被正常状态烦到。
  */
 import {
-  mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { cityById } from './geo/cities.ts';
@@ -50,6 +50,9 @@ const DAY_FILE = /^(\d{4}-\d{2}-\d{2})(?:[-_ ].*)?\.md$/;
 
 /** `2026-11.md` 与 `2026-11-笔记本.md`：月文件。第三段必须以非数字开头，否则那是日文件。 */
 const MONTH_FILE = /^(\d{4}-\d{2})(?:[-_ ][^\d].*)?\.md$/;
+
+/** 文件名只用于缩小候选范围；删除前还必须核验内容，不能凭 `2026-11.md` 误删用户笔记。 */
+const isDiaryName = (name: string): boolean => MONTH_FILE.test(name) || DAY_FILE.test(name);
 
 const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -124,6 +127,18 @@ export function parseDiaryFile(text: string): DiaryEntry[] {
     const stop = i + 1 < hits.length ? hits[i + 1].start : text.length;
     return entryOf(h.meta, text.slice(h.end, stop), h.date);
   });
+}
+
+/** 删除前的内容证明：月文件要有扩展标题，日文件要有匹配日期的完整日记 frontmatter。 */
+function isVerifiedDiaryFile(name: string, text: string): boolean {
+  const entries = parseDiaryFile(text).filter((e) => Boolean(e.cityId));
+  const month = MONTH_FILE.exec(name);
+  if (month) {
+    return text.startsWith(monthTitle(month[1]))
+      && entries.some((e) => e.dateKey.startsWith(`${month[1]}-`));
+  }
+  const day = DAY_FILE.exec(name);
+  return Boolean(day && entries.some((e) => e.dateKey === day[1]));
 }
 
 export interface DiaryHealth {
@@ -250,7 +265,7 @@ export class DiaryStore {
     try { names = readdirSync(dir); } catch { return ''; }
     const bits: string[] = [];
     for (const name of names.sort()) {
-      if (!MONTH_FILE.test(name) && !DAY_FILE.test(name)) continue;
+      if (!isDiaryName(name)) continue;
       try {
         const st = statSync(join(dir, name));
         bits.push(`${name}:${st.mtimeMs}:${st.size}`);
@@ -328,7 +343,12 @@ export class DiaryStore {
     for (const name of days) {
       const path = join(dir, name);
       let entries: DiaryEntry[];
-      try { entries = parseDiaryFile(readFileSync(path, 'utf8')); } catch { continue; }
+      try {
+        const text = readFileSync(path, 'utf8');
+        // 文件名撞成旧日报不够：日期与 cityId 必须能对上，普通笔记不参与迁移。
+        if (!isVerifiedDiaryFile(name, text)) continue;
+        entries = parseDiaryFile(text);
+      } catch { continue; }
       for (const e of entries) {
         const monthKey = e.dateKey.slice(0, 7);
         const list = byMonth.get(monthKey) ?? [];
@@ -354,7 +374,12 @@ export class DiaryStore {
     for (const name of this.safeNames(dir)) {
       if (!DAY_FILE.test(name)) continue;
       if (!name.startsWith(monthKey)) continue;   // 只挪这个月的，别越界
-      try { renameSync(join(dir, name), join(bak, name)); } catch { /* 挪不动就留着，不影响读 */ }
+      const source = join(dir, name);
+      try {
+        // 同月普通笔记不能因为另一份真日记迁移成功就被顺带挪走。
+        if (!isVerifiedDiaryFile(name, readFileSync(source, 'utf8'))) continue;
+        renameSync(source, join(bak, name));
+      } catch { /* 挪不动就留着，不影响读 */ }
     }
   }
 
@@ -479,5 +504,36 @@ export class DiaryStore {
       if (seen.length >= limit) break;
     }
     return seen;
+  }
+
+  /**
+   * 清理配置目录与本机兜底目录中由本扩展生成的全部日记 `.md` 及 `_bak` 归档文件，
+   * 跳过同目录下用户的其它普通 `.md` 文件，并清空内存缓存（不吞删除异常）。
+   */
+  clearAll(): number {
+    const dirs = this.dir === this.local ? [this.local] : [this.dir, this.local];
+    let removed = 0;
+    const clearDir = (dirPath: string): void => {
+      if (!existsSync(dirPath)) return;
+      for (const name of readdirSync(dirPath)) {
+        if (!isDiaryName(name)) continue;
+        const file = join(dirPath, name);
+        let text: string;
+        try { text = readFileSync(file, 'utf8'); } catch { continue; }
+        if (!isVerifiedDiaryFile(name, text)) continue;
+        unlinkSync(file);
+        removed++;
+      }
+    };
+    for (const d of dirs) {
+      if (!existsSync(d)) continue;
+      clearDir(d);
+      const bakDir = join(d, '_bak');
+      clearDir(bakDir);
+      clearDir(join(bakDir, 'legacy'));
+    }
+    this.cacheKey = '';
+    this.cache.clear();
+    return removed;
   }
 }

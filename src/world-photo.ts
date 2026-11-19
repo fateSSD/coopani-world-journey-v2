@@ -425,14 +425,9 @@ export const photoMethods: Record<string, any> = {
     focus = '',
     /** 她自己写的画面内容（2026-11-10）。放最后，理由同 `focus`。 */
     describe = '',
-    /**
-     * 面板「重新生成」用的覆盖项（2026-11-11，用户 TwoTwo：AI 生成的照片不满意）。
-     *
-     * **只做两件事**：换成他在相册页改过的那段提示词、原位替换掉指定的那条记录。
-     * 不参与任何判断 —— 判重、时间窗、题材都是「拍新的一张」才要问的，
-     * 重拍一张已有的照片，他已经替它决定过了（所以调用方传 replace=true）。
-     */
     override?: { prompt: string; replaceHandle: string; title?: string },
+    /** 外部取消信号（如工具被打断时中止请求）。 */
+    signal?: AbortSignal,
   ): Promise<{ ok: boolean; reason?: string; title?: string; sky?: SkyView }> {
     /*
      * 跳过时给一句人话。**手动（replace）记 info，自动只记 debug** ——
@@ -444,7 +439,11 @@ export const photoMethods: Record<string, any> = {
       return { ok: false, reason };
     };
 
-    if (this.shooting) return skip('上一张还没拍完');
+    if (this.shooting) {
+      // 重拍即使被并发闸挡住，也必须让旧请求失效；否则旧图仍会在稍后写回相册。
+      if (override) this.photoGeneration += 1;
+      return skip('上一张还没拍完');
+    }
     /*
      * **配置问题要在发请求之前说清，而且要放在最前面。**
      *
@@ -510,6 +509,45 @@ export const photoMethods: Record<string, any> = {
       ?? (onRoad && subject === 'ground'
         ? `${city.name}一带的路上`
         : photoTitle(city.name, spot, hour, view, subject));
+    const reqGen = ++this.photoGeneration;
+    const bookGen = this.photos.generation();
+    const isStale = (): boolean => (
+      Boolean(signal?.aborted)
+      || this.photoGeneration !== reqGen
+      || this.photos.generation() !== bookGen
+    );
+    // 仅外部取消时，本请求仍拥有结果状态；清相册/新重拍作废旧代次后不得覆盖新状态。
+    const recordOwnedFailure = (reason: string): void => {
+      if (this.photoGeneration !== reqGen || this.photos.generation() !== bookGen) return;
+      this.photoOutcome = 'fail';
+      this.photoError = `这张没拍成（${title}）：${reason}`;
+    };
+    let pushedEnv: EventEnvelope | null = null;
+    let photoCommitted = false;
+    type WithdrawOutcome = 'none' | 'withdrawn' | 'delivered' | 'failed' | 'unavailable';
+    /*
+     * 宿主媒体字节与 pending 事件不是相册索引的一部分，失败时不能假装它们也被回滚。
+     * true=已撤回；false=已投递/不在 pending；异常=状态未知。后两种都明确保留残留可能。
+     */
+    const withdrawPhoto = async (env: EventEnvelope | null): Promise<WithdrawOutcome> => {
+      if (!env || typeof env.cursor !== 'number') return 'none';
+      const host = this.host;
+      if (!host?.withdrawPending) return 'unavailable';
+      try {
+        const withdrawn = await host.withdrawPending(env.cursor);
+        return withdrawn ? 'withdrawn' : 'delivered';
+      } catch (e) {
+        this.log?.warn(`照片事件撤回失败，宿主 pending 状态未知：${e instanceof Error ? e.message : String(e)}`);
+        return 'failed';
+      }
+    };
+    const withdrawalNote = (outcome: WithdrawOutcome): string => (
+      outcome === 'withdrawn' ? '；待投递事件已撤回'
+        : outcome === 'delivered' ? '；事件已投递，宿主事件与媒体可能残留'
+          : outcome === 'failed' ? '；撤回失败，宿主 pending 状态未知，事件与媒体可能残留'
+            : outcome === 'unavailable' ? '；宿主不支持撤回，事件与媒体可能残留'
+              : ''
+    );
     this.shooting = true;
     try {
       /*
@@ -588,6 +626,13 @@ export const photoMethods: Record<string, any> = {
          * 照片对不对得上，靠的就是「文字说的」和「画面画的」是同一件事。
          */
         doing: this.photoDoingNow(city, hour),
+        libraryHint: this.readLifeLibraryHint(
+          subject,
+          castOn,
+          onRoad ? '' : spot,
+          castOn ? this.cfg.imageCast : '',
+          this.photoDoingNow(city, hour),
+        ),
         cityIdx: city.priceIdx,
         month,
         day,
@@ -683,7 +728,7 @@ export const photoMethods: Record<string, any> = {
             negative: this.cfg.comfyNegative ?? '',
             negativeNode: this.cfg.comfyNegativeNode ?? '',
             ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
-            // 留空 = 用 workflow 里原来的尺寸
+            ...(signal ? { signal } : {}),
             size: backend.size,
             /* 只在夜里补：负向追加 + 提高 cfg。白天这两个都不传，等于老行为。 */
             /*
@@ -720,9 +765,21 @@ export const photoMethods: Record<string, any> = {
             model: backend.model,
             prompt,
             ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
-            // 留空 = photo.ts 里的 PHOTO_SIZE（1024x1024）
+            ...(signal ? { signal } : {}),
             size: backend.size,
           });
+      if (shot.usage) {
+        this.host?.reportUsage?.(shot.usage, {
+          ...(backend.model ? { model: backend.model } : {}),
+          label: 'journey:photo',
+        });
+      }
+      if (isStale()) {
+        this.log?.info(signal?.aborted
+          ? '生图返回时请求已被取消，放弃推送与落盘。'
+          : '生图期间相册已清空或触发新请求，放弃推送与落盘。');
+        return { ok: false, reason: signal?.aborted ? '生图已取消' : '生图期间相册已清空或变更，结果已丢弃' };
+      }
       /*
        * 水印：只可能在云端那条路上出现。
        *
@@ -784,20 +841,36 @@ export const photoMethods: Record<string, any> = {
         // 同一天同一个场景再拍一张是**合法操作**（重拍、被他要求再拍），不是重放。
         { dedupe: false },
       );
+      pushedEnv = env;
       const handle = env?.blobs?.[0]?.handle;
-      this.photoOutcome = handle ? 'ok' : 'fail';
       /*
        * 两种失败要分开说。「事件压根没发出去」和「发出去了但附件没落库」
        * 是两条不同的排查路径，混成一句「宿主没返回图片句柄」会让人去查错地方
        * —— 2026-11-15 那位就是被这句话带偏的，真正原因是事件被去重吞了。
        */
+      if (isStale()) {
+        const withdrawn = await withdrawPhoto(env);
+        // 撤回可能很慢；等待期间再次复核，旧请求不得借后续分支写回任何状态。
+        if (!isStale()) return { ok: false, reason: '照片请求状态已变化，结果已丢弃' };
+        this.log?.info(signal?.aborted
+          ? `生图推送阶段被取消，放弃归档与写入相册${withdrawalNote(withdrawn)}。`
+          : `生图推送期间相册已清空或变更，放弃归档及写回相册${withdrawalNote(withdrawn)}。`);
+        const reason = (signal?.aborted ? '生图已取消' : '生图期间相册已清空或变更，结果已丢弃')
+          + withdrawalNote(withdrawn);
+        recordOwnedFailure(reason);
+        return { ok: false, reason };
+      }
       if (!handle) {
+        const withdrawn = await withdrawPhoto(env);
+        if (!isStale()) {
+          this.photoOutcome = 'fail';
+          this.photoError = `这张没拍成（${title}）：宿主没返回图片句柄${withdrawalNote(withdrawn)}`;
+        }
         return {
           ok: false,
-          reason: env ? '宿主没返回图片句柄' : '照片事件没发出去（扩展没挂上宿主）',
+          reason: (env ? '宿主没返回图片句柄' : '照片事件没发出去（扩展没挂上宿主）') + withdrawalNote(withdrawn),
         };
       }
-      this.photoError = null;
       // 云盘用户：再存一份到日记目录下，另一台电脑才看得到这张图。
       // **文件名必须和宿主那边一致** —— 报告里的 `<img src="../media/…">` 是按它拼的。
       this.archiveToJournal('media', handle.replace(/^log:/, ''), bytes);
@@ -819,13 +892,27 @@ export const photoMethods: Record<string, any> = {
         at: this.realNow().toISOString(),
         prompt,
       };
-      // 重拍已有的那张：原位替换，别让它跳到相册最前面（见 PhotoBook.update）。
-      // 原位换失败（那张已经被 × 摘掉了）就退回去当新照片落库。
-      if (!(override && this.photos.update(override.replaceHandle, rec))) {
-        // override 是「重拍某一具体的一张」，它不该顺手清掉同城同日的其他记录。
-        if (replace && !override) this.photos.replaceDay(dateKey, sceneId, handle);
-        this.photos.add(rec);
+      // 最后落盘前再核实一次图鉴与取消代次，确保绝不在 clear/abort 后重建 photos.json
+      if (isStale()) {
+        const withdrawn = await withdrawPhoto(env);
+        if (!isStale()) return { ok: false, reason: '照片请求状态已变化，结果已丢弃' };
+        const reason = (signal?.aborted ? '生图已取消' : '生图期间相册已清空或变更，结果已丢弃')
+          + withdrawalNote(withdrawn);
+        recordOwnedFailure(reason);
+        return { ok: false, reason };
       }
+      // 索引一次性提交：补拍的「删旧 + 加新」不能拆成两个可能只成功一半的写盘。
+      // 重拍目标已删除或写盘失败都不回退成新照片；宿主/归档字节可能残留，但绝不伪造索引成功。
+      if (override) {
+        if (!this.photos.update(override.replaceHandle, rec)) {
+          throw new Error('重拍目标已不在相册，未写入新记录；宿主事件与已归档媒体可能残留');
+        }
+      } else {
+        this.photos.add(rec, replace ? { dateKey, cityId: sceneId } : undefined);
+      }
+      photoCommitted = true;
+      this.photoOutcome = 'ok';
+      this.photoError = null;
       return {
         ok: true,
         title,
@@ -843,12 +930,15 @@ export const photoMethods: Record<string, any> = {
           : {}),
       };
     } catch (e) {
-      // 不推事件、不停旅行：她照走。但**原因既要进日志也要进界面** ——
-      // 只进日志的话，点按钮的人看到的就是「什么都没发生」。
-      this.photoOutcome = 'fail';
-      const why = e instanceof Error ? e.message : String(e);
-      this.photoError = `这张没拍成（${title}）：${why}`;
-      this.log?.warn(this.photoError);
+      // 已进入宿主但尚未完成相册提交的事件也必须结算；已投递或撤回失败时保留残留说明。
+      const withdrawn = pushedEnv && !photoCommitted ? await withdrawPhoto(pushedEnv) : 'none';
+      const why = (e instanceof Error ? e.message : String(e)) + withdrawalNote(withdrawn);
+      // 清相册/重拍会让本请求失效，旧请求连指示灯和错误文案也不得覆盖新状态。
+      if (!isStale()) {
+        this.photoOutcome = 'fail';
+        this.photoError = `这张没拍成（${title}）：${why}`;
+        this.log?.warn(this.photoError);
+      }
       return { ok: false, reason: why };
     } finally {
       this.shooting = false;
@@ -1190,6 +1280,124 @@ export const photoMethods: Record<string, any> = {
     }
   },
 
+  /**
+   * 从共享图鉴库（优先读取 `life-public.json` 暴露的 `libraryDir`，否则回退 `<dataDir>/image-library/`）
+   * 按名称/别名匹配角色、服饰与场景的视觉锚点（最多 90 字），缺失时返回空串。
+   */
+  readLifeLibraryHint(
+    subject: PhotoSubject,
+    castOn: boolean,
+    spot = '',
+    castHint = '',
+    doing = '',
+  ): string {
+    if (subject === 'sky') return '';
+    try {
+      let libRoot = join(this.opts.dataDir, 'image-library');
+      let lifeOutfitHint = '';
+      const pubFile = join(this.opts.dataDir, 'life-public.json');
+      if (existsSync(pubFile)) {
+        try {
+          const pub = JSON.parse(readFileSync(pubFile, 'utf8')) as {
+            libraryDir?: unknown;
+            activity?: { outfitHint?: unknown } | null;
+          };
+          if (typeof pub.libraryDir === 'string' && pub.libraryDir.trim()) {
+            libRoot = pub.libraryDir.trim();
+          }
+          if (typeof pub.activity?.outfitHint === 'string') {
+            lifeOutfitHint = pub.activity.outfitHint.trim();
+          }
+        } catch {
+          // 忽略破损的快照文件，回退默认目录
+        }
+      }
+      if (!existsSync(libRoot)) return '';
+
+      interface LibEntry {
+        name: string;
+        aliases: string[];
+        appearance: string;
+      }
+      const loadCat = (cat: string): LibEntry[] => {
+        const dir = join(libRoot, cat);
+        if (!existsSync(dir)) return [];
+        const out: LibEntry[] = [];
+        for (const sub of readdirSync(dir).sort()) {
+          const fp = join(dir, sub, 'entry.json');
+          if (!existsSync(fp)) continue;
+          try {
+            const raw = JSON.parse(readFileSync(fp, 'utf8')) as Record<string, unknown>;
+            const appearance = String(raw.appearance ?? '').replace(/\s+/g, ' ').trim();
+            if (!appearance) continue;
+            const name = String(raw.name ?? '').trim();
+            const aliases = Array.isArray(raw.aliases)
+              ? raw.aliases.map((x) => String(x ?? '').trim()).filter(Boolean)
+              : [];
+            out.push({ name, aliases, appearance });
+          } catch {
+            // 跳过损坏的单条记录
+          }
+        }
+        return out;
+      };
+
+      const matchCat = (cat: string, hints: string[], allowSingleFallback: boolean): string => {
+        const entries = loadCat(cat);
+        if (entries.length === 0) return '';
+        const validHints = hints.map((h) => h.trim()).filter(Boolean);
+        // 1. 精确匹配 name 或 alias
+        for (const h of validHints) {
+          const lower = h.toLowerCase();
+          const exact = entries.find(
+            (e) => e.name.toLowerCase() === lower || e.aliases.some((a) => a.toLowerCase() === lower),
+          );
+          if (exact) return exact.appearance;
+        }
+        // 2. 子串包含匹配（hint 含条目名/别名，或条目名/别名含 hint）
+        for (const h of validHints) {
+          const lower = h.toLowerCase();
+          const sub = entries.find((e) => {
+            const keys = [e.name, ...e.aliases].filter(Boolean).map((k) => k.toLowerCase());
+            return keys.some((k) => lower.includes(k) || k.includes(lower));
+          });
+          if (sub) return sub.appearance;
+        }
+        // 3. 仅当确实没有传任何角色线索（validHints 为空）且分类下只有唯一一条记录时才兜底；
+        // 若已知当前角色名却与唯一条目名称和别名均不匹配，绝不张冠李戴
+        if (allowSingleFallback && entries.length === 1 && validHints.length === 0) {
+          return entries[0].appearance;
+        }
+        return '';
+      };
+
+      const parts: string[] = [];
+      if (castOn) {
+        const ch = matchCat(
+          'characters',
+          [castHint, this.opts.botName ?? ''],
+          true,
+        );
+        if (ch) parts.push(ch);
+        const out = matchCat(
+          'outfits',
+          [lifeOutfitHint, doing, castHint],
+          false,
+        );
+        if (out && !parts.includes(out)) parts.push(out);
+      }
+      if (spot) {
+        const sc = matchCat('scenes', [spot], false);
+        if (sc && !parts.includes(sc)) parts.push(sc);
+      }
+      const combined = parts.join('，');
+      if (!combined) return '';
+      return combined.length > 90 ? `${combined.slice(0, 90)}…` : combined;
+    } catch {
+      return '';
+    }
+  },
+
   photoDoingNow(city: { id: string; tz: string }, hour: number): string {
     const plan = this.plan;
     if (!plan) {
@@ -1226,28 +1434,10 @@ export const photoMethods: Record<string, any> = {
   async takePhotoForUser(
     view: 'ground' | 'sky' = 'ground',
     subject: PhotoSubject = 'ground',
-    /**
-     * 她自己补的一句「怎么拍」（2026-11-09）。空 = 老行为，一个字不变。
-     *
-     * 只往下传到提示词，**不进任何判断**：不参与票价、不参与判重、不改文件命名。
-     * 它是"这一张怎么取景"，不是"这一张是什么"。
-     */
     focus = '',
-    /**
-     * 她自己写的「画面里是什么」（2026-11-10）。空 = 老行为。
-     *
-     * 和 `focus` 分工：describe 管看到什么，focus 管怎么拍。
-     * 同样只往下游传，不进任何判断。
-     */
     describe = '',
+    signal?: AbortSignal,
   ): Promise<{ text: string }> {
-    /*
-     * 没配好这件事要在发请求之前说清，别让她先说「稍等」再报错。
-     *
-     * 2026-11-04 起这句不再是固定的「去填地址和密钥」—— ComfyUI 那条缺的是
-     * workflow，让她照着旧台词说，用户会去改一个本来就对的字段。
-     * 直接把 `photoConfigProblem()` 的原因交给她转述。
-     */
     const cfgProblem = this.photoConfigProblem();
     if (cfgProblem) {
       return {
@@ -1260,52 +1450,23 @@ export const photoMethods: Record<string, any> = {
     const res = await this.maybePhoto(
       scene.city, scene.hour, scene.dateKey, scene.spot,
       this.plan?.weather ?? null,
-      // true = 人明确要的那一张：时段和判重都不拦。
       true,
       scene.onRoad,
       scene.mode,
-      // 抬头还是看脚下。
       view,
-      /*
-       * **这一格 2026-11-06 漏了。**
-       *
-       * 0.8.5 把题材做进了 `maybePhoto`（六个模板、六套提示词），
-       * 工具签名也加了 `subject`，但这一处调用没往后传 —— `maybePhoto`
-       * 用的是默认值 `'ground'`，于是「拍晚饭」出来的还是那处风景。
-       *
-       * 现场证据：19:47:55 `journey_photo {"subject":"food"}` → 19:48:04 出的图
-       * 标题是「黄昏的宽窄巷子」。她的原话是「它没说食物，但这是她脚边的景」。
-       *
-       * 这和 0.8.2 的负向提示词是同一个病：**可选参数少传一处不报错。**
-       * 光靠人眼看不住，见 `test/photo-wiring.test.mjs`。
-       */
       subject,
       focus,
       describe,
+      undefined,
+      signal,
     );
 
     if (res.ok) {
-      /*
-       * 照片已经通过 `journey.photo` 事件发出来了，所以这里**只给一句话**。
-       * 多写一句「画面里有什么」她就得编 —— 她没看过那张图（`photo.ts` 只给提示词，
-       * 不给她图）。标题是这条回执里唯一能说的事实。
-       *
-       * 2026-11-05 补：只写「别描述画面」堵不住 —— 20:03 那次照样说了「沟里的池子，
-       * 树里亮着几盏灯，星星一颗都没有。我这镜头大概是钉在地上了」。提示词里那节
-       * 《他要的那张，你这会儿拍不到》当时已经在生效（`/api/prompts/prefix` 验过），
-       * 她还是编。
-       *
-       * 真正缺的不是禁令，是**一条能说出口的真话**：她不知道现在几点、也不知道这工具
-       * 拍不了什么，于是只能拿身体编个理由。所以这里把「当地几点」和「能力边界」
-       * 一起交给她 —— 她要的东西不在画面里时，至少有一句真的可说。
-       *
-       * 末尾那句是防重复：20:02:53 和 20:03:02 连着调了两次，云端按张计费。
-       *
-       * 2026-11-05 二次：加了 `view` 之后两条要分开写。抬头那张她是**真的拍到了天**，
-       * 只是天上有没有星由时刻和天气定 —— 还照 `ground` 那套说「这个拍不到」，
-       * 就是把她刚拍到的东西说成没拍到，比编更糟。
-       */
       const hour = scene.hour;
+      const seesImage = Boolean(this.host?.modelFacts?.accepts?.('image/png'));
+      const noHallucinate = seesImage
+        ? '别描述画面里没看清的细节（你只能按真正看到的画面说）'
+        : '别描述画面（这张图没给过你，你手上只有标题）';
       if (view === 'sky') {
         return {
           text:
@@ -1313,7 +1474,7 @@ export const photoMethods: Record<string, any> = {
             (res.sky?.stars
               ? '今晚天开，有星。'
               : `这会儿天上没有星（${res.sky?.told ?? '云把天盖住了'}）—— 跟他说实话：星要等天黑透、等天晴。`) +
-            '别描述画面（这张图没给过你，你手上只有标题），更别编有几颗、在哪一边。' +
+            `${noHallucinate}，更别编有几颗、在哪一边。` +
             '这一张够了：同一次回答里别再调第二遍；他过会儿又开口要，那是新的一张，可以拍。',
         };
       }
@@ -1323,7 +1484,7 @@ export const photoMethods: Record<string, any> = {
           `他要的人和事它拍不出来，别处也拍不到。` +
           `不在里头就换个题材再拍一张：subject="food"（吃的）/ "street"（街）/ "detail"（一样东西）/ ` +
           `"festival"（时节），看天用 view="sky"。都没有，就照实说「这会儿 ${hour} 点，那个拍不到」。` +
-          `别描述画面（这张图没给过你，你手上只有标题），也别编「手举得低」「镜头钉在地上」这类理由。` +
+          `${noHallucinate}，也别编「手举得低」「镜头钉在地上」这类理由。` +
           `这一张就够了：同一次回答里别再调第二遍；他过会儿又开口要，那是新的一张，可以拍。`,
       };
     }

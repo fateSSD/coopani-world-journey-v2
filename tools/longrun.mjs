@@ -23,7 +23,8 @@ const { JourneyWorld } = await import('../src/world.ts');
 const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
 const { CITIES, cityById } = await import('../src/geo/cities.ts');
 const { distanceKm } = await import('../src/geo/distance.ts');
-const { localMoment } = await import('../src/clock.ts');
+const { localMoment, localHour } = await import('../src/clock.ts');
+const { sunTimes } = await import('../src/geo/sky.ts');
 
 const WORLD_DAYS = Number(process.argv[2] ?? 144);
 const MODE = process.argv[3] ?? 'invite';
@@ -32,9 +33,20 @@ const STEP_MS = 60_000;
 
 const dir = mkdtempSync(join(tmpdir(), `journey-${MODE}-`));
 let clock = new Date('2026-11-05T00:30:00Z');
+const originWorldMs = clock.getTime();
+let world = null;
 
 const events = [];
 const warns = [];
+const unknownUrls = [];
+const pendingDeferred = [];
+let deferredEnqueued = 0;
+let deferredRendered = 0;
+let deferredNull = 0;
+let deferredWindowBatches = 0;
+let deferredRecomputed = 0;
+let deferredCancelledAfterChange = 0;
+let cursorSeq = 1;
 const host = {
   log: {
     trace() {}, debug() {}, info() {},
@@ -45,7 +57,12 @@ const host = {
     events.push({ type: String(e.type), key: String(e.senderKey), text: String(e.text), at: String(e.ts) });
     return { ...e, blobs: [] };
   },
-  pushDeferred() {}, store: {}, drainPendingEvents: async () => [],
+  pushDeferred: (spec, opts) => {
+    deferredEnqueued += 1;
+    pendingDeferred.push({ spec, opts });
+  },
+  store: {},
+  drainPendingEvents: async () => [],
 };
 
 /**
@@ -92,11 +109,49 @@ let acceptFails = 0;
 let acceptOk = 0;
 const refusals = [];
 
-if (MODE !== 'plain') {
-  globalThis.fetch = async (url, init) => {
-    const u = String(url);
-    /*
-     * `mine=1` 是「我发出去的邀约被谁接了」（`myTakenInvites`），和「同城有哪些邀约」
+globalThis.fetch = async (url, init) => {
+  const u = String(url);
+  if (/^https:\/\/api\.open-meteo\.com\/v1\/forecast/.test(u)) {
+    // 使用世界时钟基准并覆盖未来整个 144+ 天窗口，确保 3 小时缓存期内与中后期跨天均有晴天预报
+    const baseMs = world ? world.worldNow().getTime() : clock.getTime();
+    const time = [];
+    const weather_code = [];
+    const temperature_2m_max = [];
+    const temperature_2m_min = [];
+    const precipitation_probability_max = [];
+    const wind_speed_10m_max = [];
+    for (let d = -1; d <= WORLD_DAYS + 20; d++) {
+      time.push(new Date(baseMs + d * 86_400_000).toISOString().slice(0, 10));
+      weather_code.push(0);
+      temperature_2m_max.push(22);
+      temperature_2m_min.push(11);
+      precipitation_probability_max.push(5);
+      wind_speed_10m_max.push(8);
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        daily: {
+          time,
+          weather_code,
+          temperature_2m_max,
+          temperature_2m_min,
+          precipitation_probability_max,
+          wind_speed_10m_max,
+        },
+      }),
+    };
+  }
+  if (/^https:\/\/registry\.npmjs\.org\/-\/package\/[^/]+\/dist-tags$/.test(u)) {
+    return { ok: true, status: 200, json: async () => ({ latest: '0.0.0' }) };
+  }
+  if (MODE === 'plain' || !u.startsWith('https://x.test')) {
+    unknownUrls.push(u);
+    throw new Error(`长跑阻断未知外网请求：${u}`);
+  }
+  /*
+   * `mine=1` 是「我发出去的邀约被谁接了」（`myTakenInvites`），和「同城有哪些邀约」
      * 共用同一个端点、同一个正则 —— 原来它掉进了下面那个分支，把别人发的 6 条
      * 全当成「我的邀约被接」，于是 `claimTakenInvite` 一口气认领 6 条，
      * `claimedInvites` 塞满、`takeable` 永远为空。
@@ -219,9 +274,45 @@ if (MODE !== 'plain') {
         }),
       };
     }
-    if (u.endsWith('/invite')) {
-      return { ok: true, status: 200, json: async () => ({ ok: true, id: newId() }) };
-    }
+  if (u.endsWith('/invite')) {
+    return { ok: true, status: 200, json: async () => ({ ok: true, id: newId() }) };
+  }
+  const path = new URL(u).pathname;
+  const method = String(init?.method ?? 'GET').toUpperCase();
+  if (path === '/sight/status') {
+    const list = [...pool.entries()].map(([id, v]) => ({
+      id, pet: v.pet, to: v.to, days: v.days, note: v.note,
+      meet: v.meet ?? '', pace: v.pace ?? 0,
+    }));
+    return { ok: true, status: 200, json: async () => ({ ok: true, pool: pool.size, list, mineTaken: 0 }) };
+  }
+  if (path === '/sight/footprints') {
+    return {
+      ok: true, status: 200,
+      json: async () => (method === 'GET' ? { ok: true, places: [] } : { ok: true }),
+    };
+  }
+  if (path === '/sight/signposts') {
+    return {
+      ok: true, status: 200,
+      json: async () => (method === 'GET' ? { ok: true, list: [] } : { ok: true }),
+    };
+  }
+  if (path === '/sight/card') {
+    return {
+      ok: true, status: 200,
+      json: async () => (method === 'GET' ? { ok: true, cards: [], mine: null } : { ok: true }),
+    };
+  }
+  if (path === '/sight/profile') {
+    return {
+      ok: true, status: 200,
+      json: async () => (method === 'GET' ? { ok: true, mine: null, others: [] } : { ok: true }),
+    };
+  }
+  if (path === '/sight' && method === 'POST') {
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  }
     /*
      * 同城邻居（`GET /sight?city=…&date=…&slot=…`）。
      *
@@ -231,13 +322,14 @@ if (MODE !== 'plain') {
      *
      * 名字用「小满」：和池子里那些邀约的发起人同名，`matesHere` 才对得上。
      */
-    if (/\/sight\?/.test(u) || /[?&]date=/.test(u)) {
-      const list = Math.random() < 0.5 ? [{ pet: '小满', doing: '在等人' }] : [];
-      return { ok: true, status: 200, json: async () => ({ ok: true, list, pool: 6 }) };
-    }
-    return { ok: true, status: 200, json: async () => ({ ok: true, list: [] }) };
-  };
-}
+  if (/\/sight\?/.test(u) || /[?&]date=/.test(u)) {
+    const list = Math.random() < 0.5 ? [{ pet: '小满', doing: '在等人' }] : [];
+    return { ok: true, status: 200, json: async () => ({ ok: true, list, pool: 6 }) };
+  }
+  // 同 origin 也只有上面显式列出的端点可用；未知路径必须留下证据并失败，不能伪造空成功。
+  unknownUrls.push(u);
+  throw new Error(`长跑阻断未识别的同 origin 请求：${u}`);
+};
 
 /* ---------------- 起 World ---------------- */
 const cfg = {
@@ -252,7 +344,7 @@ const cfg = {
   ...(MODE === 'money' || MODE === 'goto' ? { moneyEnabled: true, budget: 6000 } : {}),
   ...(MODE === 'set' ? { moneyEnabled: true, budget: 6000 } : {}),
 };
-const world = new JourneyWorld({ cfg, dataDir: dir, botName: '大肥鱼', now: () => clock });
+world = new JourneyWorld({ cfg, dataDir: dir, botName: '大肥鱼', now: () => clock });
 await world.start(host);
 
 const tool = (n) => world.tools().find((t) => t.name === n);
@@ -306,9 +398,99 @@ let maxSpent = 0;
 let pledgeMismatch = 0;
 const pledgeMismatchSample = [];
 
+const weatherSamples = { w17: null, w60: null, w144: null };
+const weatherSampleAttempts = new Set();
+
+function flushDeferredQueue(batch, verifyWindow = false) {
+  if (!batch.length) return;
+  if (verifyWindow) deferredWindowBatches += 1;
+  const delivered = [];
+  const discarded = [];
+  for (const item of batch) {
+    const rendered = item.spec.render();
+    const renderedText = rendered?.text ? String(rendered.text) : null;
+    if (verifyWindow && item.beforeText && renderedText && item.beforeText !== renderedText) {
+      deferredRecomputed += 1;
+    }
+    if (verifyWindow && item.beforeText && !renderedText) deferredCancelledAfterChange += 1;
+    if (renderedText) {
+      deferredRendered += 1;
+      const env = {
+        cursor: cursorSeq++,
+        type: String(item.spec.type),
+        source: 'journey',
+        origin: 'world',
+        senderKey: String(item.spec.senderKey ?? ''),
+        ts: clock.toISOString(),
+        text: String(rendered.text),
+      };
+      events.push({ type: env.type, key: env.senderKey, text: env.text, at: env.ts });
+      delivered.push(env);
+    } else {
+      deferredNull += 1;
+      discarded.push({
+        cursor: cursorSeq++,
+        type: String(item.spec.type),
+        source: 'journey',
+        origin: 'world',
+        senderKey: String(item.spec.senderKey ?? ''),
+        ts: clock.toISOString(),
+        text: '',
+      });
+    }
+  }
+  if (delivered.length) world.onEventsSettled?.(delivered, 'delivered');
+  if (discarded.length) world.onEventsSettled?.(discarded, 'discarded');
+}
+
 for (let i = 0; i < ticks; i++) {
+  // 摘下旧批次后先推进一次世界状态，再 render；本拍新入队的事件留到下一拍。
+  // beforeText 只用于证明正文确实按投递时状态重算，不会提前投递该事件。
+  const batch = pendingDeferred.splice(0).map((item) => {
+    const before = item.spec.render();
+    return { ...item, beforeText: before?.text ? String(before.text) : null };
+  });
   clock = new Date(clock.getTime() + STEP_MS);
   await world.tick();
+  flushDeferredQueue(batch, true);
+  if (i === Math.floor(ticks / 2)) {
+    world.onHandoffEnded();
+  }
+  const wDay = Math.floor((world.worldNow().getTime() - originWorldMs) / 86_400_000) + 1;
+  const sampleKey = wDay === 17 ? 'w17' : wDay === 60 ? 'w60' : wDay === WORLD_DAYS ? 'w144' : null;
+  if (sampleKey && !weatherSampleAttempts.has(sampleKey)) {
+    // 精确日覆盖由验收脚本主动发起，不能赌当时恰好有 DayPlan/homeWeather。
+    // 直接走同一个 weather.forecast 只读接口；假 Open-Meteo 返回完整窗口，失败则留下 null 并非零退出。
+    weatherSampleAttempts.add(sampleKey);
+    const sampleCity = cityById(st().hereId);
+    const moment = sampleCity ? localMoment(world.worldNow(), sampleCity.tz) : null;
+    const exactWeather = sampleCity && moment
+      ? await world.weather.forecast(sampleCity, moment.dateKey).catch(() => null)
+      : null;
+    if (sampleCity && moment) {
+      const plan = world.plan?.cityId === sampleCity.id && world.plan.dateKey === moment.dateKey
+        ? world.plan
+        : null;
+      let sunriseHour = plan?.sunriseHour ?? null;
+      let sunsetHour = plan?.sunsetHour ?? null;
+      if (!plan) {
+        // 在家/路上没有当日 DayPlan：用与 planDay 相同的纯函数计算，不改写业务日程。
+        const sun = sunTimes(sampleCity.lat, sampleCity.lon, new Date(`${moment.dateKey}T12:00:00Z`));
+        sunriseHour = sun ? Math.round(localHour(sun.sunriseUtc, sampleCity.tz) * 4) / 4 : null;
+        sunsetHour = sun ? Math.round(localHour(sun.sunsetUtc, sampleCity.tz) * 4) / 4 : null;
+      }
+      weatherSamples[sampleKey] = {
+        day: wDay,
+        source: 'forecast',
+        cityId: sampleCity.id,
+        dateKey: exactWeather?.dateKey ?? moment.dateKey,
+        expectedDateKey: moment.dateKey,
+        weather: exactWeather?.dayWeather ?? null,
+        sunriseHour,
+        sunsetHour,
+      };
+    }
+  }
   /*
    * 花销的峰值。
    *
@@ -685,6 +867,8 @@ for (let i = 0; i < ticks; i++) {
   }
 }
 
+flushDeferredQueue(pendingDeferred.splice(0));
+
 /* ---------------- 断言 ---------------- */
 const fail = [];
 const ok = (cond, label, detail = '') => { if (!cond) fail.push(`${label}${detail ? ` —— ${detail}` : ''}`); };
@@ -692,8 +876,33 @@ const ok = (cond, label, detail = '') => { if (!cond) fail.push(`${label}${detai
 const byType = new Map();
 for (const e of events) byType.set(e.type, (byType.get(e.type) ?? 0) + 1);
 
-// 1. 零告警
+// 1. 零告警 & 零未知外网请求（J16）
 ok(warns.length === 0, '告警为 0', warns.slice(0, 3).join(' / '));
+ok(unknownUrls.length === 0, '未知外网请求为 0', unknownUrls.slice(0, 3).join(' / '));
+
+// 1b. 旧批次必须跨过真实状态推进才 render，且正文重算与取消都确实发生（J17）
+ok(deferredEnqueued > 0 && deferredRendered > 0, 'pushDeferred 真实走通', `入队 ${deferredEnqueued} / 投递 ${deferredRendered} / 取消 ${deferredNull}`);
+ok(deferredWindowBatches > 0, 'deferred 在入队后跨过世界状态变化再 render', `窗口批次 ${deferredWindowBatches}`);
+ok(deferredRecomputed > 0, 'deferred 正文按投递时实时状态重算', `重算 ${deferredRecomputed}`);
+ok(deferredCancelledAfterChange > 0, 'deferred 在状态变化后真实取消', `窗口取消 ${deferredCancelledAfterChange} / 总取消 ${deferredNull}`);
+
+// 1c. 精确世界天（17 / 60 / 144）的日期、天气与日出日落有效（J18）
+const validSun = (sample) => Boolean(sample)
+  && ((sample.sunriseHour === null && sample.sunsetHour === null)
+    || (Number.isFinite(sample.sunriseHour) && Number.isFinite(sample.sunsetHour)
+      && sample.sunriseHour >= 0 && sample.sunriseHour <= 24
+      && sample.sunsetHour >= 0 && sample.sunsetHour <= 24
+      && sample.sunriseHour < sample.sunsetHour));
+for (const [key, day] of [['w17', 17], ['w60', 60], ['w144', WORLD_DAYS]]) {
+  const sample = weatherSamples[key];
+  ok(sample?.day === day, `第 ${day} 世界天精确取样`, JSON.stringify(sample));
+  ok(Boolean(sample?.weather), `第 ${day} 世界天天气有效`, JSON.stringify(sample));
+  ok(/^\d{4}-\d{2}-\d{2}$/.test(sample?.dateKey ?? '') && sample.dateKey === sample.expectedDateKey,
+    `第 ${day} 世界天 dateKey 精确一致`, JSON.stringify(sample));
+  ok(validSun(sample), `第 ${day} 世界天日出日落为有效小时或合法成对 null`, JSON.stringify(sample));
+}
+const emptySunrise = events.filter((e) => /当地日出\s*[）)]/.test(e.text));
+ok(emptySunrise.length === 0, '无「当地日出 ）」空括号残缺文案', emptySunrise.slice(0, 2).map((e) => e.text.slice(0, 80)).join(' | '));
 
 // 2. 事件 key 不重复（同一个 senderKey 只许推一次）
 const keys = events.map((e) => e.key);
@@ -894,11 +1103,14 @@ if (MODE === 'set') {
 }
 console.log(`去过 ${st().everVisited.length} 个地方｜花销 ${st().spent}｜挣了 ${st().earned}｜打工 ${st().workStints} 次`);
 console.log(`当前 ${st().phase} ${st().hereId}｜pledge ${st().pledge ? st().pledge.cityId : 'none'}`);
+console.log(`deferred 入队 ${deferredEnqueued} / 投递 ${deferredRendered} / 取消 ${deferredNull}｜窗口 ${deferredWindowBatches} / 重算 ${deferredRecomputed} / 窗口取消 ${deferredCancelledAfterChange}｜未知外网 ${unknownUrls.length}`);
+console.log(`精确世界天 17d=${weatherSamples.w17?.dateKey ?? '无'} / 60d=${weatherSamples.w60?.dateKey ?? '无'} / ${WORLD_DAYS}d=${weatherSamples.w144?.dateKey ?? '无'}｜60d 日出日落=${weatherSamples.w60?.sunriseHour}/${weatherSamples.w60?.sunsetHour}｜${WORLD_DAYS}d 日出日落=${weatherSamples.w144?.sunriseHour}/${weatherSamples.w144?.sunsetHour}`);
 console.log('告警', warns.length ? warns.slice(0, 5) : '无');
 console.log('拒绝原因样本', refusals.length ? refusals : '无');
 console.log('最后 5 条事件：');
 for (const e of events.slice(-5)) console.log(' -', e.type, '|', e.text.split('\n')[0].slice(0, 90));
 console.log(fail.length ? `\n❌ ${fail.length} 项不变量没过：\n - ${fail.join('\n - ')}` : '\n✅ 全部不变量通过');
 
-world.stop();
-if (fail.length) process.exitCode = 1;
+// 在 teardown 前明确固定退出码，成功与失败都不依赖调用 shell 的管道状态。
+process.exitCode = fail.length ? 1 : 0;
+await world.stop();

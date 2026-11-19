@@ -64,15 +64,13 @@ export interface PhotoScene {
   /** 当地几号。 */
   readonly day?: number;
   /**
-   * **她这一刻正在做什么**（2026-11-08 Mr.Q：「能把鱼看到的说到的直接写入图片提示词嘛？」）。
-   *
-   * 传的是**日程里那一格的事实**（「在亚龙湾坐了香蕉艇，前面那个浪把整条艇掀起来」），
-   * 不是她的台词。所以先做一遍清洗：引号去掉、超长截断 ——
-   * 画面里不许出现文字，带引号的话很容易被模型当成招牌写进去。
-   *
-   * 留空 = 不写这一句（老调用方一个字不用改）。
+   * 从作息/日程里带入的当前活动，经 `cleanDoing` 过滤掉房评与过短噪音后拼入提示词。
    */
   readonly doing?: string;
+  /**
+   * 图鉴库视觉参考（来自 `data/image-library/` 匹配到的角色/服饰/场景特征，可为空）。
+   */
+  readonly libraryHint?: string;
   /**
    * 她自己写的一句「画面里是什么」（2026-11-10，Mr.Q：「能让桌宠自己写提示词嘛」）。
    *
@@ -182,12 +180,21 @@ export interface PhotoRequest {
   readonly size?: string;
   readonly prompt: string;
   readonly timeoutMs?: number;
+  /** 外部取消信号（如工具被打断时中止请求）。 */
+  readonly signal?: AbortSignal;
 }
 
 /** 生成结果。字节直接交给宿主，由它算哈希、落 `data/media/`。 */
 export interface PhotoBytes {
   readonly bytes: Uint8Array;
   readonly mime: string;
+  /** 平台明确返回 usage 字段时的令牌统计；不返回则省略。 */
+  readonly usage?: {
+    readonly promptTokens: number;
+    readonly completionTokens: number;
+    readonly cacheHitTokens: number;
+    readonly cacheMissTokens: number;
+  };
 }
 
 /** 默认模型。多数兼容接口都认 `gpt-image-1` 这一套请求体。 */
@@ -1705,11 +1712,35 @@ function dayPart(hour: number): string {
  * - **她写的画面 / 用户写的怎么拍**：那是人的意图，优先级本来就最高（1.2.8 的顺序）。
  * - **一条极短的硬约束**：不写「没有人物」，模型很爱往空镜里塞一个陌生人。
  *
- * ### 什么时候不启用
+ * ### 覆盖范围（极简模式 v2）
  *
- * 抬头拍天（`view: 'sky'`）和在路上（`onRoad`）退回完整模板 ——
- * 前者要按纬度、月份、天气算天上到底是星是云，这个不写就是编；
- * 后者画面不属于某一座城，地名那套在这儿不成立。
+ * 所有 `scene.minimal` 场景（包括 `onRoad` 旅途与全部 6 类 `subject`）统一进入 `minimalPrompt()`：
+ * 抬头看天（`sky`）直接拼接 `skyOf` 天象结论，在途（`onRoad`）按具体题材（如车上餐食、旅途小物或车窗外风景）生成短句。
+ */
+/** 清洗并截断提示词自由文本（去除引号、压缩空白并限制长度）。 */
+function cleanPhotoText(raw: string | undefined, minLen: number, maxLen: number): string {
+  const t = String(raw ?? '').replace(/[「」『』“”"]/g, '').replace(/\s+/g, ' ').trim();
+  if (t.length < minLen) return '';
+  return t.length > maxLen ? `${t.slice(0, maxLen)}…` : t;
+}
+
+const HOTEL_REVIEW_NOISE_RE = /办理入住|办入住|退房|拿房卡|前台|标间|大床房|双床房|性价比|Wi-?Fi|早饭一般|住处很|隔音|床垫|(?:酒店|民宿|青旅|客栈|宾馆|招待所|房间|窗帘|淋浴).{0,6}(?:不错|一般|很好|挺好|挺软|太硬|干净|太差|很差|太脏|便宜|很贵|吵)/i;
+
+/**
+ * 清洗作息动作文本：滤除酒店房评与入住流程噪音，避免污染室外生图画面。
+ */
+export function cleanDoing(raw: string | undefined): string {
+  const t = cleanPhotoText(raw, 4, 40);
+  if (!t) return '';
+  if (HOTEL_REVIEW_NOISE_RE.test(t)) return '';
+  return t;
+}
+
+/**
+ * 极简模式 v2：适用于理解能力强的云端视觉/生图模型。
+ *
+ * 覆盖全部 6 种 subject 与 onRoad，剔除元指令、季节废话、画质自残词、高速行人与房评噪音；
+ * `describe` 上限放宽至 120 字，仅保留必要地名、题材、时间/天象与单句去字/去人约束。
  */
 function minimalPrompt(scene: PhotoScene): string {
   const raw = (scene.style ?? '').trim();
@@ -1722,45 +1753,70 @@ function minimalPrompt(scene: PhotoScene): string {
     ? (scene.spot.startsWith(scene.city) ? scene.spot : `${scene.city}${scene.spot}`)
     : scene.city;
 
+  const subject: PhotoSubject = scene.subject ?? (scene.view === 'sky' ? 'sky' : 'ground');
   const weather = (scene.weather ?? '').trim();
-  /*
-   * 极简版只留一个词说时间，但那个词**必须和太阳对得上**：
-   * 19 点的成都是夜里，不是「傍晚」。所以先用太阳判有没有日光，
-   * 再退回 `dayPart` 的粗分。
-   */
   const msun = sceneSun(scene);
   const part = msun.whiteNight ? '天没黑透' : !msun.daylit ? '深夜' : dayPart(scene.hour);
   const light = [weather, part].filter(Boolean).join('，');
 
-  /*
-   * **景点锚点在这条路上要留着（2026-11-11 本机四张对照之后）。**
-   *
-   * 极简版最初连景点锚点一起砍掉，结果两极分化：
-   *
-   * | 地方 | 完整 131 字 | 纯极简 28 字 |
-   * |---|---|---|
-   * | 成都文殊院 | 木构青瓦的**街**（被「街巷两侧」带偏） | 大殿重檐 + 石阶 + 古树 = **寺院，对了** |
-   * | 泉州清净寺 | 花岗岩院墙 + **尖拱门洞** + 空阔石板地 | 燕尾脊 + 红砖 + 木构 = **中式庙宇，全错** |
-   *
-   * 差别在**模型认不认识这个地方**。文殊院它认识，一句地名就够，我补的
-   * 「街巷两侧是老房」反而把寺院说成了街。清净寺它不认识，只从「寺」字
-   * 认出个庙 —— 这时候锚点是唯一的信息来源，砍掉就只剩模型的瞎猜。
-   *
-   * 所以：**城市锚点砍（那是「一座城的平均长相」，最容易带偏），
-   * 景点锚点留（那是「这个地方到底什么样」的唯一事实）。**
-   * 没写景点锚点的（西街这类和城市同调的）就真的只发地名。
-   */
-  const own = spotLook(scene.cityId, scene.spot);
+  const describe = cleanPhotoText(scene.describe, 4, 120).replace(/。+$/, '');
+  const focus = cleanPhotoText(scene.focus, 2, 40).replace(/。+$/, '');
+  const doing = cleanDoing(scene.doing).replace(/。+$/, '');
+  const libHint = (scene.libraryHint ?? '').trim().replace(/。+$/, '');
 
-  const describe = (scene.describe ?? '').trim().replace(/。+$/, '');
-  const focus = (scene.focus ?? '').trim().replace(/。+$/, '');
+  let core = '';
+  const veh = (scene.mode ?? '').trim() || '车';
+  if (subject === 'sky') {
+    const nowCity = scene.cityId ? cityById(scene.cityId) : null;
+    const spotSetting = scene.spot ? spotProfile(scene.spot).setting : '';
+    const spotUrban = scene.spot
+      ? (spotSetting === 'urban' ? true : spotSetting === 'wild' ? false : null)
+      : true;
+    const skyInfo = skyOf(
+      scene.hour,
+      weather,
+      nowCity?.lat ?? 0,
+      scene.month ?? 0,
+      nowCity?.lon,
+      nowCity?.tz,
+      !scene.onRoad && spotUrban === true,
+    );
+    core = `${scene.city}上空，抬头看天，${skyInfo.told}。`;
+  } else if (subject === 'food') {
+    const dish = (scene.dish ?? '').trim();
+    const target = dish ? (scene.onRoad ? dish : `${scene.city}${dish}`) : `${scene.city}当地餐食`;
+    core = scene.onRoad
+      ? `在${veh}上，${target}特写，${light}。`
+      : `${target}特写，摆在桌面上，${light}。`;
+  } else if (subject === 'street') {
+    core = `${place}街头巷景，${light}。`;
+  } else if (subject === 'detail') {
+    const item = scene.spot ? `${place}的一处旅途小物近景` : `${scene.city}旅途小物近景`;
+    core = scene.onRoad
+      ? `在${veh}上，旅途小物近景，浅景深，${light}。`
+      : `${item}，浅景深，${light}。`;
+  } else if (subject === 'festival') {
+    core = `${place}当下时节街头氛围，${light}。`;
+  } else if (scene.onRoad) {
+    core = `在${veh}上往外看，前往${scene.city}途中，${light}。`;
+  } else {
+    const own = spotLook(scene.cityId, scene.spot);
+    core = own ? `${place}，${own}，${light}。` : `${place}，${light}。`;
+  }
+
+  const doingLine = doing && subject !== 'sky' && !describe.includes(doing) ? `${doing}。` : '';
+  const tail = cast
+    ? `画面里有一个人：${cast}。不要出现可读的文字。`
+    : '没有人物，没有文字。';
 
   const parts = [
     lead,
     describe ? `${describe}。` : '',
     focus ? `这一张想这么拍：${focus}。` : '',
-    own ? `${place}，${own}，${light}。` : `${place}，${light}。`,
-    cast ? `画面里有一个人：${cast}。不要出现可读的文字。` : '没有人物，没有文字。',
+    core,
+    doingLine,
+    libHint ? `${libHint}。` : '',
+    tail,
   ];
   return parts.filter(Boolean).join('');
 }
@@ -1820,11 +1876,7 @@ export function sceneSun(scene: PhotoScene): SceneSun {
 }
 
 export function photoPrompt(scene: PhotoScene): string {
-  /*
-   * 极简模式在分流之前拦一道（2026-11-11）。见 `minimalPrompt` 的注释。
-   * 抬头拍天和在路上不走这条 —— 那两个场景缺了事实就会变成编。
-   */
-  if (scene.minimal && !scene.onRoad && (scene.subject ?? scene.view) !== 'sky') {
+  if (scene.minimal) {
     return minimalPrompt(scene);
   }
   /*
@@ -1982,55 +2034,23 @@ export function photoPrompt(scene: PhotoScene): string {
    * 引号必须去掉：`画面里没有文字` 那句约束挡不住「」里的字，
    * 模型会把台词当店招画出来。超过 40 字的截断 —— 提示词不是叙事的地方。
    */
-  const doingNow = (() => {
-    const t = String(scene.doing ?? '').replace(/[「」『』“”"]/g, '').replace(/\s+/g, ' ').trim();
-    if (t.length < 4) return '';
-    return t.length > 40 ? `${t.slice(0, 40)}…` : t;
-  })();
+  const doingNow = cleanDoing(scene.doing);
   const withDoing = (base: string): string => {
     if (!doingNow) return base;
     const at = hardAnchorAt(base);
     const line = `正在发生的事：${doingNow.replace(/。+$/, '')}。`;
     return at < 0 ? `${base}${line}` : base.slice(0, at) + line + base.slice(at);
   };
-  /*
-   * 她自己补的那一句（2026-11-09）。
-   *
-   * 清洗规则跟 `doingNow` 一模一样，理由也一样：引号会被模型当招牌画出来，
-   * 超长的描述会把这一格变成叙事。区别只有长度门槛 —— `doing` 写的是**发生的事**，
-   * 四五个字才成句；`focus` 是**取景的补充**，「靠后坐」三个字就有用。
-   */
-  const focusNow = (() => {
-    const t = String(scene.focus ?? '').replace(/[「」『』“”"]/g, '').replace(/\s+/g, ' ').trim();
-    if (t.length < 2) return '';
-    return t.length > 40 ? `${t.slice(0, 40)}…` : t;
-  })();
-  /*
-   * **插在硬约束前面，不能追加到末尾。**
-   *
-   * 各条模板的最后一句都是「没有人物 / 没有文字」这类硬约束 ——
-   * 模型对最后一句最敏感，把它挤到中间等于削弱它。
-   *
-   * 锚点要按优先级找：题材模板里有 `NO_PEOPLE`，而风景那条（ground）**没有这个常量**，
-   * 它的末尾是「没有文字，没有水印，没有边框。」。第一版只找了 `NO_PEOPLE`，
-   * 风景照就落到了最后一句后面 —— 测出来的正是这个。
-   */
+  const libHintNow = (scene.libraryHint ?? '').trim().replace(/。+$/, '');
+  const withLibraryHint = (base: string): string => {
+    if (!libHintNow) return base;
+    const at = hardAnchorAt(base);
+    const line = `${libHintNow}。`;
+    return at < 0 ? `${base}${line}` : base.slice(0, at) + line + base.slice(at);
+  };
+  const focusNow = cleanPhotoText(scene.focus, 2, 40);
   const TAIL_RULE = '没有文字，没有水印，没有边框。';
-  /*
-   * 她自己写的那一句（2026-11-10）。清洗规则同 `focus`，长度放宽到 60 ——
-   * 「看到什么」比「怎么拍」需要更多字：一个画面往往得点两样东西
-   * （灯、猫、谁在看谁），40 字写不下。
-   *
-   * 上限定在 60 而不是无限：再长就变成她在写小说，事实层会被淹掉。
-   */
-  const describeNow = (() => {
-    const t = String(scene.describe ?? '')
-      .replace(/[「」『』“”"]/g, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (t.length < 4) return '';
-    return t.length > 60 ? `${t.slice(0, 60)}…` : t;
-  })();
+  const describeNow = cleanPhotoText(scene.describe, 4, 120);
 
   const withFocus = (base: string): string => {
     if (!focusNow) return base;
@@ -2070,13 +2090,13 @@ export function photoPrompt(scene: PhotoScene): string {
    * 现在六个题材共用同一条规则：**她写的画面紧跟在标题句之后**（人的意图优先），
    * 再是形制、天、光、季节、机位、硬约束。
    */
-  if (subject === 'food') return withDescribe(withFocus(foodPrompt(scene)));
+  if (subject === 'food') return withDescribe(withFocus(withLibraryHint(foodPrompt(scene))));
   if (subject === 'street') {
-    return withDescribe(withFocus(withDoing(withSeason(streetPrompt(scene)))));
+    return withDescribe(withFocus(withLibraryHint(withDoing(withSeason(streetPrompt(scene))))));
   }
-  if (subject === 'festival') return withDescribe(withFocus(festivalPrompt(scene)));
+  if (subject === 'festival') return withDescribe(withFocus(withLibraryHint(festivalPrompt(scene))));
   if (subject === 'detail') {
-    return withDescribe(withFocus(withDoing(withSeason(detailPrompt(scene)))));
+    return withDescribe(withFocus(withLibraryHint(withDoing(withSeason(detailPrompt(scene))))));
   }
 
   /*
@@ -2410,6 +2430,7 @@ export function photoPrompt(scene: PhotoScene): string {
     /* 她正在做的事（2026-11-08）。先定场景，再说人。 */
     doingNow ? `正在发生的事：${doingNow.replace(/。+$/, '')}。` : '',
     cast ? `画面里有一个人：${cast}。` : '',
+    libHintNow && !sky ? `${libHintNow}。` : '',
     skyInfo ? `头顶：${skyInfo.told}。` : '',
     /*
      * 「一道山脊剪影」原来是写死的 —— 成都是平原，画出来凭空长出一道山。
@@ -2430,49 +2451,23 @@ export function photoPrompt(scene: PhotoScene): string {
      *
      * 有天气数据时，画面该由天气决定，体感只是她的感受；没有天气才退到体感。
      */
-    scene.feel
-      ? `${String(scene.feel).replace(/[。．.！!？?，,；;、\s]+$/, '')}，`
-        + (scene.weather ? '这是她的体感，画面里的天气以上面那句为准。' : '画面能看出这一点。')
-      : '',
-    /*
-     * 机位压短（2026-11-11）。「视角自然随意，略微不完美，有生活感」十七个字，
-     * 对模型只有「不要摆拍」这一个意思，五个字够。
-     */
+    (() => {
+      const f = String(scene.feel ?? '').replace(/[。．.！!？?，,；;、\s]+$/, '').trim();
+      if (!f || /不冷不热|没什么特别/.test(f)) return '';
+      if (scene.weather) return '';
+      return `${f}。`;
+    })(),
     realism ? '随手拍。' : '',
     realism
-      /*
-       * **尾句不再出现「自然光」。**（2026-11-12）
-       *
-       * 「自然光」是个总体判断词，权重又排在最后，会把前面算出来的
-       * 深夜、黄昏、蓝调全部推翻。现在只留质感。
-       *
-       * **拍了星的那张不能写「手机夜拍、噪点明显」**（2026-11-15）。
-       * 同一段前面刚说「满天星，银河斜过天顶」，末尾却说手持噪点、暗部没细节 ——
-       * 银河会被糊成一片灰。长曝是星空唯一拍得出来的方式。
-       */
       ? (sky && skyInfo?.stars
           ? '三脚架长曝，星点很实，暗部干净。'
           : sun.whiteNight
             ? '胶片颗粒，光偏白，暗部还看得清。'
-            : sun.daylit ? '胶片颗粒，轻微过曝。' : '手机夜拍，噪点明显，暗部没有细节。')
+            : sun.daylit ? '胶片颗粒，轻微过曝。' : '手机夜拍，暗部收敛。')
       : '',
-    // 有人和没人，这两句不能并存 —— 同一段提示词里既说有人又说没人，出图会飘。
-    /*
-     * 风景照也留人气 —— 一个人都没有的古城是置景，不是有人住的地方。
-     * 但**拍天那张不能有人**：镜头朝天，画面里只有天和地平线一道轮廓。
-     */
     cast ? '画面里只有这一个人，不要出现其他人。'
-      : sky ? `${NO_PEOPLE}。`
-      /*
-       * 展厅里的人叫观众，不叫行人（2026-11-15）。
-       * 「远处散着几个很小的行人」是在街上说的 —— 套进展厅，模型会顺手给展柜配一条街。
-       */
+      : (sky || scene.onRoad) ? `${NO_PEOPLE}。`
       : spotIndoor ? '远处有几个观众，背对着镜头，看不清脸。'
-      /*
-       * **试过给 `wild` 也配「没有人」，被 `photo-subject` 打了回来**：
-       * 婺源的江岭判成 mountain / wild，可那是有人住的梯田村。
-       * 「不在市区」推不出「没有人」，这条判据撑不住 —— 宁可留着人气。
-       */
       : `${FAR_PEOPLE}。`,
     '没有文字，没有水印，没有边框。',
   ];
@@ -2776,21 +2771,43 @@ async function modelNameHint(base: string, key: string, want: string): Promise<s
   }
 }
 
-export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  const base = req.api.trim().replace(/\/+$/, '');
+/** 将超时与可选外部取消信号合并为单个 AbortSignal。 */
+function combineAbortSignals(timeoutMs: number, external?: AbortSignal): AbortSignal {
+  const to = AbortSignal.timeout(timeoutMs);
+  return external ? AbortSignal.any([to, external]) : to;
+}
+
+/** 从生图响应 JSON 提取真实 usage（缺失则返回 undefined）。 */
+function extractImageUsage(payload: unknown): PhotoBytes['usage'] | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const u = (payload as { usage?: unknown }).usage;
+  if (!u || typeof u !== 'object') return undefined;
+  const r = u as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0);
+  const promptTokens = num(r.input_tokens ?? r.prompt_tokens);
+  const completionTokens = num(r.output_tokens ?? r.completion_tokens ?? r.total_tokens);
+  const cacheHitTokens = num(
+    (r.prompt_tokens_details as Record<string, unknown> | undefined)?.cached_tokens
+    ?? (r.input_tokens_details as Record<string, unknown> | undefined)?.cached_tokens,
+  );
+  if (promptTokens === 0 && completionTokens === 0) return undefined;
+  return {
+    promptTokens,
+    completionTokens,
+    cacheHitTokens,
+    cacheMissTokens: Math.max(0, promptTokens - cacheHitTokens),
+  };
+}
+
+export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
+  if (req.signal?.aborted) throw new Error('生图已取消');
+  const base = req.api.trim().replace(/\/+$/, '');
   if (!base) throw new Error('生图接口没填');
 
   const url = `${base}/images/generations`;
   const body: Record<string, unknown> = {
     model: req.model?.trim() || PHOTO_MODEL,
     prompt: req.prompt,
-    /*
-     * `n` 不写在 body 里，改由 `withN` 控制（2026-11-14）。
-     *
-     * 火山方舟的图片接口**根本没有 n 这个参数**（只有 `sequential_image_generation`），
-     * 而豆包是这次新接的一条路。我们只出一张，本来就不必发它 ——
-     * 但有些中转服务要求这个字段，所以默认照发、400 时摘掉。
-     */
-    // 有的服务只认 response_format，有的根本不认这个字段（认不认都不会报错）。
     response_format: 'b64_json',
   };
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -2802,7 +2819,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeout),
+      signal: combineAbortSignals(timeout, req.signal),
     });
 
   const wantSize = req.size?.trim() || PHOTO_SIZE;
@@ -2880,6 +2897,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
       res = await send(build());
     }
   } catch (e) {
+    if (req.signal?.aborted) throw new Error('生图已取消');
     const name = e instanceof Error ? e.name : 'Error';
     throw new Error(name === 'TimeoutError' ? '超时了' : `连不上服务（${name}）`);
   }
@@ -2923,44 +2941,30 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {  cons
 
   const first = firstImage(payload);
   if (!first) throw new Error('返回里没有图');
+  const usage = extractImageUsage(payload);
 
   if (typeof first.b64_json === 'string' && first.b64_json.length > 0) {
     const bytes = new Uint8Array(Buffer.from(first.b64_json, 'base64'));
-    /*
-     * 用文件头认格式，**别硬写 image/png**。
-     *
-     * 两个理由：中转站给的也可能是 JPEG，写死 PNG 扩展名就错了；
-     * 更要紧的是 —— 有些中转站在日志/响应里把 b64 换成占位符
-     * （「[base64 image data omitted]」这种），解出来根本不是图。
-     * 那种情况下必须当场说清，否则会存成一张打不开的「照片」。
-     */
     const mime = sniffImage(bytes);
     if (!mime) {
       const head = Buffer.from(bytes.slice(0, 16)).toString('hex');
       throw new Error(`b64 解出来不是图片（前 16 字节 ${head || '空'}）—— 中转站可能返回了占位符或截断的数据`);
     }
-    return { bytes, mime };
+    return usage ? { bytes, mime, usage } : { bytes, mime };
   }
   if (typeof first.url === 'string' && /^https?:\/\//.test(first.url)) {
     try {
-      const dl = await fetch(first.url, { signal: AbortSignal.timeout(timeout) });
+      const dl = await fetch(first.url, { signal: combineAbortSignals(timeout, req.signal) });
       if (!dl.ok) throw new Error(`下载图片 HTTP ${dl.status}`);
       const buf = new Uint8Array(await dl.arrayBuffer());
       if (!buf.length) throw new Error('图片是空的');
       const header = dl.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? '';
-      /*
-       * **不能只信 content-type。** 对象存储（阿里 OSS、各家 CDN）很常见地把图片标成
-       * `application/octet-stream` 或者压根不给。宿主按 mime 决定落盘扩展名，
-       * 认不出就存成 `.bin` —— 用户双击打不开，相册也显示不出来
-       * （2026-11-01 真实发生：一张 1.7MB 的 PNG 存成了 4aeaca….bin）。
-       *
-       * 所以：给的是 image/* 就用它；否则**看文件头**，再不行才按 PNG。
-       */
       const mime = header.startsWith('image/') && !header.includes('octet-stream')
         ? header
         : sniffImage(buf) ?? 'image/png';
-      return { bytes: buf, mime };
+      return usage ? { bytes: buf, mime, usage } : { bytes: buf, mime };
     } catch (e) {
+      if (req.signal?.aborted) throw new Error('生图已取消');
       throw new Error(`拿到了图片地址但下载失败（${e instanceof Error ? e.message : '未知'}）`);
     }
   }

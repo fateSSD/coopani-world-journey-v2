@@ -29,7 +29,7 @@
  * 用「谁新听谁」的话，记忆文件永远输，那这套东西等于没做。
  * 所以这里只比**内容**，不比时间。
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -390,6 +390,25 @@ export class TravelMemoryStore {
 
   get file(): string {
     return this.dir ? join(this.dir, FILE) : this.local;
+  }
+
+  /**
+   * 彻底清理本机与同步盘目录中的旅行记忆文件（含冲突副本，不吞删除异常）。
+   */
+  clear(): void {
+    const targets = new Set<string>([this.local]);
+    if (this.dir) {
+      targets.add(join(this.dir, FILE));
+      if (existsSync(this.dir)) {
+        for (const n of readdirSync(this.dir)) {
+          if (!/^travel-memory[^\\/]*\.json$/.test(n) || n.includes('.bad.')) continue;
+          targets.add(join(this.dir, n));
+        }
+      }
+    }
+    for (const p of targets) {
+      if (existsSync(p)) unlinkSync(p);
+    }
   }
 
   private readFile(path: string): TravelMemory | null {

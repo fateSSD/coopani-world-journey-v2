@@ -191,7 +191,30 @@ test('钱花光又在外地：回程不许躺平，一定动身往家走', async
     now: () => clock,
   });
   const origFetch = globalThis.fetch;
-  globalThis.fetch = async () => { throw new Error('offline'); };
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.startsWith('https://api.open-meteo.com/')) {
+      // 失败响应不会进天气缓存，144 拍会每拍等一次真实的 1.1 秒请求节流。
+      // 返回覆盖本测试三天窗口的本地预报，既不发外网请求，也不把验收卡在两分多钟后。
+      const time = ['2026-11-04', '2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08', '2026-11-09'];
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ daily: {
+          time,
+          weather_code: time.map(() => 0),
+          temperature_2m_max: time.map(() => 22),
+          temperature_2m_min: time.map(() => 11),
+          precipitation_probability_max: time.map(() => 5),
+          wind_speed_10m_max: time.map(() => 8),
+        } }),
+      };
+    }
+    if (u.startsWith('https://registry.npmjs.org/')) {
+      return { ok: true, status: 200, json: async () => ({ latest: '0.0.0' }) };
+    }
+    throw new Error('offline');
+  };
   await world.start(fakeHost(events));
   try {
     for (let i = 0; i < 144; i++) {         // 72 小时，每半小时一巡检（48 小时偶尔不够：挑站/票钱要试两轮）

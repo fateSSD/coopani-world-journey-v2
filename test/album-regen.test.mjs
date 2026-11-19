@@ -15,7 +15,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -75,4 +75,23 @@ test('老记录没有提示词：读得出来、不崩', () => {
   const again = new PhotoBook(dir);
   assert.equal(again.list().length, 1);
   assert.equal(again.list()[0].prompt, undefined, '缺这一格是正常的，别当损坏');
+});
+
+test('J21/J22：写盘失败时内存与磁盘一起回滚，补拍不留下删旧未加新的半状态', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jr-regen-io-'));
+  const book = new PhotoBook(dir);
+  book.add(rec('log:other.png', { dateKey: '2026-11-09' }));
+  book.add(rec('log:old.png'));
+  const before = book.list().map((p) => p.handle);
+  const file = join(dir, 'photos.json');
+  const raw = readFileSync(file, 'utf8');
+  book.save = () => { throw new Error('mock disk full'); };
+
+  assert.throws(() => book.add(rec('log:new.png'), { dateKey: '2026-11-10', cityId: 'chengdu' }), /disk full/);
+  assert.deepEqual(book.list().map((p) => p.handle), before, '删旧 + 加新必须同进同退');
+  assert.throws(() => book.update('log:old.png', rec('log:redo.png')), /disk full/);
+  assert.deepEqual(book.list().map((p) => p.handle), before, '重拍写盘失败不得改写内存');
+  assert.throws(() => book.remove('log:other.png'), /disk full/);
+  assert.deepEqual(book.list().map((p) => p.handle), before, '删除写盘失败不得只在内存消失');
+  assert.equal(readFileSync(file, 'utf8'), raw, '失败路径不得改动持久化索引');
 });

@@ -231,14 +231,17 @@ test('极简模式：时段和天气必须留 —— 不写会把夜里画成白
   assert.match(rainy, /小雨/, `没写天气：${rainy}`);
 });
 
-test('极简模式：抬天看星和在路上不走这条 —— 那两处缺了事实就是编', () => {
-  const skyFull = photoPrompt({ ...BASE, subject: 'sky', hour: 22 });
+test('极简模式 v2：抬头看天和在路上也统一走极简，带真实天象或车窗外视角且不带多余行人', () => {
   const skyMin = photoPrompt({ ...BASE, subject: 'sky', hour: 22, minimal: true });
-  assert.equal(skyMin, skyFull, '抬头拍天被极简带走了 —— 天上有没有星是算出来的，不能省');
+  assert.match(skyMin, /婺源上空，抬头看天/, `极简天空没说抬头看天：${skyMin}`);
+  assert.match(skyMin, /满天星|星|云|夜里/, `极简天空丢了真实天象：${skyMin}`);
+  assert.doesNotMatch(skyMin, /随手拍|三脚架长曝|噪点明显|地平线.*一道/, `极简天空混进了详细模式套话：${skyMin}`);
+  assert.match(skyMin, /没有人物，没有文字。$/);
 
-  const roadFull = photoPrompt({ ...BASE, onRoad: true, hour: 15 });
-  const roadMin = photoPrompt({ ...BASE, onRoad: true, hour: 15, minimal: true });
-  assert.equal(roadMin, roadFull, '路上被极简带走了');
+  const roadMin = photoPrompt({ ...BASE, onRoad: true, mode: '火车', hour: 15, minimal: true });
+  assert.match(roadMin, /火车上往外看，前往婺源途中/, `极简路上没写车窗外视角：${roadMin}`);
+  assert.doesNotMatch(roadMin, /远处散着几个很小的行人|田野、村庄和路/, `极简路上不该有行人或长模板：${roadMin}`);
+  assert.match(roadMin, /没有人物，没有文字。$/);
 });
 
 test('极简模式：硬约束仍然在，一条都不能少', () => {
