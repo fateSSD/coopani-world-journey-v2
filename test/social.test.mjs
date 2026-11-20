@@ -12,7 +12,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -497,5 +497,186 @@ test('在家/在路上从不上报 presence，here 里没有她，减一就是�
   try {
     await world.tick();
     assert.equal(world.uiSnapshot().social.here, 1, `在家那一只别人被减没了：${world.uiSnapshot().social.here}`);
+  } finally { restore(); }
+});
+
+/* ---------- 接了约当天就走（2026-11-20 Mr.Q 报的） ---------- */
+
+/**
+ * 一台「有约可接」的服务器：`/invite` 回一条，`/accept` 收下。
+ *
+ * 这条守的是 Mr.Q 截图里那对矛盾：消息说「把山上剩的半截走完就动身」，
+ * 「接下来」那栏还是这座城市一整天的大盘鸡、戈壁滩、滑沙。
+ */
+function inviteReadyServer(one, clock, mine = []) {
+  return async (url, init) => {
+    const u = String(url);
+    const method = (init && init.method) || 'GET';
+    if (u.includes('/accept')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          ok: true, with: one.pet, to: one.to, days: one.days,
+          note: one.note, meet: one.meet, pace: one.pace,
+        }),
+      };
+    }
+    if (u.includes('/sight/status')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [], pool: 10 }) };
+    }
+    /*
+     * `mine=1` 是「我发的那条被谁接了」（`myTakenInvites`），空着 ——
+     * 这条测的是她**主动去接别人的**，不是别人接了话推给她。
+     * 两个接口共用 `/invite` 路径，只有这一个参数分得开。
+     */
+    if (u.includes('/invite')) {
+      const isMine = u.includes('mine=1');
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: isMine ? mine : [one] }) };
+    }
+    if (method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    return { ok: true, status: 200, json: async () => ({ ok: true, list: [one], pool: 10, here: 2 }) };
+  };
+}
+
+async function bootTakeToday(nowISO, tripExtra = {}, life = null) {
+  const dir = mkdtempSync(join(tmpdir(), 'jr-take-today-'));
+  /*
+   * 「她在不在睡」读的是 life 广播的那份文件，不是 journey 自己的 state
+   * （见 `asleepUntil`：只读不写，两个世界各有各的账）。
+   */
+  if (life) writeFileSync(join(dir, 'life-public.json'), JSON.stringify(life));
+  new StateStore(dir).save({
+    ...initialState('lanzhou'),
+    ...staying({
+      /* 停留从昨天开始：`stayDays` 只有 1，够不着「待够了」那条，不会自己走人。 */
+      stayStartedAt: '2026-11-04T00:00:00Z',
+      stayDateKey: '2026-11-05',
+      ...tripExtra,
+    }),
+  });
+  const clock = { now: new Date(nowISO) };
+  const one = {
+    id: 'abcdef0123456789', pet: '鲸鲸', to: 'suzhou', days: 2,
+    note: '', meet: 'shanghai', pace: 1,
+  };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = inviteReadyServer(one, clock);
+  const events = [];
+  const world = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', meetUrl: 'https://x.test' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => clock.now,
+  });
+  await world.start(fakeHost(events));
+  return {
+    world, clock, one, events,
+    restore: () => { globalThis.fetch = origFetch; world.stop?.(); },
+  };
+}
+
+test('上午接了约：今天就动身，行程不许还照着原计划走下去', async () => {
+  /*
+   * 时间是当地 10:00 —— 「今天走不走」在早上八点已经判过，`decidedOn` 记成今天。
+   * 缺口就在这里：`pledge` 写进了状态，可**今天再没有第二个决策点**，
+   * `here.id !== pledgeStop` 那一支要明天早上才被读到。
+   * 中间十几个小时她照原计划把这座城逛完，台词却早就说了「这就动身」。
+   */
+  const { world, clock, one, restore } = await bootTakeToday(NOW);
+  try {
+    await world.tick();
+    assert.equal(world.st.decidedOn, '2026-11-05', '先确认今天的决策额度已经用掉（这正是缺口的前提）');
+    assert.equal(world.st.phase, 'staying');
+
+    const r = await world.takeInvite(one.id);
+    assert.equal(r.isError, undefined, `该接成：${r.text}`);
+    assert.equal(world.st.decidedOn, null, '接完约没有把今天的决策重开 —— 这一整天都会照原计划逛');
+    assert.match(r.text, /这会儿就该动身/, `回执没交代今天走不走：${r.text}`);
+
+    clock.now = new Date(clock.now.getTime() + 60_000);   // 下一轮巡检
+    await world.tick();
+    assert.equal(world.st.phase, 'traveling', `接了约还留在城里：${world.st.phase}`);
+    assert.equal(world.st.leg?.toId, 'shanghai', `目的地不是碰头那座城：${world.st.leg?.toId}`);
+  } finally { restore(); }
+});
+
+test('晚上十点半接的约：今天不动，留给明早 —— 不许半夜买票走人', async () => {
+  /*
+   * `depart` 有 7–21 点的窗口，`moveOn` 没有。重开决策时如果不挡这一手，
+   * 22:30 接一条约，下一轮巡检就直接买票出发了 —— 用户看到的是一条半夜的「我上路了」。
+   */
+  const { world, one, restore } = await bootTakeToday('2026-11-05T14:30:00Z');   // 西安 22:30
+  try {
+    await world.tick();
+    world.st = { ...world.st, decidedOn: '2026-11-05' };
+    const r = await world.takeInvite(one.id);
+    assert.equal(r.isError, undefined, `该接成：${r.text}`);
+    assert.equal(world.st.decidedOn, '2026-11-05', '晚上十点半把今天的决策额度还回去了 —— 下一拍就会半夜出发');
+    assert.equal(world.st.phase, 'staying');
+    assert.match(r.text, /今天这一趟不安排动身/, `回执该说实话：${r.text}`);
+  } finally { restore(); }
+});
+
+test('她睡着的时候接的约：不叫醒她，等醒了再走', async () => {
+  const { world, one, restore } = await bootTakeToday(NOW, {}, {
+    asleepUntil: '2026-11-05T06:00:00Z',   // 当地 14:00 才醒
+  });
+  try {
+    await world.tick();
+    world.st = { ...world.st, decidedOn: '2026-11-05' };
+    await world.takeInvite(one.id);
+    assert.equal(world.st.decidedOn, '2026-11-05', '睡着时把决策额度还回去了 —— 下一拍她会爬起来赶车');
+  } finally { restore(); }
+});
+
+test('别人接了她发的那条：认领之后同样当天就走，不拖到明早', async () => {
+  /*
+   * 另一条入口。她发了「有没有人一起去苏州」，别人接了 —— 服务端把这条推回来，
+   * `claimTakenInvite` 认领并写 pledge。这条和 `takeInvite`（她主动接别人的）
+   * 是同一件事的两头，缺口也一样：认领发生在早上八点之后，就不会再走。
+   */
+  const { world, clock, one, restore } = await bootTakeToday(NOW);
+  try {
+    await world.tick();
+    assert.equal(world.st.decidedOn, '2026-11-05', '前提：今天的决策额度已经用掉');
+
+    /* 这一刻起，服务端说「那条被人接了」。 */
+    globalThis.fetch = inviteReadyServer(one, clock, [one]);
+    await world.claimTakenInvite(world.meetOptions(), clock.now);
+    assert.equal(world.st.pledge?.inviteId, one.id, '没认领到');
+    assert.equal(world.st.decidedOn, null, '认领完没有重开今天的决策');
+
+    clock.now = new Date(clock.now.getTime() + 60_000);
+    await world.tick();
+    assert.equal(world.st.phase, 'traveling', `认领了还留在城里：${world.st.phase}`);
+  } finally { restore(); }
+});
+
+test('他点了「好」但那条已经没了：必须说一句，不许静默', async () => {
+  /*
+   * 第三种「说了约好了却没动」的成因：卡片上他点了「好」，`answerAsk` 回身去接，
+   * 可服务端那边那条已经过期 / 被人接满。原来这行的返回值直接丢掉 ——
+   * 卡片消失、行程不动，而她上一句还停在「谢谢你点头，这就动身」。
+   *
+   * 判据：**任何「他点了按钮」的动作，失败都得回一句话。**
+   */
+  const { world, events, one, restore } = await bootTakeToday(NOW);
+  try {
+    await world.tick();
+    /* 从这一刻起，列表是空的 —— 那条在服务端已经没了。 */
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, list: [] }) });
+    world.st = {
+      ...world.st,
+      ask: {
+        kind: 'accept', cityId: one.to, days: one.days, inviteId: one.id,
+        withPet: one.pet, note: null, askedAt: NOW,
+      },
+    };
+    await world.answerAsk(true);
+    assert.equal(world.st.pledge, null, '没接上却留下了约定');
+    assert.ok(
+      JSON.stringify(events).includes('没接上'),
+      `他点了「好」、什么都没发生，而且一句话都没推：${JSON.stringify(events).slice(0, 400)}`,
+    );
   } finally { restore(); }
 });

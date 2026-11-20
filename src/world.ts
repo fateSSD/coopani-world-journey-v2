@@ -1575,7 +1575,30 @@ export class JourneyWorld implements World {
       return;
     }
     // 接别人的邀约：真的去服务端接下，接完照样立刻往那座城走。
-    if (a.inviteId) await this.takeInvite(a.inviteId, true);
+    if (a.inviteId) {
+      const r = await this.takeInvite(a.inviteId, true);
+      /*
+       * **他点了「好」，但这一趟没接上 —— 必须说出来。**（2026-11-20）
+       *
+       * 原来这行的返回值直接丢掉：她 22 分钟前说「你点个好好我才算真答应」，
+       * 他点了，可服务端那边那条已经被别人接满 / 过期了 —— 于是什么也没发生。
+       * 面板上卡片消失、行程不动，而她上一句话还停在「谢谢你点头，这就动身」。
+       * 用户看到的就是「说了约好了，可是行程没改」。
+       *
+       * 判据：**任何「他点了按钮」的动作，失败都得回一句话**。
+       * 静默失败在这一支上尤其难看 —— 他以为自己做了一件有用的事。
+       */
+      if (r.isError) {
+        this.log?.warn(`他点了好，但接邀约失败：${r.text}`);
+        await this.push(
+          'journey.invite',
+          `invite-fail-${a.inviteId}`,
+          `他点了「好」，可这一趟没接上：${r.text}`
+          + '\n（别当成已经约好了 —— 实情是没成。该跟他说一句。）',
+          'flush',
+        );
+      }
+    }
   }
 
 
@@ -2699,6 +2722,67 @@ export class JourneyWorld implements World {
       'debounce',
     );
     return `那一趟撤了，在${where}再待一天。明天早上再定走不走。`;
+  }
+
+
+  /**
+   * 刚接下一条约 —— **今天重新给一次决策机会**（2026-11-20，Mr.Q 报的）。
+   *
+   * ## 报的是什么
+   *
+   * 「她说约好了逛完早上的景点马上动身，可是行程还是没改。」
+   * 截图里两句话同时成立：消息说「把这边山上剩的半截走完就动身」，
+   * 「接下来」那栏还是这座城市的一整天 —— 大盘鸡、戈壁滩、滑沙。
+   *
+   * ## 根因：「一天判一次」的闸管不住外部事件，代价却全由那个闸付
+   *
+   * 「今天走不走」只在当地 8–9 点判一次，判过就把 `decidedOn` 记成今天
+   * （`stayTick` 那个 gate）。她上午十点接了约，`pledge` 确实写进了状态，
+   * 但**今天已经没有第二个决策点**：`here.id !== pledgeStop` 那一支
+   * 要等明天早上八点才会被读到。中间这十几个小时她照原计划逛完全天，
+   * 而台词是模型读着 `pledge` 现说的 —— 于是「说了要走」和「没走」同时成立。
+   *
+   * 邀约是**外部事件**，不该等下一次日切。接了就重开今天这一拍，
+   * 下一轮巡检（60 秒内）自然读到 pledge、走 `moveOn` 动身。
+   *
+   * ## 三种不用重开的
+   *
+   * - **今天还没判过**（当地 8 点前）：八点那一拍自己会读到 pledge，什么都不用做。
+   * - **太晚**（21 点后）：`depart` 本来就有 7–21 这个窗口，`moveOn` 却没有 ——
+   *   不在这儿挡，22 点接一条约，下一拍她就半夜买票走人。
+   * - **在睡 / 已经在这座城**：睡着不做决定（和 `stayTick` 那条同一个理由）；
+   *   已经在目的地就没什么可动身的，重开只是白判一次。
+   *
+   * @returns 三态，回执要按这个说实话 —— 说错就是这句话本身变成了新的假话：
+   *   - `reopened`：重开了，下一拍就走（钱、路仍可能拦下）
+   *   - `at-hour`：今天的决策点还没到（当地 8 点前），那一拍自己会读到
+   *   - `later`：太晚、在睡、或者本来就在那座城 —— 今天不安排动身
+   */
+  private reopenTodayDecision(now: Date): 'reopened' | 'at-hour' | 'later' {
+    if (this.st.phase !== 'staying') return 'later';
+    const here = this.cityOrNull(this.st.hereId);
+    if (!here) return 'later';
+    const moment = localMoment(now, here.tz);
+    /*
+     * 21 点之后不重开。`depart` 本身有 7–21 这个窗口，`moveOn` 却没有 ——
+     * 不在这儿挡，22 点接一条约，下一拍她就半夜买票走人了。
+     */
+    if (moment.decimal >= 21) return 'later';
+    if (this.asleepUntil() > this.realNow().getTime()) return 'later';
+    /* 约定的下一站就是脚下这座城 —— 她本来就在，没有什么可动身的。 */
+    const pledge = this.activePledge(now);
+    if (pledge && this.pledgeStop(pledge) === here.id) return 'later';
+    /*
+     * 今天的决策点还没到（当地八点前）：不用清，那一拍自己会读到 pledge。
+     * **但也不能说「今天不动身」** —— 那是另一句错话。
+     */
+    if (moment.decimal < DECIDE_HOUR) return 'at-hour';
+    if (this.st.decidedOn !== moment.dateKey) return 'at-hour';
+
+    this.st = { ...this.st, decidedOn: null };
+    this.persist();
+    this.log?.info('接下约定，今天重新判一次走不走 —— 不等明天早上八点。');
+    return 'reopened';
   }
 
 

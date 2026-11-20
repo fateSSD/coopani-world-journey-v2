@@ -764,6 +764,14 @@ export const socialMethods: Record<string, any> = {
       city: dest.name,
     });
     this.persist();
+    /*
+     * 有人接了话 —— 今天这一拍重开（2026-11-20，见 `reopenTodayDecision`）。
+     *
+     * 原来认领完就没了下文：`pledge` 写进了状态，但「今天走不走」早上八点已经
+     * 判过并且记进 `decidedOn`，于是她照原计划逛完一整天，明天早上才动身 ——
+     * 而那条事件的语气是「这就得往那儿走」。说了不走，比不说更难受。
+     */
+    const reopen = this.reopenTodayDecision(now);
     await this.push(
       'journey.invite',
       `invite-taken-${one.id}`,
@@ -777,6 +785,12 @@ export const socialMethods: Record<string, any> = {
         : (here && here.id === dest.id
           ? `\n本来就在${dest.name}，这几天就按这个过。`
           : `\n也得真的往${dest.name}走 —— 路上该多久是多久，不是明天就到。`))
+      + (reopen === 'reopened'
+        // 重开了决策 ≠ 一定走得了（买不起票、路不通都可能拦下）。所以只说「这就安排」，不替她说「已经上路」。
+        ? `\n（今天剩下的行程会放下 —— 她这就收拾东西去赶车/赶飞机。）`
+        : reopen === 'at-hour'
+          ? `\n（今天的决策点还没到 —— 到点会重新判一次，多半直接动身。）`
+          : '')
       + `\n（那边也是这么走的：${useMeet ? `先在${useMeet.name}碰头，` : ''}到了各待 ${one.days} 天，谁先到谁等。）`,
       'flush',
     );
@@ -1270,6 +1284,22 @@ export const socialMethods: Record<string, any> = {
     });
     this.persist();
 
+    /*
+     * 接了就动身 —— 两种走法分开（2026-11-20）。
+     *
+     * **在城里待着**：今天的决策重开一次，下一轮巡检读到 pledge 自己走。
+     *
+     * 缺口就在这儿：「今天走不走」早上八点判过一次、`decidedOn` 记成今天，
+     * 而这条约是上午十点接的 —— **今天再没有第二个决策点**。于是她照原计划
+     * 把这座城逛完（「接下来」那栏原封不动：大盘鸡、戈壁滩、滑沙），
+     * 明天早上才动身；而台词是模型读着 `pledge` 现说的，早就在说「这就动身」。
+     *
+     * **说了不动，比不说更糟**：用户看到的是一句永远不兑现的预告。
+     *
+     * **在家**：`depart(now, true)` 当场出门，两个门禁都跳过（见下面那段注释）。
+     */
+    const reopen = atHome ? 'later' : this.reopenTodayDecision(now);
+
     await this.push(
       'journey.invite',
       `invite-${id}`,
@@ -1283,18 +1313,17 @@ export const socialMethods: Record<string, any> = {
           : `\n接下来她先往${useMeet.name}去会合，见上了再一起往${dest.name}走。`)
         : (here.id === dest.id
           ? `\n本来就在${dest.name}，接下来这几天就按这个过。`
-          : `\n接下来她会真的往${dest.name}走 —— 不是明天就到，路上该多久是多久。`)),
+          : `\n接下来她会真的往${dest.name}走 —— 不是明天就到，路上该多久是多久。`))
+      + (reopen === 'reopened'
+        // 重开决策 ≠ 一定走得了（钱不够、路不通都会拦下）。所以只说「就此安排」，不替她说「已经上路」。
+        ? '\n（今天剩下的行程放下了 —— 她这就收拾东西去赶车/赶飞机。）'
+        : reopen === 'at-hour'
+          ? '\n（今天的决策点还没到 —— 到点会重新判一次，多半直接动身。）'
+          : ''),
       'flush',
     );
 
-    /*
-     * 在家接下的，**当场动身**。
-     *
-     * 按手动处理，两个门禁都跳过：加载后的宽限（「别在我装好的下一秒就消失」）
-     * 和 7–21 点的出门窗口。理由是这一趟不是闲逛 —— 她已经答应了别人，
-     * 而那条邀约 24 小时就过期，等到明天早上可能就没了。
-     */
-    if (this.st.phase === 'home') {
+    if (atHome) {
       this.log?.info(`在家接了一条去${dest.name}的邀约，这就动身。`);
       await this.depart(now, true);
     }
@@ -1310,6 +1339,19 @@ export const socialMethods: Record<string, any> = {
             ? `她本来就在${dest.name}，这几天不走。`
             : `下一站会往${dest.name}走，到了之后待满 ${r.days} 天。`))
         + (r.note ? `对方原话：「${r.note}」。` : '')
+        /*
+         * **今天到底走不走，必须跟她说清**（2026-11-20）。
+         *
+         * 这段文字是她下一句话的依据。原来这里只说了「下一站会往X走」，
+         * 于是她自己补成「走完这边的景点就动身」—— 而代码里今天根本不会走。
+         * 现在按实际安排给一句，别让她替系统编时间。
+         */
+        + (atHome || reopen === 'reopened'
+          ? '\n（这会儿就该动身 —— 城里剩下的那半截不逛了。别说成「逛完再去」。）'
+          : reopen === 'at-hour'
+            // 八点前接的。那天还没判过 —— 说「明天才走」同样是假话。
+            ? '\n（今天八点那个点会判走不走，到时候多半就直接动身了。别把时间说死。）'
+            : '\n（今天这一趟不安排动身了：这会儿太晚，或者她在睡。别跟他说「这就走」。）')
         + '这件事该跟他说一句 —— 说清跟谁、先去哪儿碰头、去哪儿、几天，别当成通知念。',
     };
   },
