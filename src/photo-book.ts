@@ -189,6 +189,13 @@ export class PhotoBook {
            * 老记录没有这一格：留 undefined，不补空串（前端要能区分「没留下」和「被清空」）。
            */
           ...(typeof r.prompt === 'string' ? { prompt: r.prompt } : {}),
+          /*
+           * 参考图名单（2026-11-20 补）。**这里漏过一次**：`add()` 把 `refs` 写进了
+           * 磁盘，读回来时这份白名单没带它 —— 于是「重拍沿用当初那份名单」
+           * 只在同一次运行里成立，重启 Core 之后就退回当前配置，脸换了也不知道。
+           * 白名单重建的规矩：`PhotoRecord` 加一个字段，这里必须跟着加一行。
+           */
+          ...(Array.isArray(r.refs) ? { refs: r.refs.filter((x): x is string => typeof x === 'string') } : {}),
         }));
     } catch {
       // 坏了就当没有。照片簿丢一张索引，比让 World 起不来轻得多。

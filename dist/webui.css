@@ -473,6 +473,26 @@
 }
 
 /*
+ * 「同一天拍的都留着」（2026-11-20）。
+ *
+ * 放成一行细小的勾选，不抢相册里那面照片墙的视觉 —— 它是设置，不是内容。
+ * 提示写在 title 上：这句话本身有点长，摊在页面上会把第一屏顶下去。
+ */
+.jr-keepall {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--jr-soft);
+  cursor: pointer;
+  user-select: none;
+}
+.jr-keepall input { width: 14px; height: 14px; margin: 0; accent-color: var(--jr-accent); cursor: pointer; }
+.jr-keepall input:disabled { cursor: default; }
+.jr-keepall-k { line-height: 1.4; }
+
+/*
  * 提示词折叠区。
  *
  * 相册是一天一张、一个月三十张，全摊开就成文档了；折起来只占一行，

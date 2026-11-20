@@ -922,7 +922,8 @@ export const photoMethods: Record<string, any> = {
        *    不报错，按自己的默认值出图。请求对、图也对，**只是不是他要的那张**。
        *    量一下，不一致就写日志。
        */
-      const wantCrop = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol);
+      const ark = this.arkBackend(backend);
+      const wantCrop = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol, ark);
       if (wantCrop && shot.mime !== 'image/png') {
         this.log?.info(
           `水印没裁：这张回来是 ${shot.mime}，裁剪只支持 PNG。`
@@ -1035,7 +1036,14 @@ export const photoMethods: Record<string, any> = {
           throw new Error('重拍目标已不在相册，未写入新记录；宿主事件与已归档媒体可能残留');
         }
       } else {
-        this.photos.add(rec, replace ? { dateKey, cityId: sceneId } : undefined);
+        /*
+         * 补拍要不要挤掉当天那张 —— 由 `imageKeepAll` 决定（2026-11-20，读者报的）。
+         *
+         * 老行为（默认）是 `replaceDay`：同城同日只留一条，新拍的顶掉旧的那条记录。
+         * 打开开关就一律新增 —— 早上一张、傍晚一张都留在相册里，谁也不挤谁。
+         * 旧图本来就还在磁盘上（内容寻址，不删字节），缺的只是那条索引。
+         */
+        this.photos.add(rec, replace && !this.cfg.imageKeepAll ? { dateKey, cityId: sceneId } : undefined);
       }
       photoCommitted = true;
       this.photoOutcome = 'ok';
@@ -1527,10 +1535,27 @@ export const photoMethods: Record<string, any> = {
       // 图鉴读坏了不影响拍照：当没有参考图
     }
 
-    // 手填补充
+    /*
+     * 手填补充。
+     *
+     * ## 手填也要过「这张有没有她」那道闸（2026-11-20，读者报的）
+     *
+     * 图鉴那一段对 `characters / outfits` 判了 `castOn`，手填这一段**没判** ——
+     * 于是同一份配置下，空镜（这一张不该有她）照样把人物参考图发出去：
+     * 模型一边看到一张脸、一边被告知「画面里没有人物」，表现是「有时画她有时不画」，
+     * 而多张参考图还会把同一个人复制成两个、露出两条尾巴。
+     *
+     * 手填的路径没法按目录分类（它就是一行一行的绝对路径），所以**默认与图鉴同一条闸**：
+     * 这张有她才发。想让某个文件在任何一张都带上（比如一张画风参考），
+     * 行首加一个 `*` 就行 —— 那是显式声明，不是猜。
+     */
     for (const line of String(this.cfg.imageRefs ?? '').split(/\r?\n/)) {
-      const raw = line.trim();
+      const marked = line.trim();
+      if (!marked) continue;
+      const always = marked.startsWith('*');
+      const raw = always ? marked.slice(1).trim() : marked;
       if (!raw) continue;
+      if (!castOn && !always) continue;
       const fp = raw.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(raw) ? raw : resolve(this.opts.dataDir, raw);
       if (out.paths.includes(fp)) continue;
       out.paths.push(fp);
@@ -1580,6 +1605,17 @@ export const photoMethods: Record<string, any> = {
    * 域名 / 模型名放行，其余一律不发图。
    */
   refsAllowedBackend(backend: { api?: string; model?: string }): boolean {
+    return this.arkBackend(backend);
+  },
+
+  /**
+   * 这个后端是不是方舟系。
+   *
+   * 同一个判据现在有两处要用：**参考图只发方舟**（它认 `image` 数组），
+   * 和**水印不用裁**（它认 `watermark: false`，官方文档写明 false 就是不加水印）。
+   * 两件事本来就是一个事实的两面 —— 谁认这套参数，谁就是那一支。
+   */
+  arkBackend(backend: { api?: string; model?: string }): boolean {
     if (String(this.cfg.imagePreset ?? '').trim() === 'doubao') return true;
     const host = String(backend.api ?? '').toLowerCase();
     const model = String(backend.model ?? '').toLowerCase();

@@ -176,11 +176,25 @@ test('collectRefPaths：默认关 / 开了才读 / 只取命中条目', () => {
     // 抬头拍天不带人
     assert.deepEqual(on.collectRefPaths('sky', true, '', '大肥鱼', '').paths, []);
 
-    // 手填补充：每行一个，相对路径按 dataDir 解析
+    /*
+     * 手填补充（2026-11-20 改了口径）。
+     *
+     * 原来这条断言写的是「castOn=false 也要拿到手填的两张」—— 而那正是读者报的毛病：
+     * 空镜照样带人物参考图，出来「有时画她有时不画」、多张还会复制出两条尾巴。
+     * 现在手填跟图鉴同一条闸：这张有她才发；想让某张永远带（画风参考），行首加 `*`。
+     */
     const manual = makeWorld(dir, { imageUseRefs: true, imageRefs: 'manual-a.png\n\nmanual-b.png' });
-    const got = manual.collectRefPaths('ground', false, '', '', '');
-    assert.equal(got.paths.length, 2);
+    assert.deepEqual(manual.collectRefPaths('ground', false, '', '', '').paths, [], '空镜不该带手填的参考图');
+    const got = manual.collectRefPaths('ground', true, '', '', '');
+    // 图鉴那条 `大肥鱼` 给 2 张，手填再补 2 张 —— 一共 4 张。
+    assert.equal(got.paths.length, 4, `有她那张该是图鉴 2 + 手填 2，实际 ${got.paths.length}`);
+    assert.ok(got.paths.some((p) => p.endsWith('manual-a.png')), '手填的那张没进名单');
     assert.ok(got.paths[0].startsWith(dir), '相对路径按 dataDir 解析');
+
+    // `*` = 显式声明「任何一张都带」
+    const starred = makeWorld(dir, { imageUseRefs: true, imageRefs: `*${join(dir, 'always.png')}\nmanual-c.png` });
+    const dry = starred.collectRefPaths('ground', false, '', '', '');
+    assert.deepEqual(dry.paths, [join(dir, 'always.png')], '带星号那张空镜也要发，没星号的照旧不发');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

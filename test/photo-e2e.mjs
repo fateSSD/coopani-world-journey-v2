@@ -923,3 +923,34 @@ test('口味：类别写错时说清只有三类，不静默吞掉', async () =>
   assert.match(r.text, /place/, '没告诉她合法的三类');
   assert.equal(r.text.includes('记下了'), false, '写错了还说记下了');
 });
+
+/* ============================================================
+ * 补拍会不会挤掉当天那张（2026-11-20，读者报的）
+ *
+ * 原来的行为是「同城同日只留一条」：点一次补拍，早上那张记录就被新那张顶掉。
+ * 旧图其实还在磁盘上（内容寻址，不删字节），但相册里看不到了 ——
+ * 用户看到的是「我的照片丢了」。
+ *
+ * 这一组盯的是**开关两边的差别真的成立**，不是「函数跑没跑」。
+ * ============================================================ */
+
+test('补拍：开关关着时同一天只留一张，打开之后两张都在', async () => {
+  const api = await fakeImageApi('b64');
+  const readBook = (dir) => {
+    const f = join(dir, 'photos.json');
+    return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')).items : [];
+  };
+  try {
+    const off = await makeWorld({ imageApi: api.api });
+    const city = cityById('tianshui');
+    await off.world.maybePhoto(city, 15, '2026-10-31', '麦积山石窟', null);
+    await off.world.maybePhoto(city, 18, '2026-10-31', '麦积山石窟', null, true);
+    assert.equal(api.seen.length, 2, '两次补拍都该真的发出去');
+    assert.equal(readBook(off.dir).length, 1, '开关关着：同一天只该留一条（老行为）');
+
+    const on = await makeWorld({ imageApi: api.api, imageKeepAll: true });
+    await on.world.maybePhoto(city, 15, '2026-11-02', '麦积山石窟', null);
+    await on.world.maybePhoto(city, 18, '2026-11-02', '麦积山石窟', null, true);
+    assert.equal(readBook(on.dir).length, 2, '开关打开：两张都该留在相册里');
+  } finally { await api.close(); }
+});

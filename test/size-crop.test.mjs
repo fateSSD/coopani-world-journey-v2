@@ -251,3 +251,52 @@ test('换成不同的 handle 时，旧记录照样被替换掉（原行为不能
   assert.ok(book.list().some((p) => p.handle === 'log:other.png'), '别的城市被误删了');
   assert.ok(!book.list().some((p) => p.handle === 'log:old.png'));
 });
+
+/* ---------- 水印：该裁谁、不该裁谁（2026-11-20） ---------- */
+
+test('水印：方舟系不用裁 —— 它认 watermark:false，而且固定出 JPEG', async () => {
+  /*
+   * 读者原话：「方舟回来是 JPEG 就裁不了（日志里会写一句）」。
+   *
+   * 查了官方文档，两件事都是写死的：
+   *   - `watermark: false` = 不添加「AI生成」；
+   *   - `doubao-seedream-4.5/4.0/3.0-t2i/seededit-3.0-i2i` 的**文件格式固定 jpeg，不支持自定义**。
+   *
+   * 所以那边根本没有水印可裁。原来 `auto` 按「是不是云端」判，等于对一个不需要裁的后端
+   * 下了裁的命令 —— 裁不了、再记一句日志，让人以为功能坏了；真裁成了还会白丢 8% 画面。
+   */
+  const { shouldCropWatermark } = await import('../src/helpers.ts');
+  assert.equal(shouldCropWatermark('auto', 'openai', true), false, '方舟系在 auto 下不该裁');
+  assert.equal(shouldCropWatermark('auto', 'openai', false), true, '别家云端照旧裁');
+  assert.equal(shouldCropWatermark('auto', 'comfyui', true), false, '本地本来就没有水印');
+  /* 手填 crop 是显式要求：他就是要那条没，哪怕本来没水印。 */
+  assert.equal(shouldCropWatermark('crop', 'openai', true), true);
+  assert.equal(shouldCropWatermark('off', 'openai', false), false);
+  /* 不传第三个参数 = 老行为，旧的调用处一个字都不用改。 */
+  assert.equal(shouldCropWatermark('auto', 'openai'), true);
+});
+
+test('照片簿：参考图名单要能活过重启，否则重拍会换脸', async () => {
+  /*
+   * `load()` 是**白名单重建**：磁盘上有什么不算数，代码里列了几格才读得回来。
+   * 2026-11-20 之前 `refs` 没在这一列里 —— 于是「重拍沿用当初那份名单」
+   * 只在同一次运行里成立，重启 Core 之后退回当前配置：相册里那张还是旧的，
+   * 人却换了一个，而且没有任何提示。
+   */
+  const { PhotoBook } = await import('../src/photo-book.ts');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'pb-refs-'));
+  const rec = {
+    handle: 'log:aaa.png', cityId: 'lasa', cityName: '拉萨', dateKey: '2026-11-20',
+    title: '布达拉宫的清晨', spot: '布达拉宫', at: '2026-11-20T01:00:00Z',
+    prompt: '一张真实旅行照片：拉萨布达拉宫。', refs: ['ref-1.png', 'ref-2.png'],
+  };
+  new PhotoBook(dir).add(rec);
+
+  const reloaded = new PhotoBook(dir).list()[0];
+  assert.deepEqual(reloaded.refs, ['ref-1.png', 'ref-2.png'], '参考图名单没过重载');
+  assert.equal(reloaded.prompt, rec.prompt, '提示词也没过重载 —— 同一类漏项');
+});
+

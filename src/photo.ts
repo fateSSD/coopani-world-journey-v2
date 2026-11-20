@@ -290,9 +290,65 @@ const SOME_PEOPLE = '近处空着，远处几个虚化的人影，看不清脸';
  */
 const FAR_PEOPLE = '远处散着几个很小的行人，看不清脸';
 const NO_TEXT = '不要出现可读的文字和水印';
-/** 硬约束那一句在哪儿 —— 季节句、体感句都往它前面插。两种措辞都要认。 */
-const hardAnchorAt = (base: string): number =>
-  Math.max(base.lastIndexOf(NO_PEOPLE), base.lastIndexOf(SOME_PEOPLE));
+
+/*
+ * ## 人这一格：六个题材共用一套判定（2026-11-20）
+ *
+ * 读者报的两条，根子是同一个：**「画面里没有人物」这四个字是写死在模板里的**，
+ * 而「这张有没有她」是另一条路算出来的。两条路各说各的，撞上就自相矛盾。
+ *
+ * - 食物 / 小物：模板写死「画面里没有人物」，可她那张明明带着参考图 ——
+ *   模型一边看到一张脸，一边被告知画面里没有人，出来是「有时候有、有时候没有」。
+ * - 街景 / 节日：模板写死「远处几个虚化的人影」，同样没读过 `cast`。
+ *
+ * 所以这里给出一套共用句：**有人时说什么、没人时交给各题材自己说**
+ * （特写说「没有人物」，景区说「远处几个人影」—— 这两种不能合并）。
+ */
+const CAST_ONE = '画面里有一个人：';
+const CAST_ONLY = '画面里只有这一个人，不要出现其他人。';
+/*
+ * ## 「服装」不能跟着参考图锁死（2026-11-20）
+ *
+ * 原来这句是「保持脸型、发型与**服装**一致」。参考图一给，她穿同一件衣服
+ * 拍遍全程 —— 而照片本来就是一天一张、跨十几座城的，衣服不变才不像真的。
+ *
+ * 参考图管的是**这个人是谁**（脸型、五官、发型），穿什么归这一张的描述。
+ * 顺带一句「衣着按这一张的描述来」，是因为图鉴里还会命中 `outfits` 条目、
+ * 那张图也是会发出去的：不写这句，模型照样会照着服饰图锁衣服。
+ */
+const CAST_REF_LINE = '人物以参考图为准：脸型、五官和发型保持一致，衣着按这一张的描述来。';
+
+const castTextOf = (scene: PhotoScene): string => String(scene.cast ?? '').trim();
+
+/** 这张要不要出现在画面里。`castFromRef` 也算 —— 参考图本身就是「有她」的证据。 */
+const hasPerson = (scene: PhotoScene): boolean => castTextOf(scene) !== '' || scene.castFromRef === true;
+
+/**
+ * 有人时该说的两句：外观（文字给，或者交给参考图）＋ 存在性约束（不许再画别人）。
+ *
+ * **只在 `hasPerson()` 为真时调用**；没人那张说什么，由各题材自己定。
+ */
+function personLines(scene: PhotoScene): string {
+  const cast = castTextOf(scene);
+  const out: string[] = [];
+  if (cast) out.push(`${CAST_ONE}${cast}。`);
+  else if (scene.castFromRef) out.push(CAST_REF_LINE);
+  out.push(CAST_ONLY);
+  return out.join('');
+}
+
+/**
+ * 硬约束那一段从哪儿开始 —— 季节句、体感句、图鉴锚点都往它前面插。
+ *
+ * 取这几句里**最靠前**那一处，不是最靠后：人那几句现在是一整块
+ * （外观 + 存在性约束），图鉴锚点插在中间会把「她是谁」和「只有她」切开。
+ */
+const hardAnchorAt = (base: string): number => {
+  const marks = [NO_PEOPLE, SOME_PEOPLE, CAST_ONE, CAST_REF_LINE, CAST_ONLY]
+    .map((m) => base.lastIndexOf(m))
+    .filter((i) => i >= 0);
+  return marks.length ? Math.min(...marks) : -1;
+};
 
 /**
  * 一道菜该用哪套器物。
@@ -743,6 +799,11 @@ function foodPrompt(scene: PhotoScene): string {
    * 于是一碗饭被摆进「厚釉粗陶盘」，还撒上葱花和辣椒段，焦点要求对在盘沿。
    * 一张图里三处对不上。没有菜名就只写「一桌饭」，器物交给模型按地区常识填。
    */
+  /*
+   * 人这一格按 `hasPerson()` 走（2026-11-20）：她出镜那张（自拍、或者带着参考图
+   * 一起拍一顿饭）不能再被写死「画面里没有人物」—— 那句和参考图正面打架，
+   * 出来的图会「有时候有她、有时候没有」。没人那张照旧。
+   */
   return `一张食物特写照片：${what}。${ware ? `${ware}。` : ''}${room}。${outside}。`
     /*
      * **构图不许中心对称**（2026-11-12 晚，Mr.Q：「饺子全是中心对称的」）。
@@ -753,7 +814,7 @@ function foodPrompt(scene: PhotoScene): string {
      * 真实的随手拍有三件事：**镜头不正对着它、主体不在正中、有东西斜切进画面**。
      */
     + `${light}${steam}。低机位，斜四十度，主体偏一侧不居中，桌沿斜切入画，`
-    + `浅景深，焦点在${focus}。${NO_PEOPLE}。${NO_TEXT}。`;
+    + `浅景深，焦点在${focus}。${hasPerson(scene) ? personLines(scene) : `${NO_PEOPLE}。`}${NO_TEXT}。`;
 }
 
 /**
@@ -995,8 +1056,14 @@ function streetPrompt(scene: PhotoScene): string {
   const streetSky = ssun.daylit || ssun.whiteNight
     ? `${skyLine(ssun.phase, ssun.overcast, ssun.precip, ssun.whiteNight)}。`
     : '';
+  /*
+   * 有人这张（2026-11-20）：街景照样要人气，但她出镜时不能一句都不提她 ——
+   * 参考图发过去、正文却说「近处空着」，模型要么把她画成路人，要么复制出两个。
+   * 措辞保留「远处还有人」：街景的空旷感不能因为她在画面里就消失。
+   */
   return `一张街道照片：${named}的街。${lookShort}。${streetSky}${light}。35mm 平视。`
-    + `${SOME_PEOPLE}。${NO_TEXT}。`;
+    + `${hasPerson(scene) ? `${personLines(scene)}其余的人只在远处出现，虚化、看不清脸。`
+      : `${SOME_PEOPLE}。`}${NO_TEXT}。`;
 }
 
 /**
@@ -1130,7 +1197,9 @@ function festivalPromptEu(scene: PhotoScene, lat: number): string {
             : '摊上堆着南瓜——橙黄的、青灰的、带瘤的；苹果装在木筐里；'
               + '栗子在铁锅的黑砂里翻炒，冒着白汽；干玉米挂在棚柱上成一串';
   return `一张照片：${scene.city}，${look}。`
-    + `${festivalLight(scene)}。平视或微微俯拍。${SOME_PEOPLE}。${NO_TEXT}。`;
+    + `${festivalLight(scene)}。平视或微微俯拍。`
+    + `${hasPerson(scene) ? `${personLines(scene)}其余的人只在远处出现，虚化、看不清脸。` : `${SOME_PEOPLE}。`}`
+    + `${NO_TEXT}。`;
 }
 
 function festivalPrompt(scene: PhotoScene): string {
@@ -1197,7 +1266,9 @@ function festivalPrompt(scene: PhotoScene): string {
    * 过一遍 `stripSkyClauses`：节日这张的画面主体是一地东西，天由 `skyLine` 说。
    */
   return `一张照片：${scene.city}，${stripSkyClauses(look[key] ?? look.autumn)}。`
-    + `${festivalLight(scene)}。平视或微微仰拍。${SOME_PEOPLE}。${NO_TEXT}。`;
+    + `${festivalLight(scene)}。平视或微微仰拍。`
+    + `${hasPerson(scene) ? `${personLines(scene)}其余的人只在远处出现，虚化、看不清脸。` : `${SOME_PEOPLE}。`}`
+    + `${NO_TEXT}。`;
 }
 
 /**
@@ -1282,8 +1353,10 @@ function detailPrompt(scene: PhotoScene): string {
     phase: dsun.phase, overcast: dsun.overcast, precip: dsun.precip, indoor: true,
     whiteNight: dsun.whiteNight,
   });
+  /* 同 `foodPrompt`：有人那张不能再写死「画面里没有人物」（2026-11-20）。 */
   return `一张特写照片：${item}。${light}。`
-    + `45 度俯拍，主体偏在一侧、不摆正中，浅景深，焦点落在最亮的那一小块上。${NO_PEOPLE}。${NO_TEXT}。`;
+    + `45 度俯拍，主体偏在一侧、不摆正中，浅景深，焦点落在最亮的那一小块上。`
+    + `${hasPerson(scene) ? personLines(scene) : `${NO_PEOPLE}。`}${NO_TEXT}。`;
 }
 
 /* ============================================================================
@@ -1824,7 +1897,7 @@ function minimalPrompt(scene: PhotoScene): string {
   const tail = cast
     ? `画面里有一个人：${cast}。不要出现可读的文字。`
     : scene.castFromRef
-      ? '画面里这个人以参考图为准，保持脸型、发型与服装一致。不要出现可读的文字。'
+      ? `${CAST_REF_LINE}不要出现可读的文字。`
       : '没有人物，没有文字。';
 
   const parts = [
@@ -2447,8 +2520,9 @@ export function photoPrompt(scene: PhotoScene): string {
     sun.precip && !spotIndoor ? `${weatherLine(sun.precip, sun.phase)}。` : '',
     /* 她正在做的事（2026-11-08）。先定场景，再说人。 */
     doingNow ? `正在发生的事：${doingNow.replace(/。+$/, '')}。` : '',
-    cast ? `画面里有一个人：${cast}。` : '',
-    scene.castFromRef ? '人物以参考图为准，保持脸型、发型与服装一致。' : '',
+    cast ? `${CAST_ONE}${cast}。` : '',
+    /* 服装不锁（2026-11-20）：理由见 `CAST_REF_LINE`。 */
+    scene.castFromRef ? CAST_REF_LINE : '',
     libHintNow && !sky ? `${libHintNow}。` : '',
     skyInfo ? `头顶：${skyInfo.told}。` : '',
     /*
@@ -2484,7 +2558,7 @@ export function photoPrompt(scene: PhotoScene): string {
             ? '胶片颗粒，光偏白，暗部还看得清。'
             : sun.daylit ? '胶片颗粒，轻微过曝。' : '手机夜拍，暗部收敛。')
       : '',
-    (cast || scene.castFromRef) ? '画面里只有这一个人，不要出现其他人。'
+    (cast || scene.castFromRef) ? CAST_ONLY
       : (sky || scene.onRoad) ? `${NO_PEOPLE}。`
       : spotIndoor ? '远处有几个观众，背对着镜头，看不清脸。'
       : `${FAR_PEOPLE}。`,

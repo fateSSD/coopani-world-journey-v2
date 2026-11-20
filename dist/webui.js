@@ -114,6 +114,16 @@ const TEXT = {
     albumTitle: '她拍的',
     albumEmpty: '还没有照片。配好生图接口之后，她出去逛会顺手拍一张。',
     albumHint: '一天一张，拍的是风景，不是她自己。',
+    /*
+     * 同一天拍多张要不要全留着（2026-11-20，读者报的）。
+     *
+     * 原来补拍是「同城同日只留一条」，旧那张虽然还在磁盘上，相册里却看不到了。
+     * 开关放在相册页第一屏 —— 人是在这里发现「我早上拍的没了」的，
+     * 让他再翻进设置去找，等于没提供。
+     */
+    albumKeepAll: '同一天拍的都留着',
+    albumKeepAllHint: '关着：同一天同一座城只留最新那张（旧图还在磁盘上，只是相册里看不到）。开着：补一张就多一张，谁也不挤谁。',
+    albumKeepAllFail: '这个开关没存上：',
     albumIntro: '这些是她在路上拍的。每张下面留着生成它用的那段提示词 —— 不满意就展开改，改完点那个按钮重拍这一张。重拍出来的是新图，旧的那份还留在磁盘上（月报可能正引用着它）。',
     albumPrompt: '提示词',
     albumPromptEmpty: '这张拍得早，没留下提示词。',
@@ -293,6 +303,9 @@ const TEXT = {
     albumTitle: 'Her photos',
     albumEmpty: 'No photos yet. Once an image endpoint is configured she will take one on her way out.',
     albumHint: 'One a day, of the scenery — never of herself.',
+    albumKeepAll: 'Keep every shot of the day',
+    albumKeepAllHint: 'Off: one photo per day and per city — the older one stays on disk but leaves the album. On: each extra shot is added, nothing gets pushed out.',
+    albumKeepAllFail: 'Could not save that switch: ',
     albumIntro: 'These are the photos she took along the way. Each one keeps the prompt that produced it - edit it and hit "Reshoot with this" to replace that photo. The reshoot is a new image; the old file stays on disk, since a monthly report may still be using it.',
     albumPrompt: 'Prompt',
     albumPromptEmpty: 'Taken before prompts were kept.',
@@ -1343,6 +1356,29 @@ export default {
         dirBar.hidden = true;
         const grid = el('div', 'jr-photos');
         const note = el('p', 'jr-warn', '');
+        /*
+         * 「同一天拍的都留着」（2026-11-20，读者报的：一天内拍的照片会覆盖旧的）。
+         *
+         * 放在第一屏，紧挨着「补一张」：人是在点完补拍、发现早上那张不见了的那一刻
+         * 想起要这个开关的。设置页里再加一层，等于没提供。
+         */
+        const keepRow = el('label', 'jr-keepall');
+        keepRow.title = T.albumKeepAllHint;
+        const keep = el('input');
+        keep.type = 'checkbox';
+        keepRow.append(keep, el('span', 'jr-keepall-k', T.albumKeepAll));
+        keep.addEventListener('change', () => {
+          const want = keep.checked;
+          keep.disabled = true;
+          ctx.invoke('saveImageSettings', [{ imageKeepAll: want }])
+            .then(() => { note.textContent = ''; })
+            .catch((e) => {
+              // 存不上就把勾退回去 —— 让人以为打开了，比不给开更糟。
+              keep.checked = !want;
+              note.textContent = `${T.albumKeepAllFail}${why(T, e)}`;
+            })
+            .finally(() => { keep.disabled = false; });
+        }, { signal: ctx.signal });
         /** 相册最上面那张的句柄。补拍之后拿它判断「换了没有」。 */
         let lastTop = '';
         // 目录栏放照片墙下面：它是「照片存哪」的注解，摆最上面会挡住第一屏
@@ -1353,7 +1389,7 @@ export default {
          */
         const intro = el('p', 'jr-album-intro', T.albumIntro);
         intro.hidden = true;
-        app.append(head, intro, grid, dirBar, note);
+        app.append(head, keepRow, intro, grid, dirBar, note);
         ctx.root.append(app);
 
         /*
@@ -1439,6 +1475,8 @@ export default {
 
         const draw = (res) => {
           const photos = res.photos || [];
+          /* 开关状态以后端为准：重开面板、换设备都以存下来的那份为准。 */
+          if (typeof res.keepAll === 'boolean') keep.checked = res.keepAll;
           showDir(res.dir || '', res.extra || '');
           grid.replaceChildren();
           lastTop = photos[0] ? photos[0].handle : '';

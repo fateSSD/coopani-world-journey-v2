@@ -250,3 +250,52 @@ test('极简模式：硬约束仍然在，一条都不能少', () => {
   assert.match(min, /没有文字/, '不写「没有文字」，中文招牌会糊成乱码');
   assert.ok(!/NaN|undefined/.test(min), `拼接出错了：${min}`);
 });
+
+/*
+ * ============================================================
+ * 人和硬约束不能打架（2026-11-20，读者报的两条）
+ *
+ * 「画面里没有人物」原来是写在食物 / 小物模板里的死句子，而「这张有没有她」
+ * 是另一条路算出来的。两条撞上，模型一边看到参考图里的脸、一边被告知画面里没有人 ——
+ * 出来就是「有时画她有时不画」，多张参考图还会复制出两个她。
+ * ============================================================ */
+
+test('食物和小物：有人那张不许再写「画面里没有人物」', () => {
+  for (const s of ['food', 'detail']) {
+    const withCast = photoPrompt({ ...BASE, subject: s, dish: s === 'food' ? '粉蒸肉' : undefined, cast: '一个穿米色风衣的女孩' });
+    assert.doesNotMatch(withCast, /没有人物/, `${s} 有人却说没人：${withCast}`);
+    assert.match(withCast, /画面里有一个人：一个穿米色风衣的女孩/, `${s} 没把人物描述写进去`);
+    assert.match(withCast, /只有这一个人/, `${s} 没拦住多画人`);
+
+    /* 参考图那条路同理：外观交给图，但存在性约束要在。 */
+    const fromRef = photoPrompt({ ...BASE, subject: s, dish: s === 'food' ? '粉蒸肉' : undefined, castFromRef: true });
+    assert.doesNotMatch(fromRef, /没有人物/, `${s} 带参考图却说没人：${fromRef}`);
+    assert.match(fromRef, /只有这一个人/);
+    assert.match(fromRef, /参考图为准/);
+
+    /* 没人的那张一个字不动 —— 默认行为不能被这次改动带走。 */
+    const none = photoPrompt({ ...BASE, subject: s, dish: s === 'food' ? '粉蒸肉' : undefined });
+    assert.match(none, /没有人物/, `${s} 没人时该照旧写没有人物`);
+  }
+});
+
+test('街景和节日：她出镜时不能一句不提她，人气也不能丢', () => {
+  for (const s of ['street', 'festival']) {
+    const p = photoPrompt({ ...BASE, subject: s, castFromRef: true });
+    assert.match(p, /只有这一个人/, `${s} 带参考图却没说她是谁：${p}`);
+    assert.match(p, /其余的人只在远处|看不清脸/, `${s} 把她出镜写成了空街：${p}`);
+  }
+});
+
+test('参考图只管脸，不管衣服 —— 不能一张图锁死全程的服装', () => {
+  /*
+   * 原来那句是「保持脸型、发型与服装一致」。参考图一给，她穿同一件衣服
+   * 拍遍十几座城。她要的是**同一个人**，不是同一套衣服。
+   */
+  for (const s of ['ground', 'food', 'street']) {
+    const p = photoPrompt({ ...BASE, subject: s, dish: s === 'food' ? '粉蒸肉' : undefined, castFromRef: true });
+    assert.doesNotMatch(p, /与服装一致|服装一致/, `${s} 还在锁服装：${p}`);
+    assert.match(p, /脸型|五官/, `${s} 没把脸交给参考图`);
+    assert.match(p, /衣着按这一张/, `${s} 没交代衣服跟当次描述走`);
+  }
+});

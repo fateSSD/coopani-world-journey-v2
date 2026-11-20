@@ -629,3 +629,38 @@ test('前端产物：碰面服务器没连上与同城没人要分开显示', as
     assert.ok(oldRoot.text.includes('这段时间没别人'), '没有 here 字段时应当落回原来的文案');
   } finally { restore(); }
 });
+
+/* ---------------- 相册：同一天拍多张要不要都留着（2026-11-20） ---------------- */
+
+test('前端产物：相册页有「同一天拍的都留着」开关，状态以后端为准', async () => {
+  /*
+   * 读者报的：一天内拍的照片会覆盖旧的。后端加了 `imageKeepAll`，
+   * 前端必须有一个能摸到的开关 —— 装在设置页里等于没提供，
+   * 人是在相册页发现「早上那张没了」的。
+   */
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const sent = [];
+    const root = new FakeNode('div');
+    const ctx = makeCtx(root, async (method, args) => {
+      sent.push({ method, args });
+      if (method === 'list') return { photos: [], keepAll: true };
+      return {};
+    });
+    ctx.panelId = 'album';
+    await bundle.panels.album.mount(ctx);
+
+    const box = root.find((n) => n.tagName === 'INPUT' && n.type === 'checkbox');
+    assert.ok(box, '相册页没有这个开关');
+    assert.equal(box.checked, true, '后端开着，前端没勾上');
+
+    /* 点它 → 走的必须是数组参数（宿主网关硬校验），键名也得对。 */
+    box.checked = false;
+    await box.handlers.change[0]();
+    const save = sent.find((c) => c.method === 'saveImageSettings');
+    assert.ok(save, '改了开关却没有保存');
+    assert.ok(Array.isArray(save.args), '宿主要求 args 是数组');
+    assert.deepEqual(save.args[0], { imageKeepAll: false });
+  } finally { restore(); }
+});

@@ -256,6 +256,20 @@ export interface JourneyConfigSection extends WorldSection {
    */
   imageCastChance: number;
   /**
+   * **补拍不覆盖当天那张，相册里全留着**（2026-11-20，读者报的）。
+   *
+   * 原来点「补一张」是「同城同日只留一条」：新拍的把当天那条挤掉，旧图还躺在磁盘上、
+   * 但相册里再也看不到它。一天拍两次（早上一张、傍晚一张）是很自然的事，
+   * 被悄悄收掉一张，用户只会觉得「照片丢了」。
+   *
+   * 默认 **false = 老行为**（一天一张，卡片不堆同一天的图）。
+   * 打开之后：补拍一律新增，谁也不挤谁 —— 相册变成真正的流水账。
+   *
+   * 只影响**补拍**。她自己的自动拍照仍是「一天一座城一张」的成本闸，
+   * 两件事不要混：一个是省钱，一个是记录。
+   */
+  imageKeepAll: boolean;
+  /**
    * **参考图总开关，默认关**（2026-11-20）。
    *
    * 开了之后：命中的图鉴条目（`characters / outfits / scenes`）里的 `ref-*.png`
@@ -271,6 +285,10 @@ export interface JourneyConfigSection extends WorldSection {
    *
    * 为什么手填不是主路：路径是本机的，换台设备就断；而图鉴库跟着
    * `libraryDir` 走（可以指到同步盘），换设备也还在。手填只留给没装模拟鱼生的人。
+   *
+   * **默认只在「这张有她」时发**（2026-11-20）：手填的图没法按目录分类，
+   * 所以跟人物图鉴同一条闸 —— 否则空镜也会带上人物参考图，出来「有时有她有时没有」。
+   * 想让某个文件任何一张都带上（画风参考之类），**行首加一个 `*`**。
    *
    * 单个文件上限 4MB、总量 12MB；PNG 会自动缩到长边 1600，JPEG 原样发。
    */
@@ -397,6 +415,8 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   imageStyleCast: '',
   /* 1 = 每张都有她。填了 `imageCast` 才生效。 */
   imageCastChance: 1,
+  /* 默认关 = 老行为（同城同日只留一张）。见 `imageKeepAll` 的定义。 */
+  imageKeepAll: false,
   /* 参考图默认关：图会离开本机，得由人自己开。 */
   imageUseRefs: false,
   imageRefs: '',

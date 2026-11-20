@@ -175,6 +175,8 @@ test('defaults 里的键都能在 schema 里找到 —— 拼错了没人会发�
     'imageWatermark', 'photoDir', 'comfyNegative', 'comfyNegativeNode',
     'imageStyleCast', 'imageCastChance',
     'imageUseRefs', 'imageRefs',
+    /* 2026-11-20：补拍留不留当天那张，开关在相册页，同属面板白名单。 */
+    'imageKeepAll',
     'imageTimeoutSec', 'imageKey',
   ]);
   const declared = new Set();

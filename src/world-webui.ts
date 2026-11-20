@@ -412,6 +412,8 @@ export const webUiMethods: Record<string, any> = {
       /* 参考图：开关默认关，路径每行一个（2026-11-20）。 */
       useRefs: Boolean(c.imageUseRefs),
       refs: (c.imageRefs ?? '').trim(),
+      /* 补拍留不留当天那张（2026-11-20，读者报的「一天内的照片会被覆盖」）。 */
+      keepAll: Boolean(c.imageKeepAll),
       watermark: (c.imageWatermark ?? 'auto').trim() || 'auto',
       timeoutSec: Number(c.imageTimeoutSec) || 0,
       photoDir: (c.photoDir ?? '').trim(),
@@ -462,6 +464,8 @@ export const webUiMethods: Record<string, any> = {
       'imageWorkflow', 'imagePromptNode', 'comfyNegative', 'comfyNegativeNode', 'imageKey',
       'imageMinimal', 'imageStyle', 'imageCast', 'imageStyleCast', 'imageCastChance',
       'imageUseRefs', 'imageRefs',
+      /* 相册留不留当天的旧图（2026-11-20）。 */
+      'imageKeepAll',
       'imageWatermark', 'imageTimeoutSec', 'photoDir',
     ]);
     /*
@@ -471,7 +475,7 @@ export const webUiMethods: Record<string, any> = {
      * `String()` 化会把 `false` 变成字符串 `'false'`，而它是**真值**，
      * 于是「关掉极简提示词」会变成「打开」，且不报错。这种错比崩了难查得多。
      */
-    const booleans = new Set(['imageMinimal', 'imageUseRefs']);
+    const booleans = new Set(['imageMinimal', 'imageUseRefs', 'imageKeepAll']);
     const numbers = new Set(['imageTimeoutSec']);
     /*
      * 0–1 的小数**不能进 `numbers`** —— 那里会 `Math.round`，0.3 变成 0，
@@ -795,6 +799,8 @@ export const webUiMethods: Record<string, any> = {
         return {
           photos: snap.photos,
           dir: snap.photoDir,
+          /* 这一天拍多张时，是不是全留着（2026-11-20）。相册页那个开关读它。 */
+          keepAll: Boolean(this.cfg.imageKeepAll),
           /*
            * 额外副本目录（2026-11-09）。`photoDir` 不是「照片存哪儿」，
            * 是**再存一份**——照片主份永远跟着日记同步目录走。

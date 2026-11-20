@@ -327,16 +327,35 @@ export function photoProtocolOf(raw: string): 'openai' | 'comfyui' {
 /**
  * 这张图要不要裁掉底边那条水印。
  *
- * `auto` 的判断依据是**协议，不是图像识别**：
- * 本地 ComfyUI 出的图不可能带水印（「AI生成」是服务商出图后盖上去的），
- * 所以只裁云端那些。这个事实比 OCR 可靠得多，也不用为每张图算一遍。
+ * `auto` 的判断依据是**协议 + 后端，不是图像识别**：
+ *
+ * 1. 本地 ComfyUI 出的图不可能带水印（「AI生成」是服务商出图后盖上去的）；
+ * 2. **方舟系也不用裁**（2026-11-20 补）：官方文档写死了两件事 ——
+ *    `watermark: false` 就是不加水印；而 seedream 4.5 / 4.0 / 3.0-t2i / seededit
+ *    「生成图像的文件格式默认为 jpeg，不支持自定义设置」。所以那边回来的 JPEG 上
+ *    本来就没有水印，裁只是白裁掉 8% 画面。
+ *
+ * 这条是读者的一句反馈逼出来的（「方舟回来是 JPEG 就裁不了，日志里会写一句」）：
+ * 他以为「没裁」是缺功能，其实是**这道闸对一个不需要裁的后端下了裁的命令**，
+ * 然后裁不了、再记一句让人以为坏了的日志。判据该是「这个后端会不会打水印」，
+ * 不是「它是不是云端」。
  *
  * 不做自动检测的另一个理由：漏检的代价是水印留在图上（用户看得见、能再处理），
  * 误检的代价是把好画面裁掉一截（用户根本不知道本来有）。
  */
-export function shouldCropWatermark(mode: string | undefined, protocol: string): boolean {
+export function shouldCropWatermark(
+  mode: string | undefined,
+  protocol: string,
+  /**
+   * 这个后端认 `watermark: false` 吗（方舟系 = 认）。留默认值 = 老行为，
+   * 所以旧的调用处一个字都不用改。
+   */
+  noWatermark = false,
+): boolean {
   if (mode === 'off') return false;
+  /* 手填 `crop` 是显式要求：他就是要那一条没，哪怕本来没水印。 */
   if (mode === 'crop') return true;
+  if (noWatermark) return false;
   // 空 / 认不出的值一律按 auto 走：配置写错了不该让水印漏出来。
   return protocol !== 'comfyui';
 }
