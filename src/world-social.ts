@@ -80,6 +80,7 @@ import {
   BOOT_GRACE_MS, STATUS_PROBE_MS, INVITE_NOTICE_PER_DAY,
   MISS_STOP_CHANCE, MISS_STOP_EXTRA_MIN, MISS_STOP_EXTRA_MAX,
   PLEDGE_TRAVEL_WINDOW_MS, MEET_WAIT_WINDOW_MS, ASK_TTL_MS, ASK_COOLDOWN_MS,
+  MEET_RETRY_MS, MEET_RETRY_MAX_MS,
   ENV_PROMPT_FILE, PKG_VERSION, TICK_MAX_MS, TICK_WORLD_BUDGET_MS, TICK_MIN_MS,
   HEARTBEAT_MS, SEEN_SAVE_MS, REPORT_RETRY_MS, STAY_DAYS_MIN, STAY_DAYS_MAX,
   DECIDE_HOUR, STAY_ONE_MORE, GO_HOME_CHANCE, HOME_RADIUS_KM, NOW_TAIL,
@@ -166,6 +167,14 @@ export const socialMethods: Record<string, any> = {
         this.log?.info(`位置上报恢复（之前连续失败 ${this.reportFails} 次）`);
       }
       this.reportFails = 0;
+      /*
+       * 记一笔「今天这座城市我报过到」。
+       *
+       * 服务端 `/sight` 的 `here` 是 `COUNT(DISTINCT uid) WHERE city=? AND at>=今天0点`，
+       * **没有 exclude** —— 报过就含她自己，没报过就不含。面板要显示「别人」时
+       * 只有前者该减一。在家和在路上这里一条都不发，那种时候减一就是少报一只。
+       */
+      this.presenceReported = { cityId: c.id, day: m.dateKey };
       if (this.reportRetryTimer) {
         clearTimeout(this.reportRetryTimer);
         this.reportRetryTimer = null;
@@ -509,6 +518,148 @@ export const socialMethods: Record<string, any> = {
     } catch {
       // 拿不到就算了。这不是她的事，也不该在日志里刷——下一轮再试。
     }
+  },
+
+
+  /**
+   * 同城那条线判成「没连上」之后，自己再试一次。
+   *
+   * ## 这条是为什么（2026-11-20 Mr.Q 报的）
+   *
+   * 面板上用两个数字说同一件事：上面「池子今天一共 324 只」「3 个在找伴」，
+   * 下面「同城 · 碰面服务器没连上」。他看到的处境是**能约到人，却说没连上**。
+   *
+   * 两个数字走的不是同一条路：
+   * - 池子 / 邀约 → `/sight/status`，`probeStatus` 每 60 分钟问一次，**一直是好的**；
+   * - 同城有谁 → `/sight`，只在「当天第一次排表」和「当天那次碰面判定」问，
+   *   一天一两次。`lastMeetOk` 就写在那两次上，**之后再没人翻它**。
+   *
+   * 所以排表那一刻抖一下（实测能复现：同一秒第一打 0.3 秒断在连接层，
+   * 下一打 0.9 秒 200），那一行就会顶着「没连上」一直到隔天 —— 中间池子还在涨、
+   * 邀约还在进。**「一次失败」被当成了「一整天都失败」，这是判据不是网络。**
+   *
+   * ## 分寸
+   *
+   * 只在已经判成 `false` 时才打，且按 2 / 4 / 8 / 16 / 30 分钟退避（`MEET_RETRY_MS` × `meetRetryStep`）：
+   * 正常情况一次都不多发，不给 10 万/天那个额度添麻烦；掉线时第一分钟内就自己翻回来，
+   * 真是服务器挂了也不会变成每 2 分钟一次。
+   * 成功之后顺手把同城名单换成本次查到的 —— 面板那个数字和这一行是同一件事，
+   * 只翻灯不换数字，等于让她嘴上说通了、名单还是昨天那份。
+   */
+  async refreshMeetIfDown(now: Date): Promise<void> {
+    if (this.lastMeetOk !== false) {
+      /* 已经好了（排表或判定那边翻了回来），退避清零，下次掉线还从 2 分钟起。 */
+      this.meetRetryStep = 0;
+      return;
+    }
+    const meet = this.meetOptions();
+    if (!meet) return;
+    const real = this.realNow().getTime();
+    const wait = Math.min(MEET_RETRY_MAX_MS, MEET_RETRY_MS * 2 ** this.meetRetryStep);
+    if (real - this.meetRetryAt < wait) return;
+    this.meetRetryAt = real;
+    this.meetRetryStep = Math.min(this.meetRetryStep + 1, 8);
+    const here = this.cityOrNull(this.st.hereId);
+    if (!here) return;
+    const slot = slotOf(now.getHours());
+    const b = await findNeighbors(meet, here.id, slot).catch(() => null);
+    if (!b?.ok) return;
+    /*
+     * 成功之后**连 `nearbyProbe` 一起补**（2026-11-20 回补）。
+     *
+     * 只改 `plan.neighbors` 的话，探针那头前几分钟刚把 `nearbyProbe` 锁成 `here: 0`
+     * （失败也占住那一小时），面板上的「今天来过几只」还要再等近一小时 ——
+     * 灯绿了、数字还是错的，等于只修了一半。
+     */
+    this.noteNeighbors(here.id, localMoment(this.realNow(), here.tz).dateKey, b, real);
+  },
+
+
+  /**
+   * 把一次 `/sight` 的结果记进 `nearbyProbe`，顺手刷同城名单。
+   *
+   * ## 为什么要有这一个出口
+   *
+   * 打 `/sight` 的地方有三个：排表（`rebuildPlan`）、掉线重试（`refreshMeetIfDown`）、
+   * 每小时探针（`probeNearby`）。第一版让它们各写各的，于是长出了两种「同一个数两个来源」
+   * 的坑：重试成功了但 `nearbyProbe` 没跟着写（面板上的 `here` 继续锁 0 近一小时）；
+   * 排表那次的值压根没进 `nearbyProbe`，六秒后探针又打了一遍。
+   *
+   * **一次成功只在这里落地一次。** 失败那条路不走这里（失败不改数据，只记退避）。
+   */
+  noteNeighbors(
+    cityId: string,
+    day: string,
+    board: { list: readonly { pet: string; doing: string }[]; here: number },
+    real: number,
+  ): void {
+    this.nearbyProbe = { at: real, here: board.here, n: board.list.length, cityId, day };
+    this.lastMeetOk = true;
+    this.meetRetryStep = 0;
+    if (this.plan) this.plan = { ...this.plan, neighbors: [...board.list] };
+  },
+
+
+  /**
+   * 每小时问一次「这座城今天来过几只、这会儿有谁」（2026-11-20）。
+   *
+   * ## 补的是什么
+   *
+   * 面板「同城」那一格原来只读 `plan.neighbors` —— **当天第一次排表**那一刻的名单。
+   * 服务端那边 `LIMIT 3`、只给最近 2 小时（`RECENT_NEIGHBOR_MS`）、只给当前 `slot`，
+   * 于是常见处境是：她早上 6 点排表时这城没人 → 面板一整天写「这段时间没别人」，
+   * 而那城今天其实来过三只 —— `/sight` 一直回着 `here: 3`，**客户端一个字段都没接**。
+   *
+   * 实测（2026-11-20）：乌鲁木齐 `list: []` 而 `here: 3`。所以「暂时没别人」在多数时候是假的。
+   *
+   * `here` 不回答「此刻有谁」，但能回答「是不是真没人」。这两句在界面上长得一模一样，
+   * 用户没法分辨 —— 而分辨的成本只要接过一个字段。
+   *
+   * ## 频率与失效（`cityId` + `day` 是必需参数，不是装饰）
+   *
+   * 冷却 60 分钟（`STATUS_PROBE_MS`）。335 只鱼合计约 8 千次/天，占免费额度 8%。
+   *
+   * 但**冷却不能只看时间**：换了城或跨了天，这个数就不再回答「这座城今天来过几只」。
+   * 只判时间的话，60 分钟内从成都到拉萨，面板会拿成都的 `here: 12` 显示在拉萨 ——
+   * 实测就是这个结果。一个错得理直气壮的数字，比没有数字糟得多。
+   *
+   * **失败也记时间** —— 2026-11-11 那次额度打穿 60 倍，根因就是失败那条路没记时间。
+   * 失败同时要把 `lastMeetOk` 翻成 `false`：不翻的话断了线面板还不亮灯，
+   * 而 `refreshMeetIfDown` 又只在 `false` 时才重试 —— 两边一起哑。
+   */
+  async probeNearby(now: Date): Promise<void> {
+    const meet = this.meetOptions();
+    if (!meet) return;
+    const city = this.cityOrNull(this.st.hereId);
+    if (!city) return;
+    const realDate = this.realNow();
+    const real = realDate.getTime();
+    const day = localMoment(realDate, city.tz).dateKey;
+    const same = this.nearbyProbe?.cityId === city.id && this.nearbyProbe?.day === day;
+    if (same && real - (this.nearbyProbe?.at ?? 0) < STATUS_PROBE_MS) return;
+    /*
+     * 先记账再发请求：失败也占住这一小时。**换城/跨天时把旧值清掉** ——
+     * 留着就是拿上一座城的数往这一座城的面板上写。
+     */
+    this.nearbyProbe = {
+      at: real, cityId: city.id, day,
+      here: same ? (this.nearbyProbe?.here ?? 0) : 0,
+      n: same ? (this.nearbyProbe?.n ?? 0) : 0,
+    };
+    const b = await findNeighbors(meet, city.id, slotOf(now.getHours())).catch(() => null);
+    if (!b?.ok) {
+      /*
+       * 断线要亮灯，并且占住退避位（2026-11-20 回补）。
+       *
+       * **这里不推进 `meetRetryStep`**：探针是每小时的主动巡检，它失败只说明「线断了」，
+       * 该由 `refreshMeetIfDown` 从第一档（2 分钟）开始自愈。在这里 +1 会让首次重试
+       * 直接跳到 4 分钟档 —— 用户那边就是「断了一直不回来」。
+       */
+      this.lastMeetOk = false;
+      this.meetRetryAt = real;
+      return;
+    }
+    this.noteNeighbors(city.id, day, b, real);
   },
 
 

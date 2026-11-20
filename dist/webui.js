@@ -81,6 +81,7 @@ const TEXT = {
     meetHint: '下面这个是我这边一直开着的，填进设置里的「碰面地址」就能用：',
     meetCopy: '复制地址',
     nearbyNone: '这段时间没别人',
+    nearbyWas: '今天来过 {n} 只，这会儿没碰上',
     nearbyOffline: '碰面服务器没连上',
     nearbyN: '{n} 个也在这一带',
     invites: '找伴',
@@ -260,6 +261,7 @@ const TEXT = {
     meetHint: 'This one is always on — paste it into the "meet server" setting:',
     meetCopy: 'Copy address',
     nearbyNone: 'nobody else right now',
+    nearbyWas: '{n} passed through today, none around now',
     nearbyOffline: 'meet server unreachable',
     nearbyN: '{n} others nearby',
     invites: 'Company',
@@ -1146,7 +1148,20 @@ export default {
              * 池子活着，只是这一带没人。总数是 0 才说明服务器没回话或真的空了。
              */
             if (so.pool > 0) chips.push([T.pool, fill(T.poolN, { n: so.pool })]);
-            chips.push([T.nearby, so.online === false ? T.nearbyOffline : (so.nearby > 0 ? fill(T.nearbyN, { n: so.nearby }) : T.nearbyNone)]);
+            /*
+             * 「同城」这一格有三层，别压成两层（2026-11-20）。
+             *
+             * 第二层原来是 `nearby > 0 ? ... : nearbyNone` —— 于是「今天有 3 只来过、
+             * 只是这会儿不在」和「这城今天一只都没有」显示成同一句「这段时间没别人」。
+             * 服务端一直回着 `here`（今天这座城来过几只，去重、含自己，后端已减一），
+             * 拿它把这两件事分开。旧服务端不回这个字段时 `so.here` 是 undefined，
+             * 自然落回原来那句，向后兼容。
+             */
+            chips.push([T.nearby, so.online === false
+              ? T.nearbyOffline
+              : (so.nearby > 0
+                ? fill(T.nearbyN, { n: so.nearby })
+                : (so.here > 0 ? fill(T.nearbyWas, { n: so.here }) : T.nearbyNone))]);
             if (so.invites > 0) chips.push([T.invites, fill(T.invitesN, { n: so.invites })]);
             if (so.pledge) {
               const pg = so.pledge;

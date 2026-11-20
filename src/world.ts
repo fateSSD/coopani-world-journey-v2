@@ -909,6 +909,37 @@ export class JourneyWorld implements World {
   /** 最近一次取到的「今天池子里多少只」。见 `probeStatus`。 */
   private poolProbe: { at: number; value: number; taken: number } | null = null;
 
+  /**
+   * 最近一次取到的「这座城今天来过几只、这会儿有几个」。
+   *
+   * `here` 是服务端 `/sight` 的 `here` —— 今天这座城的去重 uid 数。**算不算她自己，
+   * 取决于今天有没有对这座城成功上报过 presence**（见 `presenceReported`）：
+   * 上报过就含她，面板要减一；在家/在路上从不上报，那条 `here` 里就没有她，减一等于少报一只。
+   *
+   * `cityId` / `day` 不参与取值、只参与**失效判断**：换了城或跨了天，这个数就不再回答
+   * 「这座城今天来过几只」了，必须重查。少了这两个字段会出现「人在拉萨、面板写着成都
+   * 今天来过 11 只」—— 一个数字错得比没有更糟。见 `probeNearby`。
+   */
+  private nearbyProbe: { at: number; here: number; n: number; cityId: string; day: string } | null = null;
+
+  /**
+   * 今天对哪座城成功上报过 presence。
+   *
+   * 只为一件事服务：判断服务端那个 `here` 里有没有她自己。`reportHere()` 只在
+   * `phase === 'staying'` 时上报，在家和在路上一条都不会发 —— 那时候减一是错的。
+   */
+  private presenceReported: { cityId: string; day: string } | null = null;
+
+  /**
+   * 上一次「同城那条线掉了之后重试」的真实时刻。
+   *
+   * 只给 `refreshMeetIfDown` 用：判成没连上之后按 2/4/8/16/30 分钟退避，正常情况不写。
+   */
+  private meetRetryAt = 0;
+
+  /** 连续失败了几次。退避的指数，一成功就清零。 */
+  private meetRetryStep = 0;
+
 
   /* ---------------- 巡检 ---------------- */
 
@@ -1080,6 +1111,23 @@ export class JourneyWorld implements World {
        */
       // 一个请求两样：池子总数 + 谁在找伴（60 分钟闸，绝大多数轮次立刻返回）。
       await this.probeStatus(now);
+
+      /*
+       * 同城那一格多久没换过了（2026-11-20）。
+       *
+       * 那个数字原来只在**当天第一次排表**时取一次，之后一天不动 —— 早上 6 点这城没人，
+       * 面板就一整天写「这段时间没别人」，而服务端其实知道今天来过几只（`here`）。
+       * 这里按小时刷一次名单 + 那个数字，逻辑在 `probeNearby`。
+       */
+      await this.probeNearby(now);
+
+      /*
+       * 同城那条线刚才判成没连上的话，自己再试一次（2026-11-20）。
+       *
+       * 紧跟在 `probeStatus` 后面：那一句证明了服务器活着，这一句判断的
+       * 只是「同城那个接口刚才是不是抖了一下」。逻辑在 `refreshMeetIfDown`。
+       */
+      await this.refreshMeetIfDown(now);
 
       /*
        * 家那边的天气（2026-11-17）。**放在 home 分支之前** —— 那一支里有好几处 `return`

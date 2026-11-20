@@ -593,5 +593,39 @@ test('前端产物：碰面服务器没连上与同城没人要分开显示', as
     }));
     await bundle.panels.now.mount(ctxEmpty);
     assert.ok(emptyRoot.text.includes('这段时间没别人'), '连上了但真没人时显示这段时间没别人');
+
+    /*
+     * 第三档：这一带没人，但今天有人来过（2026-11-20）。
+     *
+     * 服务端一直回着 `here`，客户端原来一个字段都没接，于是「今天来过 3 只、
+     * 只是这会儿不在」和「这城今天一只都没有」显示成同一句话。
+     */
+    const wasRoot = new FakeNode('div');
+    const ctxWas = makeCtx(wasRoot, async () => ({
+      ...snapshot, guideSeen: true,
+      social: { online: true, nearby: 0, here: 3, invites: 0, pool: 0, pledge: null },
+    }));
+    await bundle.panels.now.mount(ctxWas);
+    assert.ok(wasRoot.text.includes('今天来过 3 只'), `有人来过时不该说没人：${wasRoot.text.slice(0, 200)}`);
+    assert.ok(!wasRoot.text.includes('这段时间没别人'), '有人来过却显示「这段时间没别人」');
+
+    /* 优先级：此刻真有人时先说此刻，不拿「今天来过」顶替。 */
+    const bothRoot = new FakeNode('div');
+    const ctxBoth = makeCtx(bothRoot, async () => ({
+      ...snapshot, guideSeen: true,
+      social: { online: true, nearby: 2, here: 5, invites: 0, pool: 0, pledge: null },
+    }));
+    await bundle.panels.now.mount(ctxBoth);
+    assert.ok(bothRoot.text.includes('2 个也在这一带'), '此刻有人时应当说这一带有人');
+    assert.ok(!bothRoot.text.includes('今天来过'), 'nearby > 0 时不该退到「今天来过」那一档');
+
+    /* 旧服务端不回 `here`：字段缺失要落回原来那句，不能空着或报错。 */
+    const oldRoot = new FakeNode('div');
+    const ctxOld = makeCtx(oldRoot, async () => ({
+      ...snapshot, guideSeen: true,
+      social: { online: true, nearby: 0, invites: 0, pool: 0, pledge: null },
+    }));
+    await bundle.panels.now.mount(ctxOld);
+    assert.ok(oldRoot.text.includes('这段时间没别人'), '没有 here 字段时应当落回原来的文案');
   } finally { restore(); }
 });

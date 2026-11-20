@@ -259,3 +259,243 @@ test('别人接了她说的话：自己也往那儿走，并说出来', async ()
     assert.equal(world.st.pledge.cityId, 'lasa');
   } finally { restore(); }
 });
+
+/* ---------- 一次失败 ≠ 一整天没连上（2026-11-20 Mr.Q 报的） ---------- */
+
+/**
+ * 搭一台「同城接口单独坏掉」的服务器：`/sight/status` 一直好的，`/sight`（同城）按开关坏。
+ *
+ * 这正是截图上那个组合 —— 池子 324 只、3 个在找伴都正常，唯独「同城」说没连上。
+ */
+async function bootMeetFlaky() {
+  const dir = mkdtempSync(join(tmpdir(), 'jr-meet-retry-'));
+  new StateStore(dir).save({ ...initialState('lanzhou'), ...staying() });
+  const clock = { now: new Date(NOW), down: true, neighbors: 0 };
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    const method = (init && init.method) || 'GET';
+    if (u.includes('/sight/status')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [], pool: 324 }) };
+    }
+    if (u.includes('/invite')) return { ok: true, status: 200, json: async () => ({ ok: true, list: [] }) };
+    if (method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    clock.neighbors += 1;
+    if (clock.down) throw new Error('ECONNRESET');
+    return { ok: true, status: 200, json: async () => ({ ok: true, list: [{ pet: '鲸鲸', doing: '逛早市' }], pool: 324 }) };
+  };
+  const world = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', meetUrl: 'https://x.test' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => clock.now,
+  });
+  await world.start(fakeHost([]));
+  return { world, clock };
+}
+
+test('同城那条线抖了一下，退避之后自己翻回来；池子照旧是活的', async () => {
+  /*
+   * 他的原话：「明明能约到人却显示服务器没连上」。截图里同时有两组数字：
+   *   池子 324 只 / 3 个在找伴  ← 走 `/sight/status`，一直好的
+   *   同城 · 碰面服务器没连上   ← 走 `/sight`，只在排表和判定那两次问
+   *
+   * 所以「没连上」停在面板上，不等于线断了，只等于**那一次**没成。
+   * 这条守的是：再问一次成了，就得翻回来，而且同城名单跟着换 ——
+   * 只翻灯不换数字，等于嘴上说通了、名单还是昨天那份。
+   */
+  const origFetch = globalThis.fetch;
+  const { world, clock } = await bootMeetFlaky();
+  try {
+    await world.tick();
+    let snap = world.uiSnapshot();
+    assert.equal(snap.social.online, false, '这一次确实没连上，应当如实说没连上');
+    assert.equal(snap.social.pool, 324, `池子这条线是好的，不该跟着变灰：${snap.social.pool}`);
+
+    const tried = clock.neighbors;
+    /* 首档是 2 分钟。探针那头失败只占退避位、不推进步进，所以第一档就是 2 分钟。 */
+    clock.now = new Date(clock.now.getTime() + 90_000);
+    await world.tick();
+    assert.equal(clock.neighbors, tried, `退避没生效，90 秒内又打了一次（${tried} → ${clock.neighbors}）`);
+
+    clock.down = false;
+    clock.now = new Date(clock.now.getTime() + 60_000);   // 累计 2.5 分钟，过第一档
+    await world.tick();
+    snap = world.uiSnapshot();
+    assert.equal(snap.social.online, true, '线回来了，面板还顶着「没连上」');
+    assert.equal(snap.social.nearby, 1, `翻回来之后同城名单没跟着换：${snap.social.nearby}`);
+  } finally {
+    globalThis.fetch = origFetch;
+    world.stop?.();
+  }
+});
+
+/* ---------- 「暂时没别人」不许在有人来过的时候说（2026-11-20） ---------- */
+
+test('今天有人来过、只是这会儿不在 —— 面板不许写「这段时间没别人」', async () => {
+  /*
+   * 第二张截图里那一行：`同城 · 暂时没别人`。
+   * 服务端 `/sight` 一直回着 `here: 3`（今天这座城来过 3 只，去重 uid），
+   * 客户端**一个字段都没接** —— 面板只读 `plan.neighbors.length`，
+   * 而那是「当天第一次排表那一刻、某一个时段、最近 2 小时」的名单。
+   *
+   * 这里的判据有两层：
+   *   ① `here` 要接上，且减一（服务端那条 COUNT 不带 exclude，她自己算在里面）
+   *   ② 名单要能自己变新，不能一天只取一次
+   */
+  const dir = mkdtempSync(join(tmpdir(), 'jr-meet-here-'));
+  new StateStore(dir).save({ ...initialState('lanzhou'), ...staying() });
+  const clock = { now: new Date(NOW), list: [], here: 3, sights: 0 };
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    const method = (init && init.method) || 'GET';
+    if (u.includes('/sight/status')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [], pool: 324 }) };
+    }
+    if (u.includes('/invite')) return { ok: true, status: 200, json: async () => ({ ok: true, list: [] }) };
+    if (method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    clock.sights += 1;
+    return { ok: true, status: 200, json: async () => ({ ok: true, list: clock.list, pool: 324, here: clock.here }) };
+  };
+  const world = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', meetUrl: 'https://x.test' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => clock.now,
+  });
+  await world.start(fakeHost([]));
+  try {
+    await world.tick();
+    let s = world.uiSnapshot().social;
+    assert.equal(s.nearby, 0, `此刻确实没人：${s.nearby}`);
+    assert.equal(s.here, 2, `here 含她自己，减一才是「别人」：${s.here}`);
+
+    /* 一小时后有人来了一趟。名单和那个数字都得跟着动。 */
+    clock.list = [{ pet: '鲸鲸', doing: '逛早市' }];
+    clock.here = 5;
+    clock.now = new Date(clock.now.getTime() + 61 * 60_000);
+    await world.tick();
+    s = world.uiSnapshot().social;
+    assert.equal(s.nearby, 1, `名单没跟着刷新，还是一小时前那份：${s.nearby}`);
+    assert.equal(s.here, 4, `今天来过几只没更新：${s.here}`);
+  } finally {
+    globalThis.fetch = origFetch;
+    world.stop?.();
+  }
+});
+
+/* ---------- 2026-11-20 回补：探针的四个边界（第三方审查指出，逐条复现过） ---------- */
+
+/**
+ * 一台可控的碰面服务器：`/sight` 回什么、坏不坏，都由 `srv` 决定。
+ *
+ * `srv.here` 是「今天这座城来过几只」（服务端 COUNT(DISTINCT uid)，不带 exclude），
+ * `srv.list` 是最近 2 小时、当前时段有谁。
+ */
+async function bootProbe({ phase = 'staying', hereId = 'xian', srv }) {
+  const dir = mkdtempSync(join(tmpdir(), 'jr-probe-'));
+  new StateStore(dir).save({
+    ...initialState('lanzhou'),
+    ...(phase === 'staying' ? staying({ hereId }) : { phase, hereId }),
+  });
+  srv.now = new Date(NOW);
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const u = String(url);
+    const method = (init && init.method) || 'GET';
+    if (u.includes('/sight/status')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [], pool: 324 }) };
+    }
+    if (u.includes('/invite')) return { ok: true, status: 200, json: async () => ({ ok: true, list: [] }) };
+    if (method === 'POST') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    srv.hits = (srv.hits || 0) + 1;
+    if (srv.down) throw new Error('ECONNRESET');
+    return {
+      ok: true, status: 200,
+      json: async () => ({ ok: true, list: srv.list ?? [], pool: 324, here: srv.here ?? 0 }),
+    };
+  };
+  const world = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', meetUrl: 'https://x.test' },
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => srv.now,
+  });
+  await world.start(fakeHost([]));
+  return { world, srv, restore: () => { globalThis.fetch = origFetch; world.stop?.(); } };
+}
+
+test('探针的冷却要认城市：换了城不许把上一座城的数写在新城面板上', async () => {
+  /*
+   * 第一版 `nearbyProbe` 只有 `{ at, here, n }`，冷却只看 60 分钟。
+   * 于是 60 分钟内从西安到重庆，面板会拿西安的 `here: 12` 显示在重庆 ——
+   * 实测复现过。**一个错得理直气壮的数字，比没有数字糟得多。**
+   */
+  const srv = { here: 12, list: [], hits: 0, down: false };
+  const { world, restore } = await bootProbe({ srv });
+  try {
+    await world.tick();
+    /* 停留中会 `reportHere()`，她也进了那个 COUNT，所以 12 − 1 = 11。 */
+    assert.equal(world.uiSnapshot().social.here, 11, `西安 12 只去过掉她自己：${world.uiSnapshot().social.here}`);
+
+    /* 十分钟后落在重庆，重庆今天只有 1 只。冷却没过，但城变了。 */
+    srv.here = 1;
+    srv.now = new Date(srv.now.getTime() + 10 * 60_000);
+    world.st = { ...world.st, hereId: 'chongqing' };
+    await world.tick();
+    assert.equal(world.uiSnapshot().social.here, 1,
+      `换了城还报着上一座城的数：${world.uiSnapshot().social.here}`);
+  } finally { restore(); }
+});
+
+test('探针失败要亮红灯，否则断线了面板还说「连上了」', async () => {
+  /*
+   * 第一版 `probeNearby` 失败直接 `return`，不翻 `lastMeetOk`。
+   * 而 `refreshMeetIfDown` 只在 `lastMeetOk === false` 时才重试 —— 两边一起哑：
+   * 灯是绿的，自愈也不会启动。
+   */
+  const srv = { here: 3, list: [], hits: 0, down: true };
+  const { world, restore } = await bootProbe({ srv });
+  try {
+    await world.tick();
+    assert.equal(world.uiSnapshot().social.online, false, '这一打确实没连上，面板应当如实说');
+  } finally { restore(); }
+});
+
+test('重试成功之后 here 要跟着回来，不许锁 0 一小时', async () => {
+  /*
+   * 首轮失败时探针把 `nearbyProbe` 锁成 `here: 0`（失败也占住那一小时）。
+   * 几分钟后重试拿到 `here: 5`，第一版只改了 `plan.neighbors`、忘了回填 `nearbyProbe` ——
+   * 面板要再等近一小时才更新。**灯绿了、数字还是错的，等于只修了一半。**
+   */
+  const srv = { here: 5, list: [], hits: 0, down: true };
+  const { world, restore } = await bootProbe({ srv });
+  try {
+    await world.tick();
+    assert.equal(world.uiSnapshot().social.online, false);
+
+    srv.down = false;
+    srv.now = new Date(srv.now.getTime() + 3 * 60_000);   // 过 2 分钟退避
+    await world.tick();
+    const s = world.uiSnapshot().social;
+    assert.equal(s.online, true, '线回来了，灯得翻');
+    /* 停留中会 `reportHere()`，她自己也在那个 COUNT 里，所以 5 − 1 = 4。 */
+    assert.equal(s.here, 4, `重试成功却没回填 here：${s.here}`);
+  } finally { restore(); }
+});
+
+test('在家/在路上从不上报 presence，here 里没有她，减一就是少报一只', async () => {
+  /*
+   * `reportHere()` 只在 `phase === 'staying'` 时发。在家时服务端根本不知道她来过，
+   * `here: 1` 就是「真的有一只别人」—— 无条件减一会变成「这段时间没别人」。
+   *
+   * 判据是「这个数含不含她自己」，不是「永远是 1」：
+   * 在家不减，停留中且今天报过到才减。
+   */
+  const srv = { here: 1, list: [], hits: 0, down: false };
+  const { world, restore } = await bootProbe({ phase: 'home', hereId: 'lanzhou', srv });
+  try {
+    await world.tick();
+    assert.equal(world.uiSnapshot().social.here, 1, `在家那一只别人被减没了：${world.uiSnapshot().social.here}`);
+  } finally { restore(); }
+});

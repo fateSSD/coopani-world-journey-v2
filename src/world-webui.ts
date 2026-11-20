@@ -1081,24 +1081,45 @@ export const webUiMethods: Record<string, any> = {
       social: (() => {
         const p = this.activePledge(now);
         const configured = String(this.cfg.meetUrl ?? '').trim() !== '';
-        const nearby = this.plan?.neighbors.length ?? 0;
+        const nearby = this.plan?.neighbors.length ?? this.nearbyProbe?.n ?? 0;
+        /*
+         * 今天这座城来过几只**别人**（2026-11-20）。
+         *
+         * 服务端 `/sight` 回的 `here` 是 `COUNT(DISTINCT uid) WHERE city=? AND at>=今天0点`
+         * —— **不带 exclude**。所以「里面有没有她自己」不是常量，取决于两件事：
+         * 这个数是什么时候、对哪座城取的（`nearbyProbe.cityId/day`），
+         * 以及今天有没有对那座城**成功上报过 presence**（`presenceReported`）。
+         *
+         * `reportHere()` 只在 `phase === 'staying'` 时上报。所以在家里、在路上，
+         * 服务端根本不知道她来过 —— 那会儿无条件减一就是**少报一只**，
+         * 而那正是「今天有 1 只别人来过，面板却说没别人」的来路。
+         *
+         * 两个都同城同日才减一；其余情况原样报。
+         */
+        const probed = this.nearbyProbe;
+        const ownCounted = !!probed
+          && probed.cityId === this.st.hereId
+          && this.presenceReported?.cityId === probed.cityId
+          && this.presenceReported?.day === probed.day;
+        const hereToday = Math.max(0, (probed?.here ?? 0) - (ownCounted ? 1 : 0));
         const invites = this.plan?.invites.length ?? 0;
         // 「池子今天多少只」：取样值优先（20 分钟内新鲜），排表那次的值兜底。
         // 两个来源都可能是 0（没配服务器 / 真没人 / 接口没回），面板那边只在 > 0 时显示。
         const pool = this.poolProbe?.value || this.plan?.pool || 0;
         if (!configured && !p) return null;
         const online = this.lastMeetOk !== false;
-        if (!p) return { online, nearby, invites, pool, pledge: null };
+        if (!p) return { online, nearby, here: hereToday, invites, pool, pledge: null };
         const city = this.cityName(p.cityId);
         if (!p.arrivedAt) {
           // 还没到：天数就是他答应人家的天数，不能算「还剩」。
-          return { online, nearby, invites, pool, pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: p.days, here: false } };
+          return { online, nearby, here: hereToday, invites, pool, pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: p.days, here: false } };
         }
         const ms = now.getTime() - Date.parse(p.arrivedAt);
         const left = Math.max(0, Math.ceil((p.days * 86_400_000 - ms) / 86_400_000));
         return {
           online,
           nearby,
+          here: hereToday,
           invites,
           pool,
           pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: left, here: this.st.hereId === p.cityId },

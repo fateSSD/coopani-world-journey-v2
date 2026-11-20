@@ -393,6 +393,24 @@ export const planMethods: Record<string, any> = {
       meet ? listInvites(meet, c.id) : Promise.resolve({ ok: true as const, list: [] }),
     ]);
     this.lastMeetOk = meet ? board.ok : null;
+    if (meet) {
+      const real = this.realNow().getTime();
+      if (board.ok) {
+        /*
+         * 排表这一次也把结果交给 `nearbyProbe`（2026-11-20 回补）。
+         *
+         * 不接的话：六秒后 `tick()` 里的探针还会再打一次 `/sight`（同一分钟第二枪），
+         * 而且面板要从两次请求里各取一半 —— 名单来自这次、`here` 来自那次。
+         */
+        this.noteNeighbors(c.id, moment.dateKey, board, real);
+      } else {
+        /*
+         * 失败要占住退避位。不占的话 `refreshMeetIfDown` 看 `meetRetryAt === 0`
+         * 会当「从没试过」，同一轮 tick 里立刻补第三枪，2 分钟那档退避被整档跳过。
+         */
+        this.meetRetryAt = real;
+      }
+    }
     const neighbors = board.list;
     /*
      * **她发出去的邀约，有人接了没有。**
