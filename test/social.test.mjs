@@ -680,3 +680,26 @@ test('他点了「好」但那条已经没了：必须说一句，不许静默',
     );
   } finally { restore(); }
 });
+
+test('他点「好」的那一秒就该动身 —— 不许等他再刷 60 秒', async () => {
+  /*
+   * `takeInvite` 只把今天的决策重开，真正动身在下一轮巡检（60 秒）。
+   * 他点完「好」立刻看面板，行程还是原样 —— 会以为按钮没起作用，
+   * 而那 60 秒里她可能已经说了「我这就走」。`answerAsk` 里补抓一拍。
+   */
+  const { world, one, restore } = await bootTakeToday(NOW);
+  try {
+    await world.tick();
+    assert.equal(world.st.decidedOn, '2026-11-05', '前提：今天的决策额度已经用掉');
+    world.st = {
+      ...world.st,
+      ask: {
+        kind: 'accept', cityId: one.to, days: one.days, inviteId: one.id,
+        withPet: one.pet, note: null, askedAt: NOW,
+      },
+    };
+    await world.answerAsk(true);
+    assert.equal(world.st.phase, 'traveling', `点了「好」还留在城里：${world.st.phase}`);
+    assert.equal(world.st.leg?.toId, 'shanghai', `目的地不对：${world.st.leg?.toId}`);
+  } finally { restore(); }
+});
