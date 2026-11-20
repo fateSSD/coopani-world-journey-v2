@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-journey",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "type": "module",
   "description": "大肥鱼环游世界 · 让桌宠真的出门去旅行：走遍 193 座城市，路上耗着真实时间、按当地作息吃饭看日出、写旅行日记，还能在城里偶遇别人的宠物、月底生成一份手账。（需 Coopani 0.2.17+）",
   "author": {

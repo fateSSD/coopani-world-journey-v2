@@ -1930,7 +1930,13 @@ export class JourneyWorld implements World {
      * 单人时凑巧等于人名，看不出问题；三个人一起走到站，记忆里会多出一个
      * 叫这串名字的假人，而真正的三个人一个都没记上。见 `namesIn`。
      */
-    if (atDest) for (const who of namesIn(atDest)) this.rememberPet(who, 6);
+    if (atDest) {
+      for (const who of namesIn(atDest)) this.rememberPet(who, 6);
+      this.queueLifeEffect?.('和旅伴碰头', {
+        vitalsDelta: { social: 20, fun: 10 },
+        moodlet: { text: '和约好的人碰上面了，热闹了不少', kind: 'good', hours: 4 },
+      });
+    }
     /*
      * **约定作废必须说出来**（2026-11-16 读者报告）。
      * 原来只有一行 `log.info` —— 面板照旧挂着那句话，模型也当她还在守约，

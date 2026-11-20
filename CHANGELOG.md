@@ -1,5 +1,12 @@
 # 更新日志
 
+## 2.1.5 — 2026-11-20（修同城旅伴字段写错，补齐旅途与同行社交反哺 life）
+
+- **修隐藏 Bug**：`src/world-plan.ts` 原读取不存在字段 `this.st.mate`，导致有同城旅伴同行逛景点时 `social: 16` 从未生效；现改为 `Boolean(this.st.pledge && this.st.pledge.arrivedAt && this.st.pledge.cityId === city.id)`。
+- **补齐旅途节拍反哺**：早饭 `social +2`（同行 `+5`）、正餐 `social +2`（同行 `+8`）、景点普通 `social +3` / 讲解导游集市茶馆等互动场景 `social +6`（同行 `+16`）。
+- **补齐同行五入口反哺**：留路标 `+4`、发邀约 `+5`、接邀约与邀约被认领各 `social +12 / fun +6`（`src/world-social.ts`）；抵达约定城市与旅伴碰头 `social +20 / fun +10` 并附 4h 好情绪（`src/world.ts` `arrive()`）。
+- **测试**：`test/life-vitals-bridge.test.mjs` 新增 3 组回归（7/7），全量 101 个测试文件（96 `*.test.mjs` + 5 独立 `.mjs`）1292/1292 通过。
+
 ## 2.1.4 — 2026-11-20（他点「好」的那一秒就生效）
 
 2.1.3 把今天的决策重开了，但真正动身在**下一轮巡检**（60 秒）。他点完「好」立刻看面板，

@@ -291,6 +291,7 @@ export const socialMethods: Record<string, any> = {
 
     const ok = await reportSignpost(meet, cityId, body);
     if (!ok) return '（路标没留成，服务端没接。）';
+    this.queueLifeEffect?.('在路边留了路标', { vitalsDelta: { social: 4 } });
     return `在${named?.name ?? this.cityName(cityId)}的路边留了一句话，以后来这儿的人能看见。`;
   },
 
@@ -764,6 +765,7 @@ export const socialMethods: Record<string, any> = {
       city: dest.name,
     });
     this.persist();
+    this.queueLifeEffect?.('有人接了同行邀约', { vitalsDelta: { social: 12, fun: 6 } });
     /*
      * 有人接了话 —— 今天这一拍重开（2026-11-20，见 `reopenTodayDecision`）。
      *
@@ -905,6 +907,7 @@ export const socialMethods: Record<string, any> = {
       };
     }
     this.log?.info(`发了条邀约：${here.name} → ${c.name}，${d} 天。`);
+    this.queueLifeEffect?.('发了找伴邀约', { vitalsDelta: { social: 5 } });
     /*
      * 回执里那句「不保证有人接」必须写。
      *
@@ -1283,6 +1286,7 @@ export const socialMethods: Record<string, any> = {
       city: dest.name,
     });
     this.persist();
+    this.queueLifeEffect?.('接下同行邀约', { vitalsDelta: { social: 12, fun: 6 } });
 
     /*
      * 接了就动身 —— 两种走法分开（2026-11-20）。

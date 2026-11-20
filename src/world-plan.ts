@@ -707,17 +707,20 @@ export const planMethods: Record<string, any> = {
 
     /* 旅行节点反哺 life 五维（不扣钱，请客模式同样生效）。 */
     const tier = plan.lodging?.tier ?? 'budget';
+    const hasMate = Boolean(this.st.pledge && this.st.pledge.arrivedAt && this.st.pledge.cityId === city.id);
     if (last.kind === 'breakfast') {
-      this.queueLifeEffect('旅途早饭', { vitalsDelta: { food: 22 } });
+      this.queueLifeEffect?.('旅途早饭', { vitalsDelta: { food: 22, social: hasMate ? 5 : 2 } });
     } else if (last.kind === 'lunch' || last.kind === 'dinner') {
       const richMeal = tier === 'luxury' || this.purseRich();
-      this.queueLifeEffect('旅途正餐', {
-        vitalsDelta: { food: richMeal ? 36 : 30 },
+      this.queueLifeEffect?.('旅途正餐', {
+        vitalsDelta: { food: richMeal ? 36 : 30, social: hasMate ? 8 : 2 },
         ...(richMeal ? { moodlet: { text: '在当地吃了顿顺口的好饭', kind: 'good', hours: 3 } } : {}),
       });
     } else if (last.kind === 'activity') {
-      this.queueLifeEffect('逛景点', {
-        vitalsDelta: { fun: 14, ...(this.st.mate ? { social: 16 } : {}) },
+      const socialBeat = /讲解|导游|搭话|集市|夜市|茶馆|拼桌|老板|聊|民俗|演出|剧场/.test(last.what ?? '');
+      const activitySocial = hasMate ? 16 : (socialBeat ? 6 : 3);
+      this.queueLifeEffect?.('逛景点', {
+        vitalsDelta: { fun: 14, social: activitySocial },
       });
     } else if (last.kind === 'hotel') {
       const hotelBonus = tier === 'luxury'
@@ -727,7 +730,7 @@ export const planMethods: Record<string, any> = {
           : tier === 'comfort'
             ? { clean: 16, energy: 3 }
             : { clean: 12 };
-      this.queueLifeEffect('回酒店洗漱休息', { vitalsDelta: hotelBonus });
+      this.queueLifeEffect?.('回酒店洗漱休息', { vitalsDelta: hotelBonus });
     }
 
     // 拍一张：只在「出去逛」这个节点，一天一次。**不 await** ——
