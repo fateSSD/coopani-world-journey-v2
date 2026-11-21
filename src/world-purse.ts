@@ -618,7 +618,11 @@ export const purseMethods: Record<string, any> = {
     const left = this.purseLeft();
     const n = Math.min(14, Math.max(1, Math.round(Number(days) || 1)));
     const bed = cheapestBed(to.priceIdx ?? 1, to.country !== 'CN', terrainOf(to));
-    const fare = legs.reduce((sum, l) => sum + this.cheapestFare(l.km, l.crossBorder === true), 0);
+    /*
+     * **票钱取整**。`fareOf` 是 0.33 元/公里那种算式，直接拼进回执会变成
+     * 「票 204.60000000000002」—— 浮点尾巴进了给人看的句子，一眼就是机器写的。
+     */
+    const fare = Math.round(legs.reduce((sum, l) => sum + this.cheapestFare(l.km, l.crossBorder === true), 0));
     const need = fare + (bed + MEALS_PER_DAY) * n;
     return { ok: left === null || need <= left, need, left, fare, bed, meals: MEALS_PER_DAY, days: n };
   },
