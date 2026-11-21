@@ -664,3 +664,44 @@ test('前端产物：相册页有「同一天拍的都留着」开关，状态�
     assert.deepEqual(save.args[0], { imageKeepAll: false });
   } finally { restore(); }
 });
+
+/* ---------------- 相册：点图看大图（2026-11-21） ---------------- */
+
+test('前端产物：点缩略图放大，× 关掉，箭头翻下一张', async () => {
+  /*
+   * 读者来信：「在这个界面做一个一键放大……有时候复制原图路径后打开是一堆桌面的截屏」。
+   * 原来相册只有 168px 的缩略图，想看原图只能去媒体目录里翻，而那个目录混着别的截图。
+   */
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const root = new FakeNode('div');
+    const photos = [
+      { handle: 'log:a.png', title: '黄昏的麦积山', city: '天水', dateKey: '2026-10-31', file: 'a.png' },
+      { handle: 'log:b.png', title: '清晨的甘海子', city: '九寨沟', dateKey: '2026-11-01', file: 'b.png' },
+    ];
+    const ctx = makeCtx(root, async (method) => (method === 'list' ? { photos } : {}));
+    ctx.panelId = 'album';
+    await bundle.panels.album.mount(ctx);
+
+    const box = root.find((n) => n.className === 'jr-lb');
+    assert.ok(box, '没有放大层');
+    assert.equal(box.hidden, true, '一进来就弹着一张图');
+
+    const thumbs = root.all((n) => n.tagName === 'IMG' && n.className !== 'jr-lb-img');
+    assert.equal(thumbs.length, 2, `缩略图数量不对：${thumbs.length}`);
+    thumbs[0].handlers.click[0]();
+    assert.equal(box.hidden, false, '点了没打开');
+    const big = root.find((n) => n.className === 'jr-lb-img');
+    assert.equal(big.src, '/api/blob?handle=log%3Aa.png', `放大层装错了图：${big.src}`);
+    assert.match(root.find((n) => n.className === 'jr-lb-bar').text, /1 \/ 2/, '没有「第几张」');
+
+    /* 翻下一张，不用退出去重点 */
+    root.find((n) => n.className.includes('jr-lb-next')).handlers.click[0]();
+    assert.equal(big.src, '/api/blob?handle=log%3Ab.png', '箭头没翻页');
+
+    root.find((n) => n.className === 'jr-lb-x').handlers.click[0]();
+    assert.equal(box.hidden, true, '× 关不掉');
+    assert.equal(big.src, '', '关了还攥着那张原图，内存会涨');
+  } finally { restore(); }
+});

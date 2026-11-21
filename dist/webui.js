@@ -124,6 +124,19 @@ const TEXT = {
     albumKeepAll: '同一天拍的都留着',
     albumKeepAllHint: '关着：同一天同一座城只留最新那张（旧图还在磁盘上，只是相册里看不到）。开着：补一张就多一张，谁也不挤谁。',
     albumKeepAllFail: '这个开关没存上：',
+    /*
+     * 点开看大图（2026-11-21，读者来信：「在这个界面做一个一键放大……有时候复制原图
+     * 路径后打开是一堆桌面的截屏」）。
+     *
+     * 原来相册这一页只能看 168px 的缩略图，想看原图只有两条路：点开「提示词」看文字，
+     * 或者去媒体目录里翻 —— 而那个目录是宿主的媒体库，混着别的截图。
+     */
+    albumZoomHint: '点一下看大图',
+    albumZoomClose: '关闭',
+    albumPrev: '上一张',
+    albumNext: '下一张',
+    albumZoomCount: '张',
+    photoDirNote: '这个目录是宿主的媒体库，里面还混着别的图。只想看这一张，直接点照片放大。',
     albumIntro: '这些是她在路上拍的。每张下面留着生成它用的那段提示词 —— 不满意就展开改，改完点那个按钮重拍这一张。重拍出来的是新图，旧的那份还留在磁盘上（月报可能正引用着它）。',
     albumPrompt: '提示词',
     albumPromptEmpty: '这张拍得早，没留下提示词。',
@@ -306,6 +319,12 @@ const TEXT = {
     albumKeepAll: 'Keep every shot of the day',
     albumKeepAllHint: 'Off: one photo per day and per city — the older one stays on disk but leaves the album. On: each extra shot is added, nothing gets pushed out.',
     albumKeepAllFail: 'Could not save that switch: ',
+    albumZoomHint: 'Click to enlarge',
+    albumZoomClose: 'Close',
+    albumPrev: 'Previous',
+    albumNext: 'Next',
+    albumZoomCount: 'of',
+    photoDirNote: 'That folder is the host media library and holds other images too. To look at this one, just click the photo.',
     albumIntro: 'These are the photos she took along the way. Each one keeps the prompt that produced it - edit it and hit "Reshoot with this" to replace that photo. The reshoot is a new image; the old file stays on disk, since a monthly report may still be using it.',
     albumPrompt: 'Prompt',
     albumPromptEmpty: 'Taken before prompts were kept.',
@@ -1389,7 +1408,79 @@ export default {
          */
         const intro = el('p', 'jr-album-intro', T.albumIntro);
         intro.hidden = true;
-        app.append(head, keepRow, intro, grid, dirBar, note);
+        /*
+         * 点开看大图（2026-11-21）。
+         *
+         * 读者原话：「在这个界面做一个一键放大……有时候复制原图路径后打开是一堆桌面的截屏」。
+         * 他要的是**在这一页把这张看清**，不是去媒体目录里翻 —— 而那个目录是宿主的媒体库，
+         * 混着别人的截图，翻起来根本找不到她拍的那张。
+         *
+         * 做成一层浮层而不是新页面：相册的上下文（我在看第几张）不能丢。
+         * 左右箭头按相册顺序走，翻照片不用退出去再点下一张。
+         */
+        const lb = el('div', 'jr-lb');
+        lb.hidden = true;
+        const lbImg = el('img', 'jr-lb-img');
+        const lbX = el('button', 'jr-lb-x', '×');
+        lbX.type = 'button';
+        lbX.title = T.albumZoomClose;
+        const lbPrev = el('button', 'jr-lb-nav jr-lb-prev', '‹');
+        lbPrev.type = 'button';
+        lbPrev.title = T.albumPrev;
+        const lbNext = el('button', 'jr-lb-nav jr-lb-next', '›');
+        lbNext.type = 'button';
+        lbNext.title = T.albumNext;
+        const lbBar = el('p', 'jr-lb-bar', '');
+        lb.append(lbImg, lbX, lbPrev, lbNext, lbBar);
+
+        let lbList = [];
+        let lbAt = 0;
+        const lbShow = (i) => {
+          const p = lbList[i];
+          if (!p) return;
+          lbAt = i;
+          lbImg.src = `/api/blob?handle=${encodeURIComponent(p.handle)}`;
+          lbImg.alt = p.title || p.city || '';
+          const where = [p.city, p.dateKey].filter(Boolean).join(' · ');
+          lbBar.textContent = [
+            p.title || p.city || '',
+            where,
+            p.file || '',
+            `${i + 1} / ${lbList.length}`,
+          ].filter(Boolean).join('｜');
+          lbPrev.disabled = i <= 0;
+          lbNext.disabled = i >= lbList.length - 1;
+        };
+        const lbOpen = (list, i) => {
+          lbList = list;
+          lb.hidden = false;
+          lbShow(i);
+        };
+        /*
+         * 关的时候把 `src` 清掉：浮层只是 hidden，不清的话那张原图会一直被浏览器
+         * 攥在内存里（一张两三兆，翻十几张就是几十兆）。
+         */
+        const lbClose = () => {
+          lb.hidden = true;
+          lbImg.src = '';
+          lbList = [];
+        };
+        lbX.addEventListener('click', lbClose, { signal: ctx.signal });
+        /* 点背景关 —— 但点在图上不关（那是「我想看更清楚」，不是「我看完了」）。 */
+        lb.addEventListener('click', (e) => { if (e.target === lb) lbClose(); }, { signal: ctx.signal });
+        lbPrev.addEventListener('click', () => lbShow(lbAt - 1), { signal: ctx.signal });
+        lbNext.addEventListener('click', () => lbShow(lbAt + 1), { signal: ctx.signal });
+        /* 键盘：Esc 关、左右翻。桌面上手不用离开键盘 —— 也让浮层像个浮层。 */
+        if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+          document.addEventListener('keydown', (e) => {
+            if (lb.hidden) return;
+            if (e.key === 'Escape') lbClose();
+            else if (e.key === 'ArrowLeft') lbShow(lbAt - 1);
+            else if (e.key === 'ArrowRight') lbShow(lbAt + 1);
+          }, { signal: ctx.signal });
+        }
+
+        app.append(head, keepRow, intro, grid, dirBar, note, lb);
         ctx.root.append(app);
 
         /*
@@ -1422,6 +1513,12 @@ export default {
            * 所以：**先说清它做什么，再说清为什么这么做**。
            */
           dirBar.append(el('span', 'jr-dir-note', T.photoKeep));
+          /*
+           * 「复制路径打开是一堆截屏」这件事得先说明白（2026-11-21，读者来信）。
+           * 那个目录是**宿主的媒体库**，别的东西也在里面 —— 他要看的这张，
+           * 在这一页点开就有，不用去目录里翻。
+           */
+          dirBar.append(el('span', 'jr-dir-note', T.photoDirNote));
 
           /*
            * 改路径（2026-11-09 Mr.Q：「照片路径修改功能还是没见啊」）。
@@ -1487,12 +1584,18 @@ export default {
             grid.append(el('p', 'jr-next-empty', T.albumEmpty));
             return;
           }
-          for (const p of photos) {
+          for (const [idx, p] of photos.entries()) {
             const fig = el('figure', 'jr-photo');
             const img = el('img');
             img.loading = 'lazy';
             img.alt = p.title || p.city;
             img.src = `/api/blob?handle=${encodeURIComponent(p.handle)}`;
+            /*
+             * 点图放大（2026-11-21）。挂 click 而不是把图包进 button：
+             * 卡片里已经有「×」「提示词」「重拍」三个可点区域，再套一层会让键盘焦点乱跳。
+             */
+            img.title = T.albumZoomHint;
+            img.addEventListener('click', () => lbOpen(photos, idx), { signal: ctx.signal });
             const cap = el('figcaption');
             cap.append(el('b', null, p.title || p.city));
             cap.append(el('span', null, `${p.city} · ${p.dateKey}`));

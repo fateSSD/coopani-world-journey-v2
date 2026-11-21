@@ -447,6 +447,89 @@
   aspect-ratio: 1 / 1;
   object-fit: cover;
   background: var(--jr-accent-soft);
+  /*
+   * 点开看大图（2026-11-21）。鼠标放上去就有反应 —— 读者说的是
+   * 「鼠标放上去直接放大看」，而缩略图原来既不放大也没有指针提示，
+   * 整张卡片只有右上角那个 × 看起来可点。
+   */
+  cursor: zoom-in;
+  transition: transform .18s ease;
+}
+.jr-photo:hover img { transform: scale(1.025); }
+
+/*
+ * 放大层。
+ *
+ * 半透明的暖黑，不纯黑 —— 这一页是浅色面板，一块纯黑浮层会像另一个应用。
+ * 图片用 contain：竖构图（她拍的路上的照片多半是横的，但手机比例也有）不能裁。
+ */
+.jr-lb {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 26px 56px 54px;
+  background: rgba(28, 24, 20, .9);
+}
+/* `display:flex` 会盖过 `hidden` 属性本身的 `display:none`，这一行必须有。 */
+.jr-lb[hidden] { display: none; }
+.jr-lb-img {
+  max-width: min(94vw, 1200px);
+  max-height: 84vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #131110;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+}
+.jr-lb-x {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: #f4efe8;
+  background: rgba(255, 255, 255, .14);
+}
+.jr-lb-x:hover { background: rgba(255, 255, 255, .26); }
+.jr-lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 38px;
+  height: 54px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  color: #f4efe8;
+  background: rgba(255, 255, 255, .12);
+}
+.jr-lb-nav:hover:not(:disabled) { background: rgba(255, 255, 255, .24); }
+.jr-lb-nav:disabled { opacity: .28; cursor: default; }
+.jr-lb-prev { left: 10px; }
+.jr-lb-next { right: 10px; }
+.jr-lb-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 16px;
+  margin: 0;
+  padding: 0 70px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(244, 239, 232, .82);
+  word-break: break-all;
 }
 .jr-photo figcaption {
   display: flex;
