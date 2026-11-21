@@ -83,6 +83,8 @@ const TEXT = {
     nearbyNone: '这段时间没别人',
     nearbyWas: '今天来过 {n} 只，这会儿没碰上',
     nearbyOffline: '碰面服务器没连上',
+    nearbyBroken: '碰面地址读不成（{why}），去设置里改一下',
+    meetNote: '碰面',
     nearbyN: '{n} 个也在这一带',
     invites: '找伴',
     invitesN: '{n} 个在找伴',
@@ -286,6 +288,8 @@ const TEXT = {
     nearbyNone: 'nobody else right now',
     nearbyWas: '{n} passed through today, none around now',
     nearbyOffline: 'meet server unreachable',
+    nearbyBroken: 'meet address unreadable ({why}) — fix it in settings',
+    meetNote: 'meet',
     nearbyN: '{n} others nearby',
     invites: 'Company',
     invitesN: '{n} looking for company',
@@ -1189,11 +1193,20 @@ export default {
              * 拿它把这两件事分开。旧服务端不回这个字段时 `so.here` 是 undefined，
              * 自然落回原来那句，向后兼容。
              */
+            /*
+             * 填了但读不成网址（2026-11-21）：这时候说「没连上」是错的 ——
+             * 一次请求都没发出去，服务器根本没被试过。两句必须分开。
+             */
             chips.push([T.nearby, so.online === false
-              ? T.nearbyOffline
+              ? (so.urlIssue ? fill(T.nearbyBroken, { why: so.urlIssue }) : T.nearbyOffline)
               : (so.nearby > 0
                 ? fill(T.nearbyN, { n: so.nearby })
                 : (so.here > 0 ? fill(T.nearbyWas, { n: so.here }) : T.nearbyNone))]);
+            /*
+             * 填了多台时只连第一台，这句必须出现在主面板 ——
+             * 用户填了第二条却一个字反馈都没有，就是下一个「怎么没生效」。
+             */
+            if (so.urlNote) chips.push([T.meetNote, so.urlNote]);
             if (so.invites > 0) chips.push([T.invites, fill(T.invitesN, { n: so.invites })]);
             if (so.pledge) {
               const pg = so.pledge;

@@ -1063,7 +1063,12 @@ export const purseMethods: Record<string, any> = {
         `还剩约 ${humanHours(remainWorld)}的世界时间。`,
         leg.viaIds.length ? `路上经过：${leg.viaIds.map((id) => this.cityName(id)).join('、')}。` : '',
         // 这一趟为什么走：赴约和「待够了想换地方」在记忆里不是同一件事。
-        String(this.cfg.meetUrl ?? '').trim() !== '' && this.lastMeetOk === false
+        /*
+         * 判「这一栏能不能用」走 `meetUsable()`，不判字符串非空（2026-11-21）。
+         * 填了 `ftp://bad` 时非空为真，可请求一次都没发出去 ——
+         * 这时候说「没连上」是错的，那台服务器根本没人试过。
+         */
+        this.meetUsable() && this.lastMeetOk === false
         ? '碰面服务器这会儿没连上，暂时不知道这一带还有谁。'
         : '',
       this.pledgeText(now),

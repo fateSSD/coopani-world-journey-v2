@@ -62,8 +62,17 @@ export interface JourneyConfigSection extends WorldSection {
    *
    * 为什么只用一个开关而不是「看别人」+「被人看」两个：只开一半是占便宜 ——
    * 你看得见别人、别人看不见你。要么都开，要么都关。
+   *
+   * ## 为什么是 `string | string[]`（2026-11-21）
+   *
+   * 为联邦留位置。设置页只有一个输入框，所以**实际填法仍是字符串**，多台用
+   * 空格/逗号/分号分隔；手改 `config.json` 写成数组也认。
+   * 当前运行时只连第一台（见 `normalizeMeetTargets`），多台是 L2 的事。
+   *
+   * 宿主 schema 那边仍是 `type: 'string'` —— 它的 `array` 只认二元数值区间，
+   * 承载不了地址列表（`cortico/src/core/config-schema.ts:25,114-117`）。
    */
-  meetUrl: string;
+  meetUrl: string | string[];
   /**
    * 让宠物主跟着一块走。
    *

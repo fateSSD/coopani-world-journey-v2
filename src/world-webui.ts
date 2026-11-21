@@ -44,7 +44,7 @@ import {
   slotOf, findNeighbors, neighborLine, knownNeighborLine, reportPresence,
   reportFootprint, reportSignpost, fetchStatus, paceGap,
   putCard, fetchCards, EMPTY_BOARD,
-  putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, explainNet,
+  putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, normalizeMeetTargets, explainNet,
   sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine,
   type MeetOptions,
 } from './meet.ts';
@@ -1086,7 +1086,21 @@ export const webUiMethods: Record<string, any> = {
        */
       social: (() => {
         const p = this.activePledge(now);
-        const configured = String(this.cfg.meetUrl ?? '').trim() !== '';
+        /*
+         * 「配没配」不能只看字符串非空（2026-11-21）。
+         *
+         * 填了 `ftp://bad` 时那一栏确实非空，可地址一个都用不了：
+         * 所有请求一次都不发，`lastMeetOk` 永远停在初始值 `null`，
+         * 而 `online = lastMeetOk !== false` 于是得出 **true** ——
+         * 面板亮着绿灯写「这段时间没别人」，和「一切正常但没人」长得一模一样。
+         * 用户看着它去等人，永远等不到。
+         *
+         * 现在按解析结果判，并把「为什么不能用」一起带出去。
+         */
+        const targets = normalizeMeetTargets(this.cfg.meetUrl);
+        const configured = targets.bases.length > 0;
+        const urlIssue = configured ? '' : targets.error;
+        const urlNote = targets.note;
         const probed = this.nearbyProbe?.cityId === this.st.hereId ? this.nearbyProbe : null;
         const nearby = this.plan?.neighbors.length ?? probed?.n ?? 0;
         /*
@@ -1111,22 +1125,20 @@ export const webUiMethods: Record<string, any> = {
         // 「池子今天多少只」：取样值优先（20 分钟内新鲜），排表那次的值兜底。
         // 两个来源都可能是 0（没配服务器 / 真没人 / 接口没回），面板那边只在 > 0 时显示。
         const pool = this.poolProbe?.value || this.plan?.pool || 0;
-        if (!configured && !p) return null;
-        const online = this.lastMeetOk !== false;
-        if (!p) return { online, nearby, here: hereToday, invites, pool, pledge: null };
+        // 「填了但一个都用不了」也要出一条 —— 否则面板上什么都没有，用户以为没生效。
+        if (!configured && !p && !urlIssue) return null;
+        const online = configured ? this.lastMeetOk !== false : false;
+        const base = { online, nearby, here: hereToday, invites, pool, urlIssue, urlNote };
+        if (!p) return { ...base, pledge: null };
         const city = this.cityName(p.cityId);
         if (!p.arrivedAt) {
           // 还没到：天数就是他答应人家的天数，不能算「还剩」。
-          return { online, nearby, here: hereToday, invites, pool, pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: p.days, here: false } };
+          return { ...base, pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: p.days, here: false } };
         }
         const ms = now.getTime() - Date.parse(p.arrivedAt);
         const left = Math.max(0, Math.ceil((p.days * 86_400_000 - ms) / 86_400_000));
         return {
-          online,
-          nearby,
-          here: hereToday,
-          invites,
-          pool,
+          ...base,
           pledge: { withPet: this.whoOfPledge(p), city, days: p.days, daysLeft: left, here: this.st.hereId === p.cityId },
         };
       })(),

@@ -162,6 +162,121 @@ const endpointOf = (url: string): string => {
   return base.endsWith('/sight') ? base : `${base}/sight`;
 };
 
+/* ---------------- 多台（L0 / 2026-11-21） ---------------- */
+
+/**
+ * 一台电脑最多连几个城。
+ *
+ * 写死，不进设置页。理由：15 个网络口 × N，每加一台就多一轮请求；
+ * 3 台已经够「自己的城 + 两座想逛的城」，再多用户也说不清哪个是首选。
+ */
+export const MEET_MAX_TARGETS = 3;
+
+export interface MeetTargetsFix {
+  /** 实际会连的地址（已归一化、去重、截到 `MEET_MAX_TARGETS`）。空＝一台都没有。 */
+  readonly bases: string[];
+  /** 去重后的合法地址总数 —— 可能大于 `bases.length`。 */
+  readonly total: number;
+  /** 「补了 https://」这类整理说明，语义与 `MeetUrlFix.fixed` 一致。 */
+  readonly fixed: string;
+  /** 给主面板看的提示：只连第一台 / 有地址没连上。空串＝没什么要说的。 */
+  readonly note: string;
+  /** 一条合法地址都没有时的原因。空串＝没填（不是错）。 */
+  readonly error: string;
+}
+
+/** 去重键：`origin + pathname`，所以 `https://a` 与 `https://a/` 是同一条。 */
+const baseKey = (base: string): string => {
+  try {
+    const u = new URL(base);
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return base;
+  }
+};
+
+const hostOf = (base: string): string => {
+  try {
+    return new URL(base).host;
+  } catch {
+    return base;
+  }
+};
+
+/**
+ * 把「碰面服务器」那一栏拆成一组地址。
+ *
+ * ## 为什么要单独一层（2026-11-21）
+ *
+ * 用户被要求「自己建一台东莞服务器」时，一台是不够的 —— 他既想连自己的城，
+ * 又不想和主池断开。配置层先认多值，以后真接联邦才不用迁配置。
+ *
+ * **纯函数，不读盘、不生成 uid。** 面板的渲染路径要判「这一栏到底能不能用」，
+ * 走 `meetOptions()` 会在里面触发 `meetUid()` 写文件 —— 每开一次面板写一次盘。
+ *
+ * 几件容易错的事：
+ * - **`meetUrl` 可能整个缺项**（老版本升级上来、用户手改过 `config.json`）。
+ *   2026-11-05 长跑模拟抓到过：少这一项时 `.trim()` 直接抛，而每个巡检都会调它，
+ *   表现是整趟旅行停摆、日志里一秒一条 `Cannot read properties of undefined`。
+ *   所以这里一律 `String(v ?? '')` —— 缺一项不该等于扩展不能工作。
+ * - 末尾多一个逗号 (`https://a,`) 会切出空项，空项被 `normalizeMeetUrl`
+ *   当成「没填」放行 —— 必须 `.filter(Boolean)`，否则它混进 `bases`。
+ * - 数组项里也可能写着逗号（手改 `config.json` 时把两条塞进一个字符串），
+ *   所以数组的每一项还要再切一次。
+ * - 全部非法 ≠ 没填。前者要说原因，后者什么都不说。
+ */
+export function normalizeMeetTargets(raw: unknown): MeetTargetsFix {
+  const chunks: string[] = [];
+  const feed = (v: unknown) => {
+    for (const piece of String(v ?? '').split(/[\s,，;；]+/)) chunks.push(piece);
+  };
+  if (Array.isArray(raw)) raw.forEach(feed);
+  else feed(raw);
+
+  const items = chunks.map((s) => clean(s)).filter(Boolean);
+  if (!items.length) return { bases: [], total: 0, fixed: '', note: '', error: '' };
+
+  const bases: string[] = [];
+  const seen = new Set<string>();
+  const fixes: string[] = [];
+  const errors: string[] = [];
+  for (const item of items) {
+    const one = normalizeMeetUrl(item);
+    if (one.error) {
+      errors.push(one.error);
+      continue;
+    }
+    if (!one.base) continue; // 纯空白项：normalizeMeetUrl 的「没填」语义
+    const key = baseKey(one.base);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    bases.push(one.base);
+    if (one.fixed && !fixes.includes(one.fixed)) fixes.push(one.fixed);
+  }
+
+  if (!bases.length) {
+    return {
+      bases: [],
+      total: 0,
+      fixed: '',
+      note: '',
+      error: errors[0] ?? '这一栏里的地址都读不成网址',
+    };
+  }
+
+  const total = bases.length;
+  const take = bases.slice(0, MEET_MAX_TARGETS);
+  const bits: string[] = [];
+  if (total > 1) {
+    bits.push(total > MEET_MAX_TARGETS
+      ? `目前只连第一台：${hostOf(take[0])}（一共 ${total} 个地址，一台电脑最多连 ${MEET_MAX_TARGETS} 个城）`
+      : `目前只连第一台：${hostOf(take[0])}（另外 ${total - 1} 个地址先没用上）`);
+  }
+  if (errors.length) bits.push(`另有 ${errors.length} 个地址读不成网址，没用上`);
+
+  return { bases: take, total, fixed: fixes.join('，'), note: bits.join('；'), error: '' };
+}
+
 /**
  * 一个网络异常，说成人话。
  *

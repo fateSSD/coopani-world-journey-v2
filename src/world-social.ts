@@ -44,7 +44,7 @@ import {
   slotOf, findNeighbors, neighborLine, knownNeighborLine, reportPresence,
   reportFootprint, reportSignpost, fetchStatus, paceGap,
   putCard, fetchCards, EMPTY_BOARD,
-  putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, explainNet,
+  putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, normalizeMeetTargets, explainNet,
   sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine,
   type MeetOptions,
 } from './meet.ts';
@@ -110,31 +110,41 @@ export const socialMethods: Record<string, any> = {
    */
   meetOptions(): MeetOptions | null {
     /*
-     * `String(… ?? '')` 不是随手加的防御。
-     *
-     * 2026-11-05 长跑模拟抓到的：配置对象少一个 `meetUrl` 时，`.trim()` 直接抛，
-     * 而这一行在每个巡检里都会被调 —— 表现是**整趟旅行停摆**，日志里一秒一条
-     * 「Cannot read properties of undefined」。而用户的 config.json 是可能缺项的
-     * （老版本升级上来、手改过），缺一项不该等于扩展不能工作。
-     */
-    /*
      * 2026-11-13：那一栏不再原样拿去拼 URL。
      *
      * 少一个 `https://` 时 `fetch` 抛 `Invalid URL`，原来被压成「没连上碰面服务器」，
      * 用户和模型都只能推「地址没填对」—— 而线上服务实测是好的。
      * 现在先归一化（补协议、清零宽、剪掉多余路径），修不了的把原因留给面板和工具回执。
      */
-    const raw = String(this.cfg.meetUrl ?? '');
-    if (!raw.trim()) {
-      this.meetUrlError = '';
-      this.meetUrlFixed = '';
-      return null;
-    }
-    const fix = normalizeMeetUrl(raw);
+    /*
+     * 2026-11-21：改走 `normalizeMeetTargets`。它认多值，**但这里只取第一台** ——
+     * 真连多台是 L2 的事，L0 只把配置与解析层铺好，运行时行为一点不变。
+     * `meetUrlFixed` 仍只放「地址被整理过」的说明；「只连第一台」那句提示
+     * 由面板自己算（`normalizeMeetTargets().note`），不走这一个字段。
+     */
+    const fix = normalizeMeetTargets(this.cfg.meetUrl);
     this.meetUrlError = fix.error;
     this.meetUrlFixed = fix.fixed;
-    if (fix.error) return null;
-    return { url: fix.base, uid: this.meetUid(), pet: this.opts.botName };
+    if (!fix.bases.length) return null;
+    return { url: fix.bases[0], uid: this.meetUid(), pet: this.opts.botName };
+  },
+
+  /**
+   * 这一栏到底能不能用。
+   *
+   * **纯判断，不生成 uid、不写盘。** 面板每开一次就走一遍 `uiSnapshot()`，
+   * 在里面调 `meetOptions()` 会触发 `meetUid()` 读写 `meet-uid.txt` ——
+   * 渲染路径不该做文件 IO。
+   *
+   * 它和 `meetOptions()` 的分工（2026-11-21）：
+   * - `meetOptions()` 回答「要连哪儿」，会顺手生成 uid，只该在网络/工具路径调；
+   * - `meetUsable()` 回答「这一栏有没有一个能用的地址」，随时可调。
+   *
+   * 少了这个区分，「填了 `ftp://bad`」会被判成「配了服务器」，
+   * 而所有请求其实一次都没发出去 —— 面板于是亮绿灯说「这段时间没别人」。
+   */
+  meetUsable(): boolean {
+    return normalizeMeetTargets(this.cfg.meetUrl).bases.length > 0;
   },
 
 
