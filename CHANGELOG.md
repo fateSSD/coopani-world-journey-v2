@@ -1,5 +1,10 @@
 # 更新日志
 
+## 2.5.1 — 2026-11-21（文档与管理后台文案精简）
+
+- 精简 [package.json](package.json) 扩展简介与中英文市场描述，补明与「模拟鱼生」的公开快照和留影同步能力。
+- 精简 [site/pets.html](site/pets.html)（同步重编 `cloud/sight-cf/src/pets-page.js`）管理后台各页签提示与页脚说明。
+
 ## 2.5.0 — 2026-11-21（公开快照四格扩展 + 过期休息过滤 + `sight-cf` L2 市集买卖双半场与管理页分区）
 
 - **生活层公开快照补全与防过期**：`publicSnapshot()` 与 `writePublic()` 补充 `home / rest / work / party` 四格，并仅在 `restEnd.getTime() > now.getTime()` 时输出 `rest`，防止已过期休息天数持续显示为「在落脚点休整中」。
