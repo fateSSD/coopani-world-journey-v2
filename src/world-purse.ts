@@ -30,7 +30,7 @@ import { actionsPrompt } from './pet-vocab.ts';
 import { VersionCheck } from './version-check.ts';
 import { AMAP_KEY_NAME, IMAGE_KEY_NAME, adoptKey, readKey, type KeyPorts } from './secrets.ts';
 import {
-  rollLodging, rerollLodging, withHotel, lodgingLabel,
+  rollLodging, rerollLodging, withHotel, lodgingLabel, cheapestBed,
   type Lodging, type LodgingWant,
 } from './plan/lodging.ts';
 import { HotelDirectory } from './geo/hotels.ts';
@@ -573,9 +573,54 @@ export const purseMethods: Record<string, any> = {
     const left = this.purseLeft();
     if (left === null) return true;
     if (left <= 0) return false;
-    const cheapest = Math.min(...(['bus', 'train', 'plane', 'ship', 'car'] as const)
-      .map((id) => this.fareOf(id, km, crossBorder)));
+    const cheapest = this.cheapestFare(km, crossBorder);
     return cheapest <= left * 0.8;
+  },
+
+  /** 这一对上最便宜那张票（不问方式，只问价 —— 别问「她会不会挑最便宜的」，那是另一件事）。 */
+  cheapestFare(km: number, crossBorder = false): number {
+    return Math.min(...(['bus', 'train', 'plane', 'ship', 'car'] as const)
+      .map((id) => this.fareOf(id, km, crossBorder)));
+  },
+
+
+  /**
+   * 接一趟约，**整趟**撑不撑得住（2026-11-21，Mr.Q：「钱不够最好让她不要接邀约」）。
+   *
+   * ## 为什么票钱那道闸不够
+   *
+   * `takeInvite` 早就判了「票买不买得起」，判据是 `affordMode` 的一半余钱。
+   * 但一趟约不是一张票：她还要在那儿住 `days` 天、吃 `days` 天。
+   * 票买得起、到了那儿第三晚就住不起，第二天只能往回走 ——
+   * 那和「没买起票」是同一种难看，只是晚了三天。
+   *
+   * ## 判据只有一条：下界 ≤ 余钱
+   *
+   * ```
+   * 需要 = 票（每段最便宜那张） + （最便宜的一张床 + 一日三餐）× 天数
+   * ```
+   *
+   * - 床用 `cheapestBed()`，**不掷骰子**：同一份状态接不接得上一条约，不该看运气。
+   * - 不乘折扣系数：票钱那一层已经卡在「余钱一半」，这里再乘一遍等于双重要求，
+   *   结果是她几乎再也接不上任何约。要的是「撑得住」，不是「宽裕」。
+   * - 记账关着 / 预算不限时 `purseLeft()` 是 `null` → **一律放行**（老行为一个字不变）。
+   *
+   * 回执要把四笔数都摆出来，否则她只能笼统说「钱不够」，用户没法判断是不是自己预算填错了。
+   */
+  pledgeAffordable(
+    legs: readonly { readonly km: number; readonly crossBorder?: boolean }[],
+    days: number,
+    to: City,
+  ): {
+    ok: boolean; need: number; left: number | null;
+    fare: number; bed: number; meals: number; days: number;
+  } {
+    const left = this.purseLeft();
+    const n = Math.min(14, Math.max(1, Math.round(Number(days) || 1)));
+    const bed = cheapestBed(to.priceIdx ?? 1, to.country !== 'CN', terrainOf(to));
+    const fare = legs.reduce((sum, l) => sum + this.cheapestFare(l.km, l.crossBorder === true), 0);
+    const need = fare + (bed + MEALS_PER_DAY) * n;
+    return { ok: left === null || need <= left, need, left, fare, bed, meals: MEALS_PER_DAY, days: n };
   },
 
 

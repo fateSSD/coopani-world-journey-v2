@@ -887,6 +887,29 @@ export const socialMethods: Record<string, any> = {
     if (meetCity && meetCity.id === c.id) meetCity = null;
 
     const d = Math.min(14, Math.max(1, Math.round(Number(days) || 2)));
+    /*
+     * **自己撑不住的约不要发**（2026-11-21，和 `takeInvite` 同一条判据）。
+     *
+     * 发出去之后别人接了，这趟就变成「她已经答应过的事」—— 到那天发现钱不够，
+     * 只能再去取消，那边的人白等一场。**入口拦一次，比事后取消两次便宜。**
+     */
+    const legs = meetCity
+      ? [
+          { km: Math.round(distanceKm(here, meetCity)), crossBorder: here.country !== meetCity.country },
+          { km: Math.round(distanceKm(meetCity, c)), crossBorder: meetCity.country !== c.country },
+        ]
+      : [{ km: Math.round(distanceKm(here, c)), crossBorder: here.country !== c.country }];
+    const trip = this.pledgeAffordable(legs, d, c);
+    if (!trip.ok) {
+      return {
+        text: `这趟她自己算下来撑不住：票 ${trip.fare} + ${trip.days} 天住吃`
+          + `（一张床最低 ${trip.bed}、一天饭钱 ${trip.meals}）≈ ${trip.need}，`
+          + `手上能动用的只有 ${trip.left}。`
+          + '先别约人 —— 发出去别人接了，到那天她只能取消，那边白等一场。'
+          + '换个近点的地方、少待几天，或者先把花销关掉。',
+        isError: true,
+      };
+    }
     const r = await sendInvite(meet, {
       from: here.id,
       to: c.id,
@@ -1177,6 +1200,33 @@ export const socialMethods: Record<string, any> = {
       return {
         text: `从${here.name}去${firstStop.name}这一趟的票钱她付不起（${km} 公里）。`
           + '先别接 —— 答应了买不起票，第二天就得反悔，比不接难看。',
+        isError: true,
+      };
+    }
+    /*
+     * **整趟撑不住也不接**（2026-11-21，Mr.Q：「钱不够最好让她不要接邀约（花销开关打开的情况下）」）。
+     *
+     * 上面那条只判了票。一趟约不是一张票：她还得在那儿住几天、吃几天。
+     * 票买得起、到了那儿第三晚住不起，第二天只能往回走 —— 和「买不起票」是同一种难看，
+     * 只是晚了三天才丢人。
+     *
+     * 有会合点的时候两段票都要算：去成都的票和从成都去拉萨的票不是一个价。
+     * 记账关着时 `purseLeft()` 是 `null`，`pledgeAffordable` 一律放行 —— 老行为不变。
+     */
+    const legs = useMeet
+      ? [
+          { km: Math.round(distanceKm(here, useMeet)), crossBorder: here.country !== useMeet.country },
+          { km: Math.round(distanceKm(useMeet, dest)), crossBorder: useMeet.country !== dest.country },
+        ]
+      : [{ km, crossBorder: here.country !== firstStop.country }];
+    const trip = this.pledgeAffordable(legs, one.days, dest);
+    if (!trip.ok) {
+      return {
+        text: `这趟她撑不住：票 ${trip.fare}（最便宜那种）+ ${trip.days} 天住吃`
+          + `（一张床最低 ${trip.bed}、一天饭钱 ${trip.meals}）≈ ${trip.need}，`
+          + `手上能动用的只有 ${trip.left}。`
+          + '先别接 —— 到了那儿住不了两晚就得往回走，比不答应更难看。'
+          + '（要把花销关掉、或者把预算调大，这条才会放开。）',
         isError: true,
       };
     }

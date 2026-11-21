@@ -273,6 +273,12 @@ test('socialMethods（留路标/发邀约/接邀约/被接认领）在装有 lif
       isTight: () => false,
       noFly: () => false,
       affordMode: () => undefined,
+      /*
+       * 这个桩不测钱（`isTight` 恒 false、`affordMode` 恒放行），所以「整趟撑不撑得住」
+       * 也按放行处理 —— 2026-11-21 加的那条判据在这里不该起作用。
+       * 要测钱不够就别接约，在 `pledge-purse.test.mjs`，那边用的是真 World。
+       */
+      pledgeAffordable: () => ({ ok: true, need: 0, left: null, fare: 0, bed: 0, meals: 0, days: 1 }),
       rememberPet() {},
       persist() {},
       push: async () => {},

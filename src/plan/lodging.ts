@@ -378,6 +378,29 @@ export function rollLodging(
 }
 
 /**
+ * 这座城最便宜的一张床（只算价，不掷骰子）。
+ *
+ * ## 为什么要一个「不掷」的版本
+ *
+ * 用在「接一趟约之前先算整趟撑不撑得住」（2026-11-21，Mr.Q：「钱不够最好让她不要接邀约」）。
+ * 那一步要的是**下界**：她到那座城至少要住得下去、吃得上一日三餐。
+ *
+ * 而 `rollLodging` 是随机的 —— 拿它算判据，同一个决定会时而成立时而不成立：
+ * 同一天、同样的钱，接不接得上一条邀约全看那颗骰子。那不像判断，像抽卡。
+ *
+ * 取 `budget` 与 `dingy` 两张池子里最低的那一档，套上和 `rollLodging`
+ * **同一套系数**（国内乘 `priceIdx`、国外乘 `abroadFactor`），
+ * 地板也一样走 `withFloor` —— 两处算价不能有第二套规则。
+ */
+export function cheapestBed(priceIdx: number, abroad = false, terrain?: Terrain): number {
+  const P = poolsOf(abroad, terrain);
+  const raw = Math.min(...[...P.budget, ...P.dingy].map((x) => x.price));
+  const scale = abroad ? abroadFactor(priceIdx) : priceIdx;
+  /* 走 `scaleNum`，不自己 `Math.round` —— 那一行会把价格取整到 10 的倍数，两处算价要同一个数。 */
+  return withFloor('dingy', Math.max(1, scaleNum(raw, scale)));
+}
+
+/**
  * 真名的语义 → 更贴的类别。**档次不动，只换说法。**
  *
  * 档次对了不等于名实相符：实测「华威大酒店（老城民宿）」—— 两边都是高价档，
