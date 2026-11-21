@@ -184,7 +184,7 @@
     <span class="tag" id="modeTag">没连</span>
   </header>
   <p class="sub" id="worldSub">
-    「环游世界 · Journey」管旅行池子的实时行踪、累计与违规治理；「芦花塘 · Life」看小城住着多少条鱼、市集与本城设定。两个世界分开管理。
+    管理后台：<b>Journey</b> 看旅途遇鱼池与违规处理，<b>Life</b> 看小城住户、市集与本城设定。
   </p>
 
   <div class="bar">
@@ -224,10 +224,7 @@
   <section class="box view" data-view="live">
     <h2>此刻在线 <small id="liveNote">连上之后才有数据</small></h2>
     <p class="viewhint">
-      「此刻在线」= 最近 30 分钟有上报；「今天来过」= 今天任意时刻有过上报。
-      超过半小时没动静的鱼会掉出这个列表 —— 她在家待着就不报，这是正常的。
-      <b>这两个数是全站口径，下面的名单只列最近上报的 60 只</b>（人多的时候，
-      在线数会比名单长得多）。要找自己那只，切到「在册」页用搜索框按名字找。
+      「此刻在线」= 30 分钟内有上报；「今天来过」= 今天累计上报。下方名单展示最近 60 条（找指定鱼请切「在册」筛选）。
     </p>
     <div class="live" id="liveNum"></div>
     <!-- 名单单独一张表：挤成一行「名字 在 城市 · 干嘛 ｜ …」既难读，也看不出谁最后报的。 -->
@@ -237,8 +234,7 @@
   <section class="box view" data-view="all" hidden>
     <h2>在册 · 累计 <small id="countNote">连上之后才有数据</small></h2>
     <p class="viewhint">
-      只留最近 4 天，每只鱼按**最近一次上报**合并成一行。这里是历史，不会自己刷新 ——
-      想看新的就点上面的「刷新」。
+      保留最近 4 天，按最近上报去重。历史页不自动轮询，需要更新点「刷新」。
     </p>
     <!--
       找人（2026-11-13）。
@@ -264,8 +260,7 @@
   <section class="box view" data-view="life" hidden>
     <h2>芦花塘 · Life 居民与市集 <small id="lifeNote">连上之后才有数据</small></h2>
     <p class="viewhint">
-      这里是 <b>模拟鱼生（coopani-world-life）</b> 的同城居民花名册：每只鱼每天启动或推进时向本城报到一次（保留 30 天）。
-      只看同城在册几条鱼、住在哪个街区与市集动态，<b>不混入 Journey 旅途过客</b>。
+      统计 <b>模拟鱼生</b> 30 天内来城里报到的在册鱼数、街区分布与鱼市街摆摊/成交概况，不混入 Journey 旅途鱼。
     </p>
     <div class="live" id="lifeNum"></div>
     <div class="chips" id="lifeStreets"></div>
@@ -285,54 +280,41 @@
 
   <!--
     本城设定（2026-11-15）。
-
-    为什么这一屏在「管理」页面里，而别的都在设置里：
-    池子里别的东西都是**每只鱼自己的**（名字、名片、行踪），
-    唯独「这座城叫什么、有哪几条街、守哪几条城规」是**这台服务器的**。
-    它没有主人以外的读者 —— 谁拿着 ADMIN_KEY，谁就是它。
-
-    三个字段的约束不一样，界面上要分开说：
-      城名  随便起，给人看的
-      城 id 有格式（`[a-z0-9_-]`），因为它会被当成 journey 的 `city` 写进上报
-      街名  1–5 条，空的不算
   -->
   <section class="box view" data-view="town" hidden>
-    <h2>本城 <small id="townNote">连上之后才能改</small></h2>
+    <h2>本城设定 <small id="townNote">连上之后才能改</small></h2>
     <p class="viewhint">
-      这一屏写给**服务器主**：这台服务器是她的哪一座城。改完点保存，立刻生效 ——
-      她下一次开口就会用新的城名。
+      统一定义这台服务器的小城名称、街道与城规，保存后所有连入的客户端同步生效。
     </p>
 
     <div class="warnbox">
-      <b>城 id 别随手改。</b>它会被当成 journey 的 <code>city</code> 写进上报（别名开着的时候）。
-      改了它，等于把出发地换成了另一个名字 —— <b>已经写进日记和足迹的那些记录不会跟着改</b>，
-      而足迹是永久数据，洗不掉。改城名不用动 id。
+      <b>城 id 勿随便改动：</b>改名只改「城名」，不要动 id（已写进足迹的历史记录不随 id 变更）。
     </div>
 
     <div class="grid2">
       <div class="field">
         <label for="townName">城名</label>
-        <input id="townName" type="text" maxlength="24" placeholder="浅水埠">
+        <input id="townName" type="text" maxlength="24" placeholder="芦花塘">
       </div>
       <div class="field">
-        <label for="townId">城 id（<code>[a-z0-9_-]</code>，不是中文名）</label>
-        <input id="townId" type="text" maxlength="40" spellcheck="false" placeholder="qianshui">
+        <label for="townId">城 id（<code>[a-z0-9_-]</code>）</label>
+        <input id="townId" type="text" maxlength="40" spellcheck="false" placeholder="luhuatang">
       </div>
     </div>
 
     <div class="field">
-      <label for="townOrigin">来历（她讲得出来的那种，不是宣传文案）</label>
+      <label for="townOrigin">小城来历（一句话故事）</label>
       <textarea id="townOrigin" rows="3" maxlength="400"
-        placeholder="早年这儿是河海交界的一片浅滩……"></textarea>
+        placeholder="这一片是活水，长着芦苇。秋天芦花开时整片塘白得像落了雪……"></textarea>
     </div>
 
     <div class="group">
-      <label>有哪几条街 —— 她住其中一条。空着的不算，至少留一条</label>
+      <label>街道名称（1–5 条，空行自动忽略）</label>
       <div class="slots" id="townStreets"></div>
     </div>
 
     <div class="group">
-      <label>守哪几条城规 —— 这三条各自对应一条机制，改文案可以，别改意思</label>
+      <label>小城规矩（1–5 条）</label>
       <div class="slots" id="townRules"></div>
     </div>
 
@@ -344,16 +326,12 @@
   </section>
 
   <footer id="footJourney">
-    <b>封禁不是删除。</b>封掉之后她报不上来，Journey 池子里立刻没有她；数据一行没动，
-    点「解除」就回来了。<br>
-    <b>三个操作都会写一条备注</b>（时间、当时看到的名字），事后能对上是谁、为什么。<br>
-    密钥只存在这台浏览器里；地址和密钥都不会发到第三方。
+    <b>封禁不删数据：</b>封掉后不再出现在池子里，点「解除」即恢复；操作备注会保存留底。<br>
+    密钥仅存在本地浏览器；地址和密钥不经过第三方。
   </footer>
   <footer id="footLife" hidden>
-    <b>这里的数据只属于 Life（模拟鱼生）。</b>居民清单来自 <code>/town/join</code>（保留 30 天未到期住户），
-    和 Journey 旅行遇鱼的 <code>presence</code> 池子分开统计。<br>
-    <b>「本城设定」改的是服务器，不是某只鱼。</b>城名和街名所有住进来的鱼共用；改完下一次报到或对话就用新的。<br>
-    密钥只存在这台浏览器里；地址和密钥都不会发到第三方。
+    <b>独立于 Journey：</b>仅统计 <code>/town/join</code> 30 天内入册居民，改动「本城设定」后全城同步生效。<br>
+    密钥仅存在本地浏览器；地址和密钥不经过第三方。
   </footer>
 
 </div>
