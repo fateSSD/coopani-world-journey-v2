@@ -868,14 +868,25 @@ export const purseMethods: Record<string, any> = {
   writePublic(): void {
     try {
       const now = this.worldNow();
-      const c = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
+      const homeCity = this.resolveHome().city;
+      const c = this.cityOrNull(this.st.hereId) ?? homeCity;
       const d = this.diary.current;
       const leg = this.st.phase === 'traveling' && this.st.leg ? citiesOf(this.st.leg) : null;
+      const restEnd = this.restEndsAt();
+      const w = this.st.work;
+      const pl = this.st.pledge;
+      const partyNames = pl
+        ? [...(pl.withPets?.length ? pl.withPets : (pl.withPet ? [pl.withPet] : []))]
+        : [];
       const snap = publicSnapshot({
         worldNow: now.getTime(),
         speed: this.speedNow(),
         phase: this.st.phase,
         hotelTier: this.st.phase === 'staying' ? (this.st.lodging?.value?.tier ?? '') : '',
+        home: { id: homeCity.id, name: homeCity.name },
+        rest: restEnd && restEnd.getTime() > now.getTime() ? { until: restEnd.toISOString() } : null,
+        work: w ? { cityId: w.cityId, gig: w.gig, until: w.until } : null,
+        party: pl && partyNames.length ? { with: partyNames, days: pl.days } : null,
         city: { id: c.id, name: c.name, tz: c.tz },
         leg: this.st.phase === 'traveling' && this.st.leg
           ? {

@@ -1268,6 +1268,413 @@ async function townInfoRoute(env) {
   });
 }
 
+const TOWN_KEEP_DAYS = 30;
+const STALLS_MAX = 60;
+const STALL_KEEP_DAYS = 3;
+const STALLS_PER_USER_MAX = 3;
+const STALLS_CACHE_MS = 15 * 60_000;
+const DEAL_KEEP_DAYS = 7;
+
+const stallsCacheKey = () =>
+  new Request(`https://town-stalls.internal/v1/${Math.floor(Date.now() / STALLS_CACHE_MS)}`);
+
+async function invalidateStallsCache(ctx) {
+  const cache = typeof caches === 'object' && caches.default ? caches.default : null;
+  if (!cache) return;
+  try {
+    const task = Promise.resolve().then(() => cache.delete(stallsCacheKey())).catch(() => {});
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(task);
+    else await task;
+  } catch { /* ignore */ }
+}
+
+async function townJoinRoute(request, env, method) {
+  if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+  let body;
+  try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+  const uid = clean(body?.uid, 64);
+  const extra = bannedExtra(env);
+  const washed = safePet(body?.pet, extra);
+  const pet = washed.name;
+  const street = safeDoing(clean(body?.street, 24), extra);
+  if (!okUid(uid) || !pet) return reply(400, { ok: false, error: 'bad fields' });
+
+  try {
+    const flag = await flagOf(db, uid);
+    if (flag?.kind === 'ban') return reply(403, { ok: false, error: 'banned' });
+
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const day = nowIso.slice(0, 10);
+    const rKey = `tj:${uid}:${day}`;
+    if (await rateOf(db, rKey) >= 12) return reply(429, { ok: false, error: 'too many' });
+
+    const expIso = new Date(now + TOWN_KEEP_DAYS * 86_400_000).toISOString();
+    await db.prepare(
+      `INSERT INTO town (uid, pet, street, lane, at, expires_at)
+       VALUES (?1, ?2, ?3, 0, ?4, ?5)
+       ON CONFLICT(uid) DO UPDATE SET
+         pet = excluded.pet,
+         street = excluded.street,
+         at = excluded.at,
+         expires_at = excluded.expires_at`,
+    ).bind(uid, pet, street, nowIso, expIso).run();
+    await bumpRate(db, rKey, day);
+    const town = await readTown(db, env);
+    return reply(200, { ok: true, town: town.id, name: town.name, street });
+  } catch (e) {
+    if (/no such table/i.test(String(e?.message || e))) {
+      return reply(503, { ok: false, error: 'not migrated' });
+    }
+    recordError(env, null, '[town join]', e, '/town/join');
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+async function townStallsRoute(request, env, method, ctx) {
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+
+  if (method === 'POST') {
+    let body;
+    try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+    const uid = clean(body?.uid, 64);
+    const extra = bannedExtra(env);
+    const washedPet = safePet(body?.pet || '街坊', extra);
+    const seller = washedPet.name || '街坊';
+    const item = safeDoing(body?.item, extra);
+    const kind = body?.kind === 'errand' ? 'errand' : 'goods';
+    const price = Math.round(Number(body?.price));
+    const stock = Math.round(Number(body?.stock ?? 1));
+    const freshVeg = body?.freshVeg ? 1 : 0;
+    const note = safeDoing(body?.note || '', extra);
+
+    if (!okUid(uid) || !item || !Number.isFinite(price) || price < 1 || price > 999 || !Number.isFinite(stock) || stock < 1 || stock > 99) {
+      return reply(400, { ok: false, error: 'bad fields' });
+    }
+
+    try {
+      const flag = await flagOf(db, uid);
+      if (flag?.kind === 'ban') return reply(403, { ok: false, error: 'banned' });
+
+      const now = Date.now();
+      const nowIso = new Date(now).toISOString();
+      const day = nowIso.slice(0, 10);
+      const rKey = `ts:${uid}:${day}`;
+      if (await rateOf(db, rKey) >= 20) return reply(429, { ok: false, error: 'too many' });
+
+      const activeRow = await db.prepare(
+        `SELECT COUNT(*) AS n
+           FROM stalls
+          WHERE uid = ?1 AND stock > 0 AND expires_at > ?2`,
+      ).bind(uid, nowIso).first();
+      if ((Number(activeRow?.n ?? 0) || 0) >= STALLS_PER_USER_MAX) {
+        return reply(409, { ok: false, error: 'too many stalls' });
+      }
+
+      const id = newId();
+      const expIso = new Date(now + STALL_KEEP_DAYS * 86_400_000).toISOString();
+      await db.prepare(
+        `INSERT INTO stalls (id, uid, seller, kind, item, price, stock, fresh_veg, note, at, expires_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+      ).bind(id, uid, seller, kind, item, price, stock, freshVeg, note, nowIso, expIso).run();
+
+      await bumpRate(db, rKey, day);
+      await invalidateStallsCache(ctx);
+      return reply(200, { ok: true, id, seller, kind, item, price, stock, freshVeg: !!freshVeg, note, at: nowIso, expiresAt: expIso });
+    } catch (e) {
+      if (/no such table|no such column/i.test(String(e?.message || e))) {
+        return reply(503, { ok: false, error: 'not migrated' });
+      }
+      recordError(env, null, '[town stalls post]', e, '/town/stalls');
+      return reply(500, { ok: false, error: 'server error' });
+    }
+  }
+
+  if (method !== 'GET') return reply(405, { ok: false, error: 'method not allowed' });
+
+  const cache = typeof caches === 'object' && caches.default ? caches.default : null;
+  const cKey = stallsCacheKey();
+  if (cache) {
+    try {
+      const hit = await cache.match(cKey);
+      if (hit) return hit;
+    } catch { /* 缓存失败直接回源 */ }
+  }
+
+  const town = await readTown(db, env);
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  const since24h = new Date(now - 86_400_000).toISOString();
+  const extra = bannedExtra(env);
+
+  try {
+    const [stallsRes, dealsTopRes, dealsSumRes, townRes] = await Promise.all([
+      db.prepare(
+        `SELECT id, seller, kind, item, price, stock, fresh_veg, note, at
+           FROM stalls
+          WHERE expires_at > ?1 AND stock > 0
+          ORDER BY at DESC LIMIT ${STALLS_MAX}`,
+      ).bind(nowIso).all(),
+      db.prepare(
+        `SELECT item, SUM(qty) AS n
+           FROM deals
+          WHERE at >= ?1
+          GROUP BY item
+          ORDER BY n DESC LIMIT 2`,
+      ).bind(since24h).all(),
+      db.prepare(
+        `SELECT COALESCE(SUM(qty), 0) AS total_qty
+           FROM deals
+          WHERE at >= ?1`,
+      ).bind(since24h).first(),
+      db.prepare(
+        `SELECT COUNT(*) AS total,
+                SUM(CASE WHEN at >= ?1 THEN 1 ELSE 0 END) AS recent
+           FROM town
+          WHERE expires_at > ?2`,
+      ).bind(since24h, nowIso).first(),
+    ]);
+
+    const stalls = (stallsRes?.results ?? [])
+      .map((r) => ({
+        id: String(r.id),
+        seller: safePet(r.seller, extra).name || '街坊',
+        kind: r.kind === 'errand' ? 'errand' : 'goods',
+        item: safeDoing(r.item, extra) || String(r.item || '').slice(0, 24),
+        price: Math.max(1, Math.round(Number(r.price) || 0)),
+        stock: Math.max(0, Math.round(Number(r.stock) || 0)),
+        freshVeg: Boolean(r.fresh_veg),
+        note: safeDoing(r.note, extra),
+      }))
+      .filter((x) => x.item && x.stock > 0);
+
+    const bulletin = [];
+    const totalDeals = Number(dealsSumRes?.total_qty ?? 0) || 0;
+    const topItem = dealsTopRes?.results?.[0]?.item ? safeDoing(dealsTopRes.results[0].item, extra) : '';
+    if (totalDeals > 0) {
+      bulletin.push(topItem
+        ? `过去一天城里一共成交了 ${totalDeals} 份摊货，最抢手的是「${topItem}」。`
+        : `过去一天城里一共成交了 ${totalDeals} 份摊货。`);
+    }
+    const residents = Number(townRes?.total ?? 0) || 0;
+    const newResidents = Number(townRes?.recent ?? 0) || 0;
+    if (residents > 0) {
+      bulletin.push(newResidents > 0
+        ? `${town.name}眼下住着 ${residents} 户人家，这阵子新搬来 ${newResidents} 户。`
+        : `${town.name}眼下在册住着 ${residents} 户人家。`);
+    }
+    if (stalls.length > 0) {
+      const head = stalls[0];
+      bulletin.push(`鱼市街此刻摆着 ${stalls.length} 个摊子，${head.seller}刚挂出「${head.item}」。`);
+    }
+
+    const body = { ok: true, town: town.id, name: town.name, stalls, bulletin };
+    const out = reply(200, body);
+    if (cache) {
+      const putRes = new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': `public, max-age=${Math.round(STALLS_CACHE_MS / 1000)}`,
+          ...CORS,
+        },
+      });
+      const putTask = Promise.resolve().then(() => cache.put(cKey, putRes)).catch(() => {});
+      if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(putTask);
+      else await putTask;
+    }
+    return out;
+  } catch (e) {
+    if (/no such table/i.test(String(e?.message || e))) {
+      return reply(200, { ok: true, town: town.id, name: town.name, stalls: [], bulletin: [], degraded: true });
+    }
+    recordError(env, null, '[town stalls]', e, '/town/stalls');
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+async function townBuyRoute(request, env, method, ctx) {
+  if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+  let body;
+  try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+
+  const stallId = clean(body?.stallId, 64);
+  const qty = Math.max(1, Math.min(10, Math.round(Number(body?.qty ?? 1) || 1)));
+  const buyerUid = clean(body?.buyerUid ?? body?.uid ?? '', 64);
+  if (!stallId || !okUid(buyerUid)) return reply(400, { ok: false, error: 'bad fields' });
+
+  const extra = bannedExtra(env);
+  const buyerPet = safePet(body?.buyer || body?.buyerPet || '街坊', extra).name || '一只鱼';
+  const note = safeDoing(body?.note || '', extra);
+
+  try {
+    const flag = await flagOf(db, buyerUid);
+    if (flag?.kind === 'ban') return reply(403, { ok: false, error: 'banned' });
+
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    const day = nowIso.slice(0, 10);
+    const rKey = `tb:${buyerUid}:${day}`;
+    if (await rateOf(db, rKey) >= 60) return reply(429, { ok: false, error: 'too many' });
+
+    const row = await db.prepare(
+      `SELECT id, uid, seller, kind, item, price, stock, fresh_veg, expires_at
+         FROM stalls WHERE id = ?1`,
+    ).bind(stallId).first();
+    if (!row) return reply(404, { ok: false, error: 'not found' });
+
+    if (row.expires_at <= nowIso || Number(row.stock) < qty) {
+      return reply(409, { ok: false, error: 'sold out' });
+    }
+    if (buyerUid === row.uid) {
+      return reply(400, { ok: false, error: 'own stall' });
+    }
+
+    const upd = await db.prepare(
+      `UPDATE stalls SET stock = stock - ?1
+        WHERE id = ?2 AND stock >= ?1 AND expires_at > ?3`,
+    ).bind(qty, stallId, nowIso).run();
+    if (!upd?.meta?.changes) return reply(409, { ok: false, error: 'sold out' });
+
+    const dealId = newId();
+    const dealExp = new Date(now + DEAL_KEEP_DAYS * 86_400_000).toISOString();
+    await db.prepare(
+      `INSERT INTO deals (id, stall_id, seller_uid, buyer_uid, buyer_pet, item, qty, note, seen, at, expires_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9, ?10)`,
+    ).bind(
+      dealId,
+      row.id,
+      row.uid,
+      buyerUid,
+      buyerPet,
+      String(row.item),
+      qty,
+      note,
+      nowIso,
+      dealExp,
+    ).run();
+
+    await bumpRate(db, rKey, day);
+    await invalidateStallsCache(ctx);
+    return reply(200, {
+      ok: true,
+      id: dealId,
+      item: String(row.item),
+      price: Math.max(1, Math.round(Number(row.price) || 0)),
+      seller: safePet(row.seller, extra).name || '街坊',
+      freshVeg: Boolean(row.fresh_veg),
+      qty,
+      stockLeft: Math.max(0, Number(row.stock) - qty),
+    });
+  } catch (e) {
+    if (/no such table|no such column/i.test(String(e?.message || e))) {
+      return reply(503, { ok: false, error: 'not migrated' });
+    }
+    recordError(env, null, '[town buy]', e, '/town/buy');
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
+async function townDealsRoute(request, env, url, method, path) {
+  const db = env?.DB;
+  if (!db) return reply(500, { ok: false, error: 'server error' });
+  const extra = bannedExtra(env);
+
+  if (path === '/town/deals/seen') {
+    if (method !== 'POST') return reply(405, { ok: false, error: 'method not allowed' });
+    let body;
+    try { body = await request.json(); } catch { return reply(400, { ok: false, error: 'bad json' }); }
+    const uid = clean(body?.uid, 64);
+    if (!okUid(uid)) return reply(400, { ok: false, error: 'bad fields' });
+    try {
+      const ids = Array.isArray(body?.ids)
+        ? body.ids.map((x) => clean(x, 64)).filter(Boolean).slice(0, 30)
+        : [];
+      if (ids.length) {
+        const ph = ids.map((_, idx) => `?${idx + 2}`).join(',');
+        await db.prepare(
+          `UPDATE deals SET seen = 1 WHERE seller_uid = ?1 AND id IN (${ph})`,
+        ).bind(uid, ...ids).run();
+      } else {
+        await db.prepare(
+          `UPDATE deals SET seen = 1 WHERE seller_uid = ?1 AND seen = 0`,
+        ).bind(uid).run();
+      }
+      return reply(200, { ok: true });
+    } catch (e) {
+      if (/no such table|no such column/i.test(String(e?.message || e))) {
+        return reply(503, { ok: false, error: 'not migrated' });
+      }
+      recordError(env, null, '[town deals seen]', e, '/town/deals/seen');
+      return reply(500, { ok: false, error: 'server error' });
+    }
+  }
+
+  if (method !== 'GET') return reply(405, { ok: false, error: 'method not allowed' });
+  const uid = clean(url.searchParams.get('uid'), 64);
+  if (!okUid(uid)) return reply(400, { ok: false, error: 'bad fields' });
+  const ack = url.searchParams.get('ack') === '1';
+
+  try {
+    const nowIso = new Date().toISOString();
+    const day = nowIso.slice(0, 10);
+    const rKey = `td:${uid}:${day}`;
+    if (await rateOf(db, rKey) >= 120) return reply(429, { ok: false, error: 'too many' });
+
+    const [listRes, unseenRow] = await Promise.all([
+      db.prepare(
+        `SELECT id, stall_id, item, qty, buyer_pet, note, seen, at
+           FROM deals
+          WHERE seller_uid = ?1
+          ORDER BY at DESC LIMIT 30`,
+      ).bind(uid).all(),
+      db.prepare(
+        `SELECT COUNT(*) AS n
+           FROM deals
+          WHERE seller_uid = ?1 AND seen = 0`,
+      ).bind(uid).first(),
+    ]);
+    await bumpRate(db, rKey, day);
+
+    const rows = listRes?.results ?? [];
+    const deals = rows.map((r) => ({
+      id: String(r.id),
+      stallId: String(r.stall_id || ''),
+      item: safeDoing(r.item, extra) || String(r.item || '').slice(0, 24),
+      qty: Math.max(1, Math.round(Number(r.qty) || 1)),
+      buyerPet: safePet(r.buyer_pet, extra).name || '一只鱼',
+      note: safeDoing(r.note, extra),
+      seen: Boolean(r.seen),
+      at: String(r.at || ''),
+    }));
+    let unseen = Number(unseenRow?.n ?? 0) || 0;
+
+    if (ack && deals.some((d) => !d.seen)) {
+      const ackIds = deals.filter((d) => !d.seen).map((d) => d.id);
+      const ph = ackIds.map((_, idx) => `?${idx + 2}`).join(',');
+      await db.prepare(
+        `UPDATE deals SET seen = 1 WHERE seller_uid = ?1 AND id IN (${ph})`,
+      ).bind(uid, ...ackIds).run();
+      unseen = Math.max(0, unseen - ackIds.length);
+    }
+
+    return reply(200, { ok: true, deals, unseen });
+  } catch (e) {
+    if (/no such table|no such column/i.test(String(e?.message || e))) {
+      return reply(200, { ok: true, deals: [], unseen: 0, degraded: true });
+    }
+    recordError(env, null, '[town deals]', e, '/town/deals');
+    return reply(500, { ok: false, error: 'server error' });
+  }
+}
+
 async function signpostRoute(request, env, url, method) {
   const db = env?.DB;
   if (!db) return reply(500, { ok: false, error: 'server error' });
@@ -1967,6 +2374,90 @@ async function adminRoute(request, env, url, method) {
      * 这一支是整套「服务器主」概念的唯一落点：**有 ADMIN_KEY 的人就是服务器主**，
      * 不另外存一份「谁是主」。再存一份等于给同一件事造两个真相。
      */
+    if (url.pathname === '/admin/life') {
+      const townMeta = await readTown(db, env);
+      const nowMs = Date.now();
+      const nowIso = new Date(nowMs).toISOString();
+      const since24hIso = new Date(nowMs - 86_400_000).toISOString();
+      const missing = [];
+      let countRow = null;
+      let listRes = null;
+      let stallsRow = null;
+      let dealsRow = null;
+
+      try {
+        [countRow, listRes] = await Promise.all([
+          db.prepare(
+            `SELECT COUNT(*) AS total,
+                    SUM(CASE WHEN at >= ?2 THEN 1 ELSE 0 END) AS active24h
+               FROM town WHERE expires_at >= ?1`,
+          ).bind(nowIso, since24hIso).first(),
+          db.prepare(
+            `SELECT uid, pet, street, at, expires_at
+               FROM town
+              WHERE expires_at >= ?1
+              ORDER BY at DESC LIMIT 500`,
+          ).bind(nowIso).all(),
+        ]);
+      } catch (e) {
+        if (/no such table/i.test(String(e?.message || ''))) missing.push('town');
+        else throw e;
+      }
+
+      try {
+        stallsRow = await db.prepare(
+          `SELECT COUNT(*) AS n
+             FROM stalls
+            WHERE stock > 0 AND expires_at >= ?1`,
+        ).bind(nowIso).first();
+      } catch (e) {
+        if (/no such table/i.test(String(e?.message || ''))) missing.push('stalls');
+        else throw e;
+      }
+
+      try {
+        dealsRow = await db.prepare(
+          `SELECT COUNT(*) AS n
+             FROM deals
+            WHERE at >= ?1`,
+        ).bind(since24hIso).first();
+      } catch (e) {
+        if (/no such table/i.test(String(e?.message || ''))) missing.push('deals');
+        else throw e;
+      }
+
+      const rawList = listRes?.results ?? [];
+      const streetMap = new Map();
+      const residents = rawList.map((r) => {
+        const st = clean(r.street, 24) || '未定街道';
+        streetMap.set(st, (streetMap.get(st) || 0) + 1);
+        return {
+          uid: String(r.uid || ''),
+          pet: clean(r.pet, 24),
+          street: clean(r.street, 24),
+          at: String(r.at || ''),
+          expiresAt: String(r.expires_at || ''),
+        };
+      });
+      const total = Number(countRow?.total ?? residents.length) || 0;
+      const active24h = Number(countRow?.active24h ?? 0) || 0;
+      return reply(200, {
+        ok: true,
+        tableReady: missing.length === 0,
+        missing,
+        keepDays: TOWN_KEEP_DAYS,
+        town: townMeta,
+        total,
+        active24h,
+        activeStalls: Number(stallsRow?.n ?? 0) || 0,
+        deals24h: Number(dealsRow?.n ?? 0) || 0,
+        truncated: total > residents.length,
+        byStreet: Array.from(streetMap.entries()).map(([street, count]) => ({ street, count })),
+        residents,
+        at: nowIso,
+      });
+    }
+
     if (url.pathname === '/admin/town' && method === 'GET') {
       return reply(200, { ok: true, town: await readTown(db, env) });
     }
@@ -2164,7 +2655,8 @@ export default {
         || url.pathname === '/admin/live'
         || url.pathname === '/admin/pets' || url.pathname === '/admin/flags'
         || url.pathname === '/admin/flag'
-        || url.pathname === '/admin/town') {
+        || url.pathname === '/admin/town'
+        || url.pathname === '/admin/life') {
       return adminRoute(request, env, url, method);
     }
 
@@ -2189,6 +2681,10 @@ export default {
     if (path === '/sight/signposts') return signpostRoute(request, env, url, method);
     /* 本城设定：公开只读。给目录、健康检查、别的城用（§4.18）。 */
     if (path === '/town/info') return townInfoRoute(env);
+    if (path === '/town/join') return townJoinRoute(request, env, method);
+    if (path === '/town/stalls') return townStallsRoute(request, env, method, ctx);
+    if (path === '/town/buy') return townBuyRoute(request, env, method, ctx);
+    if (path === '/town/deals' || path === '/town/deals/seen') return townDealsRoute(request, env, url, method, path);
     // 根路径给人看（浏览器里打开的那种），别回一句 not found。
     if (path === '/' && (method === 'GET' || method === 'HEAD')) return landingPage(env, url, ctx);
     // 管鱼页：同一个域名发出去，国内能打开；页面里地址栏会自动填成它自己。
@@ -2199,7 +2695,8 @@ export default {
      *
      * 界面上是两块页签，这里给两个地址是为了「收藏哪个打开就是哪个」。
      */
-    if ((path === '/pets' || path === '/pets.html' || path === '/pets/all')
+    if ((path === '/pets' || path === '/pets.html' || path === '/pets/all'
+      || path === '/pets/life' || path === '/pets/town')
       && (method === 'GET' || method === 'HEAD')) {
       return new Response(petsPage, {
         headers: {
@@ -2540,6 +3037,18 @@ export default {
         `DELETE FROM errors WHERE rowid IN
            (SELECT rowid FROM errors WHERE day < ?1 LIMIT ${PURGE_BATCH})`,
       ).bind(errCutoff).run();
+      const tn = await db.prepare(
+        `DELETE FROM town WHERE rowid IN
+           (SELECT rowid FROM town WHERE expires_at < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso).run().catch(() => null);
+      const st = await db.prepare(
+        `DELETE FROM stalls WHERE rowid IN
+           (SELECT rowid FROM stalls WHERE expires_at < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso).run().catch(() => null);
+      const dl = await db.prepare(
+        `DELETE FROM deals WHERE rowid IN
+           (SELECT rowid FROM deals WHERE expires_at < ?1 LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso).run().catch(() => null);
       console.log(
         '[sight] purge', cutoffIso,
         'presence', p?.meta?.changes ?? '?',
@@ -2550,6 +3059,9 @@ export default {
         'takers', t?.meta?.changes ?? '?',
         'signposts', sp?.meta?.changes ?? '?',
         'errors', er?.meta?.changes ?? '?',
+        'town', tn?.meta?.changes ?? '?',
+        'stalls', st?.meta?.changes ?? '?',
+        'deals', dl?.meta?.changes ?? '?',
       );
     } catch (e) {
       console.error('[sight] purge failed', e && e.message ? e.message : e);

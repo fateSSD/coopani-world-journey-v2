@@ -29,15 +29,22 @@ test('pets-page.js 和 site/pets.html 内容一致', () => {
   );
 });
 
-test('Worker 能发出管鱼页：是 HTML，且不是空壳', async () => {
+test('Worker 能发出管鱼页：是 HTML，且涵盖 /pets /pets/all /pets/life /pets/town 与双世界分离', async () => {
   const { default: worker } = await import('../cloud/sight-cf/src/worker.js');
+  for (const route of ['/pets', '/pets/all', '/pets/life', '/pets/town']) {
+    const r = await worker.fetch(new Request(`https://sight.test${route}`, {
+      headers: { 'cf-connecting-ip': '1.1.1.1' },
+    }), { DB: null });
+    assert.equal(r.status, 200, `${route} 没发出来`);
+    assert.match(r.headers.get('content-type') || '', /text\/html/);
+  }
   const r = await worker.fetch(new Request('https://sight.test/pets', {
     headers: { 'cf-connecting-ip': '1.1.1.1' },
   }), { DB: null });
-  assert.equal(r.status, 200, '管鱼页没发出来');
-  assert.match(r.headers.get('content-type') || '', /text\/html/);
   const body = await r.text();
   assert.ok(body.includes('ADMIN_KEY'), '发出来的不是管鱼页');
+  assert.ok(body.includes('id="worldJourney"') && body.includes('id="worldLife"'), '缺少 Journey 与 Life 一级分区');
+  assert.ok(body.includes("base + '/life'"), '缺少 /admin/life 请求以显示 Life 多少鱼');
   assert.ok(body.length > 8000, `页面太短，像是被截断了：${body.length}`);
 });
 

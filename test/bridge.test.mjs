@@ -307,3 +307,33 @@ test('单笔上限是 20000：刚好等于可以，多一块不行', () => {
   assert.equal(baseSettle([pend({ fare: FARE_MAX }, 'ride-max')]).spent, 1000 + FARE_MAX);
   assert.equal(baseSettle([pend({ fare: FARE_MAX + 1 }, 'ride-over')]).applied[0].reason, 'fare');
 });
+
+test('公开快照透出 home / rest / work / party 四格事实，不传时按 null/undefined 降级', () => {
+  const baseInput = {
+    worldNow: AT_MS,
+    speed: 1,
+    phase: 'staying',
+    city: { id: CITY, name: '洛阳', tz: TZ },
+    leg: null,
+    money: { enabled: true, budget: 2000, spent: 500, earned: 0, unsettledRideFare: 0 },
+    diary: { enabled: true, dir: '/tmp' },
+    applied: [],
+    nextStop: null,
+  };
+  const emptySnap = publicSnapshot(baseInput);
+  assert.equal(emptySnap.rest, null);
+  assert.equal(emptySnap.work, null);
+  assert.equal(emptySnap.party, null);
+
+  const fullSnap = publicSnapshot({
+    ...baseInput,
+    home: { id: 'lanzhou', name: '兰州' },
+    rest: { until: '2026-11-12T00:00:00.000Z' },
+    work: { cityId: 'luoyang', gig: '书店理货', until: '2026-11-10T18:00:00.000Z' },
+    party: { with: ['阿沅', '豆包'], days: 3 },
+  });
+  assert.deepEqual(fullSnap.home, { id: 'lanzhou', name: '兰州' });
+  assert.deepEqual(fullSnap.rest, { until: '2026-11-12T00:00:00.000Z' });
+  assert.deepEqual(fullSnap.work, { cityId: 'luoyang', gig: '书店理货', until: '2026-11-10T18:00:00.000Z' });
+  assert.deepEqual(fullSnap.party, { with: ['阿沅', '豆包'], days: 3 });
+});

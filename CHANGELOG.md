@@ -1,5 +1,13 @@
 # 更新日志
 
+## 2.5.0 — 2026-11-21（公开快照四格扩展 + 过期休息过滤 + `sight-cf` L2 市集买卖双半场与管理页分区）
+
+- **生活层公开快照补全与防过期**：`publicSnapshot()` 与 `writePublic()` 补充 `home / rest / work / party` 四格，并仅在 `restEnd.getTime() > now.getTime()` 时输出 `rest`，防止已过期休息天数持续显示为「在落脚点休整中」。
+- **云端 `sight-cf` 上线 L2 市集买卖双半场与《街口黑板报》**：
+  - `schema.sql` 与 `migrate-2026-11-21-town-market.sql` 新增 `town`、`stalls`（含 `fresh_veg`）、`deals`（无金额列、含 `seen` 与 `idx_deals_unseen`）三张 D1 表；
+  - `worker.js` 新增 `POST /town/join`、`GET/POST /town/stalls`（15 分钟缓存 + 写后失效 + 单用户限挂 3 摊 + 20/天限流）、`POST /town/buy`（强制 `buyerUid` + 60/天限流 + 原子防超卖）、`GET /town/deals`、`POST /town/deals/seen` 与 `scheduled()` 定时清理。
+- **管鱼管理页分区与 Life 居民看板**：新增受 `ADMIN_KEY` 守门的 `GET /admin/life`（分别探测三张表并报告 `missing`），改造 `site/pets.html` 并重编 `cloud/sight-cf/src/pets-page.js`，顶部拆分为「环游世界 · Journey」与「芦花塘 · Life」两大分区，补全 `/pets/life` 与 `/pets/town` 路由，支持直观查看小城鱼数、街区分布与摊位/成交统计。
+
 ## 2.4.0 — 2026-11-21（碰面地址认多值；修「读不成网址却亮绿灯」）
 
 - **配置层认多值（为联邦留位置，运行时仍只连第一台）**：`meetUrl` 类型放宽到 `string | string[]`，新增 `normalizeMeetTargets()` —— 按空格 / 逗号 / 分号切、数组也认、`https://a` 与 `https://a/` 去重、上限 `MEET_MAX_TARGETS = 3`。超过一台时**只连第一台**，并在主面板写明「目前只连第一台：xxx（另外 N 个地址先没用上）」—— 用户填了第二条却一点反馈都没有，是下一个「怎么没生效」。设置页仍是单行输入框（宿主 schema 的 `array` 只认二元数值区间，承载不了地址列表），所以键名与默认值都没动，老配置一条都不用迁。

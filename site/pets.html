@@ -91,7 +91,7 @@
    * 两个页签。像标签页，不像按钮 —— 它是「换一页」，不是「做一件事」。
    * 选中的那条底下压一条实线，跟内容连起来。
    */
-  .tabs { display: flex; gap: 4px; margin: 18px 0 0; border-bottom: 1px solid var(--line); }
+  .tabs { display: flex; gap: 4px; margin: 12px 0 0; border-bottom: 1px solid var(--line); }
   .tab {
     font: inherit; font-size: 14px; padding: 9px 14px; cursor: pointer;
     border: 0; border-bottom: 2px solid transparent; background: none; color: var(--dim);
@@ -99,6 +99,24 @@
   }
   .tab:hover { color: var(--ink); }
   .tab.on { color: var(--ink); font-weight: 650; border-bottom-color: var(--accent); }
+  .worlds {
+    display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 6px;
+  }
+  .world-btn {
+    font: inherit; font-size: 14px; font-weight: 600; padding: 8px 16px;
+    border-radius: 9px; border: 1px solid var(--line); background: #fff; color: var(--dim);
+    cursor: pointer; display: inline-flex; align-items: center; gap: 8px;
+  }
+  .world-btn:hover { color: var(--ink); background: #fbfcfd; }
+  .world-btn.on {
+    border-color: var(--accent); background: #eef4ff; color: var(--accent);
+  }
+  .world-btn small { font-weight: 400; font-size: 12px; opacity: .85; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+  .chip {
+    font-size: 12.5px; padding: 3px 10px; border-radius: 999px;
+    background: #f3f5f8; border: 1px solid var(--line); color: var(--ink);
+  }
   .view[hidden] { display: none; }
   .viewhint { margin: 0 0 12px; font-size: 12.5px; line-height: 1.65; color: var(--dim); }
 
@@ -162,12 +180,11 @@
 <div class="wrap">
 
   <header>
-    <h1>池子里的鱼</h1>
+    <h1 id="pageTitle">池子里的鱼 · 旅行与生活管理</h1>
     <span class="tag" id="modeTag">没连</span>
   </header>
-  <p class="sub">
-    看到名字、决定谁该改名、谁该封。判断权在这儿，规则不管这件事 ——
-    自动过滤只认得形状明显的广告，剩下的得有人看。
+  <p class="sub" id="worldSub">
+    「环游世界 · Journey」管旅行池子的实时行踪、累计与违规治理；「芦花塘 · Life」看小城住着多少条鱼、市集与本城设定。两个世界分开管理。
   </p>
 
   <div class="bar">
@@ -181,34 +198,27 @@
     </div>
     <button id="connect" class="primary">连上</button>
     <button id="reload">刷新</button>
-    <label class="auto"><input type="checkbox" id="auto" checked> 自动刷新</label>
+    <label class="auto" id="autoWrap"><input type="checkbox" id="auto" checked> 自动刷新</label>
   </div>
 
   <p class="msg" id="msg"></p>
 
-  <!--
-    两块分开，不是两段文字分开（2026-11-11 Mr.Q：「把实时数据和累计数据分开」）。
+  <div class="worlds" role="tablist" aria-label="世界分区">
+    <button id="worldJourney" class="world-btn on" data-world="journey" type="button">
+      环游世界 · Journey <small>旅行遇鱼池 / 在线 / 封禁</small>
+    </button>
+    <button id="worldLife" class="world-btn" data-world="life" type="button">
+      芦花塘 · Life <small>居民鱼数 / 市集 / 本城设定</small>
+    </button>
+  </div>
 
-    上面这块是**此刻**：谁在线、在哪、在干嘛。走 `/admin/live`，只碰最近 30 分钟的行，
-    代价极小，所以自动刷新只打它。
-    下面那块是**累计**：在册几只、覆盖几天、每个人的历史格数。要扫全表，只在点「刷新」时拉。
-
-    原来三个数挤在一行（在册 / 今天来过 / 此刻在线），2026-11-06 和 11-10 两次被误读成
-    「哪边坏了」。这次是把它们**从接口上分开**，不只是换个说法。
-  -->
-  <!--
-    两个页签 = 两个页面（2026-11-11 Mr.Q：「分成两页显示，现在我也分不清哪些是实时哪些是累计」）。
-
-    上一版把两块上下摆在同一页 —— 数分开了，眼睛没分开。这一版：
-      · 地址不同：`/pets` 是此刻，`/pets/all` 是在册；收藏哪个打开就是哪个
-      · 同屏只显示一块，页签在顶上，标题跟着变
-      · 切页签不重载页面（`history.replaceState`），密钥和地址不用重输
-      · **只有「此刻」那页会自动刷新**，在册那页停掉定时器 —— 它变得慢，也省额度
-  -->
-  <div class="tabs">
-    <button id="tabLive" class="tab on" data-view="live" type="button">此刻</button>
+  <div class="tabs" id="tabsJourney">
+    <button id="tabLive" class="tab on" data-view="live" type="button">此刻在线</button>
     <button id="tabAll" class="tab" data-view="all" type="button">在册（累计）</button>
-    <button id="tabTown" class="tab" data-view="town" type="button">本城</button>
+  </div>
+  <div class="tabs" id="tabsLife" hidden>
+    <button id="tabLife" class="tab" data-view="life" type="button">城里有多少鱼</button>
+    <button id="tabTown" class="tab" data-view="town" type="button">本城设定</button>
   </div>
 
   <section class="box view" data-view="live">
@@ -247,6 +257,28 @@
           <th>名字</th><th>最近在哪</th><th>最近出现</th><th>上报（4 天内）</th><th>名片</th><th>状态</th><th>操作</th>
         </tr></thead>
         <tbody id="rows"><tr><td colspan="7" class="empty">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="box view" data-view="life" hidden>
+    <h2>芦花塘 · Life 居民与市集 <small id="lifeNote">连上之后才有数据</small></h2>
+    <p class="viewhint">
+      这里是 <b>模拟鱼生（coopani-world-life）</b> 的同城居民花名册：每只鱼每天启动或推进时向本城报到一次（保留 30 天）。
+      只看同城在册几条鱼、住在哪个街区与市集动态，<b>不混入 Journey 旅途过客</b>。
+    </p>
+    <div class="live" id="lifeNum"></div>
+    <div class="chips" id="lifeStreets"></div>
+    <div class="field" id="lifeFindWrap" style="max-width:340px;margin:0 0 12px">
+      <label for="lifeFind">找小城里的鱼</label>
+      <input id="lifeFind" type="search" spellcheck="false" placeholder="名字、街名或 uid">
+    </div>
+    <div class="scroller">
+      <table>
+        <thead><tr>
+          <th>名字</th><th>所在街道</th><th>最近报到</th><th>入册有效期至</th><th>UID</th>
+        </tr></thead>
+        <tbody id="lifeRows"><tr><td colspan="5" class="empty">—</td></tr></tbody>
       </table>
     </div>
   </section>
@@ -311,12 +343,16 @@
     </div>
   </section>
 
-  <footer>
-    <b>封禁不是删除。</b>封掉之后她报不上来，池子里立刻没有她；数据一行没动，
+  <footer id="footJourney">
+    <b>封禁不是删除。</b>封掉之后她报不上来，Journey 池子里立刻没有她；数据一行没动，
     点「解除」就回来了。<br>
     <b>三个操作都会写一条备注</b>（时间、当时看到的名字），事后能对上是谁、为什么。<br>
-    <b>「本城」那页改的是服务器，不是某只鱼。</b>城名和街名所有鱼共用；
-    改完她下一次开口就用新的。<br>
+    密钥只存在这台浏览器里；地址和密钥都不会发到第三方。
+  </footer>
+  <footer id="footLife" hidden>
+    <b>这里的数据只属于 Life（模拟鱼生）。</b>居民清单来自 <code>/town/join</code>（保留 30 天未到期住户），
+    和 Journey 旅行遇鱼的 <code>presence</code> 池子分开统计。<br>
+    <b>「本城设定」改的是服务器，不是某只鱼。</b>城名和街名所有住进来的鱼共用；改完下一次报到或对话就用新的。<br>
     密钥只存在这台浏览器里；地址和密钥都不会发到第三方。
   </footer>
 
@@ -328,6 +364,7 @@
   var urlIn = $('url'), keyIn = $('key'), msg = $('msg'), rows = $('rows');
   /* 筛选框与它用的那份数据（2026-11-13）。`allPets` 是服务端回的全量，`findIn` 变了就重画。 */
   var findIn = $('find'), allPets = [];
+  var lifeFindIn = $('lifeFind'), allLifeResidents = [], lifeMeta = null;
   var STORE = 'journey.pets.admin';
   var base = '', hdr = null, flags = {};
 
@@ -634,15 +671,20 @@
    * 三张表放在同一个对象里，是为了加第四页时只改这一处 ——
    * 上一版是散在 `paint` / `go` / `loadView` 三处各写一遍三元表达式的。
    */
-  var PATHS = { live: '/pets', all: '/pets/all', town: '/pets/town' };
-  var TITLES = { live: '此刻', all: '在册', town: '本城' };
-  var tabOf = { live: 'tabLive', all: 'tabAll', town: 'tabTown' };
+  var PATHS = { live: '/pets', all: '/pets/all', life: '/pets/life', town: '/pets/town' };
+  var TITLES = { live: 'Journey · 此刻', all: 'Journey · 在册', life: 'Life · 城里有多少鱼', town: 'Life · 本城设定' };
+  var tabOf = { live: 'tabLive', all: 'tabAll', life: 'tabLife', town: 'tabTown' };
+  var WORLD_OF = { live: 'journey', all: 'journey', life: 'life', town: 'life' };
+  var lastViewOfWorld = { journey: 'live', life: 'life' };
 
   var view = /\/all\/?$/.test(location.pathname) ? 'all'
-    : /\/town\/?$/.test(location.pathname) ? 'town'
-      : 'live';
+    : /\/life\/?$/.test(location.pathname) ? 'life'
+      : /\/town\/?$/.test(location.pathname) ? 'town'
+        : 'live';
 
   function paint() {
+    var world = WORLD_OF[view] || 'journey';
+    lastViewOfWorld[world] = view;
     var boxes = document.querySelectorAll('.view');
     for (var i = 0; i < boxes.length; i++) {
       boxes[i].hidden = boxes[i].getAttribute('data-view') !== view;
@@ -651,6 +693,16 @@
       var el = $(tabOf[k]);
       if (el) el.classList.toggle('on', k === view);
     }
+    $('worldJourney').classList.toggle('on', world === 'journey');
+    $('worldLife').classList.toggle('on', world === 'life');
+    $('tabsJourney').hidden = world !== 'journey';
+    $('tabsLife').hidden = world !== 'life';
+    $('footJourney').hidden = world !== 'journey';
+    $('footLife').hidden = world !== 'life';
+    $('autoWrap').hidden = view !== 'live';
+    $('worldSub').textContent = world === 'life'
+      ? '这里是 芦花塘 · Life（模拟鱼生）：专门看小城住了多少只鱼、街区市集与修改本城设定，不混入 Journey 旅途鱼。'
+      : '这里是 环游世界 · Journey：管旅行池子的此刻在线、累计花名册与改名/封禁治理。';
     document.title = (TITLES[view] || '此刻') + ' · 池子里的鱼';
   }
 
@@ -658,7 +710,106 @@
   function loadView() {
     if (view === 'all') return load();
     if (view === 'town') return loadTown();
+    if (view === 'life') return loadLife();
     return loadLive();
+  }
+
+  function renderLife(data) {
+    var num = $('lifeNum'), stBox = $('lifeStreets'), tbody = $('lifeRows');
+    if (!num || !stBox || !tbody) return;
+    if (data && data.residents) {
+      lifeMeta = data;
+      allLifeResidents = data.residents || [];
+    }
+    var meta = lifeMeta || {};
+    if (meta.tableReady === false) {
+      var missText = (meta.missing && meta.missing.length) ? '缺少表：' + meta.missing.join('、') : 'town / stalls / deals 表尚未创建';
+      $('lifeNote').textContent = missText + '（请先跑 migrate-2026-11-21-town-market.sql）';
+      num.innerHTML = '<div class="none">同城表未建齐（' + esc(missText) + '），建表后再刷新即可看见城里的鱼。</div>';
+      stBox.innerHTML = '';
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">尚未建表</td></tr>';
+      return;
+    }
+
+    var total = Number(meta.total) || 0;
+    var active24h = Number(meta.active24h) || 0;
+    var activeStalls = Number(meta.activeStalls) || 0;
+    var deals24h = Number(meta.deals24h) || 0;
+    var keepDays = Number(meta.keepDays) || 30;
+    var tName = (meta.town && meta.town.name) ? meta.town.name : '芦花塘';
+
+    $('lifeNote').textContent = tName
+      + ' · 共 ' + total + ' 条鱼在册（保留 ' + keepDays + ' 天）'
+      + (meta.truncated ? ' · 列表仅展示最近 500 条' : '')
+      + (meta.at ? ' · ' + clockOf(meta.at) + ' 更新' : '');
+
+    num.innerHTML = ''
+      + '<div class="num"><b>' + total + '</b><span>Life 在册鱼数</span></div>'
+      + '<div class="num"><b>' + active24h + '</b><span>24 小时活跃</span></div>'
+      + '<div class="num"><b>' + activeStalls + '</b><span>当前在摆摊位</span></div>'
+      + '<div class="num"><b>' + deals24h + '</b><span>24 小时成交</span></div>';
+
+    var bySt = meta.byStreet || [];
+    stBox.innerHTML = bySt.map(function (s) {
+      return '<span class="chip">' + esc(s.street) + ' · ' + esc(s.count) + ' 只</span>';
+    }).join('');
+
+    var q = (lifeFindIn && lifeFindIn.value ? lifeFindIn.value : '').trim().toLowerCase();
+    var filtered = q
+      ? allLifeResidents.filter(function (r) {
+        return String(r.pet || '').toLowerCase().indexOf(q) >= 0
+          || String(r.street || '').toLowerCase().indexOf(q) >= 0
+          || String(r.uid || '').toLowerCase().indexOf(q) >= 0;
+      })
+      : allLifeResidents;
+
+    if (!filtered.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">'
+        + (q ? '没有匹配「' + esc(q) + '」的小城居民。' : '小城里还没有鱼来报到（客户端触发 /town/join 后就会出现在这里）。')
+        + '</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = filtered.map(function (r) {
+      return '<tr>'
+        + '<td class="name">' + esc(r.pet || '（没名字）') + '</td>'
+        + '<td>' + esc(r.street || '未定街道') + '</td>'
+        + '<td>' + esc(fmtTime(r.at)) + '</td>'
+        + '<td>' + esc(fmtTime(r.expiresAt)) + '</td>'
+        + '<td class="uid">' + esc(r.uid || '—') + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  function loadLife() {
+    if (!base) {
+      $('lifeNote').textContent = '还没连上 —— 点上面的「连上」';
+      var box = $('lifeNum');
+      if (box) box.innerHTML = '<div class="none">填好地址和密钥，点「连上」。</div>';
+      return Promise.resolve();
+    }
+    return fetch(base + '/life', { headers: hdr, cache: 'no-store' })
+      .then(function (res) {
+        if (res.status === 401) { showMsg('bad', '密钥不对。'); setMode(false); return null; }
+        if (res.status === 404) {
+          showMsg('bad', '服务端没有 /admin/life 这个口（404）—— Worker 还是旧版，需要重新部署。');
+          setMode(false);
+          return null;
+        }
+        if (res.status !== 200) { showMsg('bad', '服务返回了 ' + res.status + '。'); setMode(false); return null; }
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        renderLife(data);
+        setMode(true);
+        showMsg('ok', '');
+      })
+      .catch(function (err) {
+        var m = err && err.message ? err.message : '请求被浏览器拦下';
+        showMsg('bad', '连不上 ' + base + '：' + m);
+        setMode(false);
+      });
   }
 
   function go(v) {
@@ -769,7 +920,7 @@
      */
     $('townNote').textContent = t.custom
       ? '这台服务器设过　·　最后改于 ' + fmtTime(t.at)
-      : '还在用默认值（浅水埠）　·　改完点保存才算设过';
+      : '还在用默认值（芦花塘）　·　改完点保存才算设过';
     $('townMsg').className = 'msg';
     $('townMsg').textContent = '';
   }
@@ -919,8 +1070,15 @@
   $('connect').addEventListener('click', connect);
   /* 刷新只刷当前这页：在「此刻」页点刷新不该顺手把全表拉一遍。 */
   $('reload').addEventListener('click', function () { loadView(); });
+  $('worldJourney').addEventListener('click', function () {
+    go(lastViewOfWorld.journey || 'live');
+  });
+  $('worldLife').addEventListener('click', function () {
+    go(lastViewOfWorld.life || 'life');
+  });
   $('tabLive').addEventListener('click', function () { go('live'); });
   $('tabAll').addEventListener('click', function () { go('all'); });
+  $('tabLife').addEventListener('click', function () { go('life'); });
   $('tabTown').addEventListener('click', function () { go('town'); });
   $('townSave').addEventListener('click', saveTown);
   /*
@@ -932,6 +1090,7 @@
   $('auto').addEventListener('change', schedule);
   keyIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
   if (findIn) findIn.addEventListener('input', function () { render(allPets); });
+  if (lifeFindIn) lifeFindIn.addEventListener('input', function () { renderLife(null); });
   rows.addEventListener('click', function (e) {
     var b = e.target.closest('button[data-kind]');
     if (!b) return;

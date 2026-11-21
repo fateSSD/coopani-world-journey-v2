@@ -199,3 +199,19 @@ test('对方目录在，就让出城里的出租车', () => {
   mkdirSync(join(off.dir, 'ride-pending'), { recursive: true });
   assert.equal(off.w.taxiYields(), false, '手动关掉就该自己叫');
 });
+
+test('1.1：过期的 restDays 不得写出过期 rest.until，未过期才写', () => {
+  const { dir, w } = boot({ cfg: { restDays: 3 } });
+  // NOW = 2026-11-09T13:00:00Z；homeAt 设成 5 天前（早已过 3 天休整期）
+  w.st.phase = 'home';
+  w.st.homeAt = new Date(NOW.getTime() - 5 * 86_400_000).toISOString();
+  w.writePublic();
+  const expiredPub = JSON.parse(readFileSync(join(dir, 'journey-public.json'), 'utf8'));
+  assert.equal(expiredPub.rest, null, '过期休息期在快照里必须是 null');
+
+  // homeAt 设成 1 天前（仍在 3 天休整期内）
+  w.st.homeAt = new Date(NOW.getTime() - 1 * 86_400_000).toISOString();
+  w.writePublic();
+  const activePub = JSON.parse(readFileSync(join(dir, 'journey-public.json'), 'utf8'));
+  assert.ok(activePub.rest?.until && Date.parse(activePub.rest.until) > NOW.getTime());
+});

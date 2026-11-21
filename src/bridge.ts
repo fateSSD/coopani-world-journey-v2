@@ -396,6 +396,10 @@ export interface PublicInput {
   readonly diary: { readonly enabled: boolean; readonly dir: string };
   readonly applied: readonly RideApplied[];
   readonly hotelTier?: string;
+  readonly home?: { readonly id: string; readonly name: string } | null;
+  readonly rest?: { readonly until: string } | null;
+  readonly work?: { readonly cityId: string; readonly gig: string; readonly until: string } | null;
+  readonly party?: { readonly with: readonly string[]; readonly days: number } | null;
   /**
    * **她接下来要去哪儿**（2026-11-11，鱼鱼出行作者提的接口申请）。
    *
@@ -439,6 +443,10 @@ export function publicSnapshot(input: PublicInput): Record<string, unknown> {
     },
     phase: input.phase,
     hotelTier: input.hotelTier || undefined,
+    home: input.home ? { id: input.home.id, name: input.home.name } : undefined,
+    rest: input.rest ? { until: input.rest.until } : null,
+    work: input.work ? { cityId: input.work.cityId, gig: input.work.gig, until: input.work.until } : null,
+    party: input.party ? { with: [...input.party.with], days: input.party.days } : null,
     city: { id: input.city.id, name: input.city.name, timezone: input.city.tz },
     leg: input.leg
       ? {

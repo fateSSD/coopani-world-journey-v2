@@ -365,3 +365,59 @@ CREATE TABLE IF NOT EXISTS town_meta (
   rules   TEXT NOT NULL DEFAULT '[]',
   at      TEXT NOT NULL
 );
+
+-- ------------------------------------------------------------------
+-- L2 芦花塘市集：三张表（2026-11-21，三期买方半场 + 《街口黑板报》）。
+--
+-- ## 为什么 `deals` 严禁存任何金额列
+--
+-- 价格在买方成交那一刻本地结算、卖方回执只传「卖出几份 + 谁买走 + 一句话」。
+-- 服务端绝不托管中心账本（不做 L3），不存金额就没有对账冲突和审计纠纷（方案 §4.17）。
+-- ------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS town (
+  uid        TEXT PRIMARY KEY,
+  pet        TEXT NOT NULL,
+  street     TEXT NOT NULL DEFAULT '',
+  lane       INTEGER NOT NULL DEFAULT 0,
+  at         TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_town_exp ON town (expires_at);
+CREATE INDEX IF NOT EXISTS idx_town_at  ON town (at DESC);
+
+CREATE TABLE IF NOT EXISTS stalls (
+  id         TEXT PRIMARY KEY,
+  uid        TEXT NOT NULL,
+  seller     TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'goods',
+  item       TEXT NOT NULL,
+  price      INTEGER NOT NULL,
+  stock      INTEGER NOT NULL,
+  fresh_veg  INTEGER NOT NULL DEFAULT 0,
+  note       TEXT NOT NULL DEFAULT '',
+  at         TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_stalls_exp ON stalls (expires_at);
+CREATE INDEX IF NOT EXISTS idx_stalls_at  ON stalls (at DESC);
+
+CREATE TABLE IF NOT EXISTS deals (
+  id         TEXT PRIMARY KEY,
+  stall_id   TEXT NOT NULL,
+  seller_uid TEXT NOT NULL,
+  buyer_uid  TEXT NOT NULL DEFAULT '',
+  buyer_pet  TEXT NOT NULL,
+  item       TEXT NOT NULL,
+  qty        INTEGER NOT NULL DEFAULT 1,
+  note       TEXT NOT NULL DEFAULT '',
+  seen       INTEGER NOT NULL DEFAULT 0,
+  at         TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deals_seller ON deals (seller_uid, at DESC);
+CREATE INDEX IF NOT EXISTS idx_deals_unseen ON deals (seller_uid, seen, at DESC);
+CREATE INDEX IF NOT EXISTS idx_deals_exp    ON deals (expires_at);
+CREATE INDEX IF NOT EXISTS idx_deals_at     ON deals (at DESC);
