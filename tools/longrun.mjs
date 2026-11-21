@@ -341,7 +341,16 @@ const cfg = {
   maxTripWeeks: 8,
   meetUrl: MODE === 'plain' ? '' : 'https://x.test',
   // goto 档也开着记账：买不起票的那条路径（以及「点名要飞机但没钱」）才有机会被撞到。
-  ...(MODE === 'money' || MODE === 'goto' ? { moneyEnabled: true, budget: 6000 } : {}),
+  /*
+   * 预算可以用 `LONGRUN_BUDGET` 压小（2026-11-21）。
+   *
+   * 默认 6000 跑满 144 天只花掉四千出头 —— 钱一直是够的，于是「钱不够就别接约」
+   * 那条判据**一次都不会被走到**。想验那条路径，就得给一个真会紧的预算：
+   *
+   *     LONGRUN_BUDGET=1200 node tools/longrun.mjs 144 money
+   */
+  ...(MODE === 'money' || MODE === 'goto'
+    ? { moneyEnabled: true, budget: Number(process.env.LONGRUN_BUDGET ?? 6000) } : {}),
   ...(MODE === 'set' ? { moneyEnabled: true, budget: 6000 } : {}),
 };
 world = new JourneyWorld({ cfg, dataDir: dir, botName: '大肥鱼', now: () => clock });
