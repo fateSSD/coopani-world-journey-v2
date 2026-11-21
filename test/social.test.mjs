@@ -703,3 +703,31 @@ test('他点「好」的那一秒就该动身 —— 不许等他再刷 60 秒',
     assert.equal(world.st.leg?.toId, 'shanghai', `目的地不对：${world.st.leg?.toId}`);
   } finally { restore(); }
 });
+
+test('换城后未刷新探针前，面板不许吐上一座城的 here / nearby 脏数', async () => {
+  const srv = { here: 9, list: [{ pet: '鲸鲸', doing: '逛早市' }], hits: 0, down: false };
+  const { world, restore } = await bootProbe({ srv });
+  try {
+    await world.tick();
+    assert.equal(world.uiSnapshot().social.here, 8);
+    assert.equal(world.uiSnapshot().social.nearby, 1);
+
+    /* 模拟刚切到新城市且在路上（plan 为 null），探针还没来得及重新拉。 */
+    world.plan = null;
+    world.st = { ...world.st, phase: 'traveling', hereId: 'chongqing' };
+    const snap = world.uiSnapshot().social;
+    assert.equal(snap.here, 0, `换城后漏了旧城 here：${snap.here}`);
+    assert.equal(snap.nearby, 0, `换城后漏了旧城 nearby：${snap.nearby}`);
+  } finally { restore(); }
+});
+
+test('已经在会合城接约：回执不再自相矛盾地说「这就赶车」', async () => {
+  const { world, one, restore } = await bootTakeToday(NOW, { hereId: 'shanghai' });
+  try {
+    await world.tick();
+    const r = await world.takeInvite(one.id);
+    assert.equal(r.isError, undefined, `该接成：${r.text}`);
+    assert.match(r.text, /就在上海.*等人/);
+    assert.doesNotMatch(r.text, /这会儿就该动身/, `已在会合城等人却说这就赶车：${r.text}`);
+  } finally { restore(); }
+});

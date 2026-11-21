@@ -155,3 +155,20 @@ test('长途汽车下调到公路客运实价（0.33 元/公里）', () => {
   const fare = 320 * 0.33;
   near(Math.round(fare), 100, 0.15, '长途汽车 320 公里');
 });
+
+test('跨洲机票：兰州→纽约量级约 7000 元，不再按 0.9 元/公里算到近一万', async () => {
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+    dataDir: mkdtempSync(join(tmpdir(), 'jr-fare-')),
+    botName: '大肥鱼',
+  });
+  const lz = cityById('lanzhou');
+  const ny = cityById('newyork');
+  const fare = Math.round(w.cheapestFare(11000, true, { from: lz, to: ny }));
+  near(fare, 7000, 0.1, '兰州→纽约跨洲机票');
+});

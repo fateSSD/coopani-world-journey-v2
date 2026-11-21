@@ -426,10 +426,14 @@ export const purseMethods: Record<string, any> = {
        *
        * 2026-11-03 模拟抓到的：不分国内国际的话，兰州飞大阪 2600 公里只要 1040 块，
        * 比现实便宜一半 —— 她于是动不动就飞出去，预算 3000 的人 48 天花掉四万七。
+       *
+       * 2026-11-21 Mr.Q 实查跨洲机票约 7000 元（兰州 → 纽约 ~11000km）：
+       * 3000km 处接上 3000 × 0.85 = 2550，往后按 0.56 元/公里递加（11000km ≈ 7030 元）。
        */
       const per = crossBorder ? 0.85 : 0.4;
-      const base = crossBorder ? 2400 : 1200;
-      return (km <= 3000 ? km * per : base + (km - 3000) * 0.9) * seatMult;
+      const base = crossBorder ? 2550 : 1200;
+      const tailPer = crossBorder ? 0.56 : 0.9;
+      return (km <= 3000 ? km * per : base + (km - 3000) * tailPer) * seatMult;
     }
     /*
      * 铁路分段算（2026-11-08）：短途高铁、长途卧铺，单价差一倍。
@@ -569,18 +573,24 @@ export const purseMethods: Record<string, any> = {
    * 门槛是余钱的八成：留两成，到家之后还要过日子。
    * 没记账、预算填 0 时一律算回得去。
    */
-  canAffordTrip(km: number, crossBorder = false): boolean {
+  canAffordTrip(km: number, crossBorder = false, pair?: { from: City; to: City }): boolean {
     const left = this.purseLeft();
     if (left === null) return true;
     if (left <= 0) return false;
-    const cheapest = this.cheapestFare(km, crossBorder);
+    const cheapest = this.cheapestFare(km, crossBorder, pair);
     return cheapest <= left * 0.8;
   },
 
-  /** 这一对上最便宜那张票（不问方式，只问价 —— 别问「她会不会挑最便宜的」，那是另一件事）。 */
-  cheapestFare(km: number, crossBorder = false): number {
-    return Math.min(...(['bus', 'train', 'plane', 'ship', 'car'] as const)
-      .map((id) => this.fareOf(id, km, crossBorder)));
+  /**
+   * 这一对上最便宜那张票。
+   *
+   * 给了 `from / to` 时，只算这对城市间**真能走的方式**（`usableModesFor`）：
+   * 跨海 / 跨洲 / 大陆 ↔ 台湾不能坐火车，不算不存在的 0.21 元/公里地面票。
+   */
+  cheapestFare(km: number, crossBorder = false, pair?: { from: City; to: City }): number {
+    const usable = pair ? usableModesFor(pair.from, pair.to, km).map((m) => m.id) : [];
+    const ids = usable.length ? usable : (['bus', 'train', 'plane', 'ship', 'car'] as const);
+    return Math.min(...ids.map((id) => this.fareOf(id, km, crossBorder)));
   },
 
 
@@ -608,7 +618,7 @@ export const purseMethods: Record<string, any> = {
    * 回执要把四笔数都摆出来，否则她只能笼统说「钱不够」，用户没法判断是不是自己预算填错了。
    */
   pledgeAffordable(
-    legs: readonly { readonly km: number; readonly crossBorder?: boolean }[],
+    legs: readonly { readonly km: number; readonly crossBorder?: boolean; readonly from?: City; readonly to?: City }[],
     days: number,
     to: City,
   ): {
@@ -622,7 +632,10 @@ export const purseMethods: Record<string, any> = {
      * **票钱取整**。`fareOf` 是 0.33 元/公里那种算式，直接拼进回执会变成
      * 「票 204.60000000000002」—— 浮点尾巴进了给人看的句子，一眼就是机器写的。
      */
-    const fare = Math.round(legs.reduce((sum, l) => sum + this.cheapestFare(l.km, l.crossBorder === true), 0));
+    const fare = Math.round(legs.reduce((sum, l) => {
+      const pair = l.from && l.to ? { from: l.from, to: l.to } : undefined;
+      return sum + this.cheapestFare(l.km, l.crossBorder === true, pair);
+    }, 0));
     const need = fare + (bed + MEALS_PER_DAY) * n;
     return { ok: left === null || need <= left, need, left, fare, bed, meals: MEALS_PER_DAY, days: n };
   },

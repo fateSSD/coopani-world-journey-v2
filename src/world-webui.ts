@@ -1087,7 +1087,8 @@ export const webUiMethods: Record<string, any> = {
       social: (() => {
         const p = this.activePledge(now);
         const configured = String(this.cfg.meetUrl ?? '').trim() !== '';
-        const nearby = this.plan?.neighbors.length ?? this.nearbyProbe?.n ?? 0;
+        const probed = this.nearbyProbe?.cityId === this.st.hereId ? this.nearbyProbe : null;
+        const nearby = this.plan?.neighbors.length ?? probed?.n ?? 0;
         /*
          * 今天这座城来过几只**别人**（2026-11-20）。
          *
@@ -1102,9 +1103,7 @@ export const webUiMethods: Record<string, any> = {
          *
          * 两个都同城同日才减一；其余情况原样报。
          */
-        const probed = this.nearbyProbe;
         const ownCounted = !!probed
-          && probed.cityId === this.st.hereId
           && this.presenceReported?.cityId === probed.cityId
           && this.presenceReported?.day === probed.day;
         const hereToday = Math.max(0, (probed?.here ?? 0) - (ownCounted ? 1 : 0));

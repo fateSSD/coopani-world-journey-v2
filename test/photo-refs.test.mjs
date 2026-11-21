@@ -238,3 +238,24 @@ test('refsAllowedBackend：只放行方舟系，别家一律不发图', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('hasPersonRef：仅带 * 画风图或场景图时不清空人物文字描述；castFromRef 不塞写实胶片底色', async () => {
+  const { photoPrompt } = await import('../src/photo.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'journey-refs4-'));
+  try {
+    const w = makeWorld(dir, { imageUseRefs: true, imageRefs: `*${join(dir, 'style.png')}` });
+    const picked = w.collectRefPaths('ground', true, '', '蓝白少女', '');
+    assert.equal(picked.paths.length, 1);
+    assert.equal(picked.hasPersonRef, false, '带星号画风图不该算人物参考图');
+
+    const prompt = photoPrompt({
+      city: '成都',
+      cityId: 'chengdu',
+      hour: 14,
+      castFromRef: true,
+    });
+    assert.doesNotMatch(prompt, /真实旅行照片|胶片颗粒/, `castFromRef 不该被硬塞写实底色：${prompt}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -653,6 +653,13 @@ export const photoMethods: Record<string, any> = {
        */
       const castOn = !!this.cfg.imageCast
         && seededRandom(`${dateKey}:${sceneId}:cast`)() <= this.cfg.imageCastChance;
+      const backend = resolveImageBackend(this.cfg);
+      if (backend.sizeNote && !this.imageSizeNoted) {
+        this.imageSizeNoted = true;
+        this.log?.info(backend.sizeNote);
+      }
+      const canSendRefs = backend.protocol !== 'comfyui' && this.refsAllowedBackend(backend);
+
       /*
        * 参考图（2026-11-20）。**默认关**，开了才读图鉴与手填路径。
        *
@@ -661,11 +668,15 @@ export const photoMethods: Record<string, any> = {
        * 并在日志里说一句，免得他以为"重拍还是原来那张脸"。
        */
       const refPick = (() => {
-        if (!this.cfg.imageUseRefs) return { paths: [] as string[], labels: [] as string[], dropped: [] as string[] };
+        if (!this.cfg.imageUseRefs) {
+          return { paths: [] as string[], labels: [] as string[], dropped: [] as string[], hasPersonRef: false };
+        }
         const remembered = override?.refs ?? [];
         if (remembered.length) {
           const found = this.findLibraryRefsByName(remembered);
-          if (found.length) return { paths: found, labels: remembered, dropped: [] as string[] };
+          if (found.paths.length) {
+            return { paths: found.paths, labels: remembered, dropped: [] as string[], hasPersonRef: found.hasPersonRef };
+          }
           this.log?.info(`重拍沿用的参考图已不在图鉴里（${remembered.join('、')}），改按当前配置重新取。`);
         }
         return this.collectRefPaths(subject, castOn, spot, String(this.cfg.imageCast ?? ''), this.photoDoingNow(city, hour));
@@ -676,6 +687,13 @@ export const photoMethods: Record<string, any> = {
         this.log?.warn(`参考图跳过 ${gone.length} 张（读不到或太大，单张上限 4MB）：${gone.slice(0, 3).join('、')}`);
       }
       const refsOn = refPack.urls.length > 0;
+      /*
+       * 只有「后端真的收参考图」且「这批参考图里真有人物/服饰/手填人物图」时，
+       * 才把文字 `cast` 交给参考图接管。
+       * - 非方舟后端不发 `image` 字段，抹掉 `cast` 会导致画面彻底丢掉人物描述；
+       * - 只有场景参考图或 `*` 画风图时抹掉 `cast`，会让模型拿风景照当人脸。
+       */
+      const personRefActive = refsOn && canSendRefs && refPick.hasPersonRef;
       /*
        * 有人那几张可以用另一套风格（`imageStyleCast`）。留空就还是 `imageStyle`。
        * 这样「风景写实 + 自拍二次元」才成立 —— 风格和有没有人本来就是两件事。
@@ -714,8 +732,8 @@ export const photoMethods: Record<string, any> = {
          * 有参考图时**不写人物描述**：两套外观同时给，模型会各听一半。
          * 外观交给图，提示词只留「画面里只有这一个人」这条存在性约束。
          */
-        cast: castOn && !refsOn ? this.cfg.imageCast : '',
-        ...(castOn && refsOn ? { castFromRef: true } : {}),
+        cast: castOn && !personRefActive ? this.cfg.imageCast : '',
+        ...(castOn && personRefActive ? { castFromRef: true } : {}),
         // 抬头还是看脚下。天空照仍受当地时刻和天气约束。
         view,
         /* 她自己写的那一句（2026-11-10）。空 = 不出现，老行为不变。 */
@@ -821,11 +839,6 @@ export const photoMethods: Record<string, any> = {
        *
        * `sizeNote` 只在第一次说一遍：它每次都成立，刷屏没有信息量。
        */
-      const backend = resolveImageBackend(this.cfg);
-      if (backend.sizeNote && !this.imageSizeNoted) {
-        this.imageSizeNoted = true;
-        this.log?.info(backend.sizeNote);
-      }
       const shot = backend.protocol === 'comfyui'
         ? await shootComfy({
             api: backend.api,
@@ -883,9 +896,9 @@ export const photoMethods: Record<string, any> = {
             ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
             ...(signal ? { signal } : {}),
             size: backend.size,
-            ...(refsOn && this.refsAllowedBackend(backend) ? { refs: refPack.urls } : {}),
+            ...(refsOn && canSendRefs ? { refs: refPack.urls } : {}),
           });
-      if (refsOn && !this.refsAllowedBackend(backend)) {
+      if (refsOn && !canSendRefs) {
         this.log?.warn(
           `配了 ${refPack.urls.length} 张参考图，但当前服务端（${backend.model || backend.api}）不认 image 字段，`
           + '这一张按纯文生图发；要用参考图请换成火山方舟的 seedream 系模型。',
@@ -1010,7 +1023,7 @@ export const photoMethods: Record<string, any> = {
        */
       const rec: PhotoRecord = {
         handle,
-        ...(refPack.names.length ? { refs: refPack.names } : {}),
+        ...(refsOn && canSendRefs && !shot.refsDropped && refPack.names.length ? { refs: refPack.names } : {}),
         cityId: sceneId,
         cityName: onRoad ? '路上' : city.name,
         dateKey,
@@ -1326,7 +1339,7 @@ export const photoMethods: Record<string, any> = {
                 ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
                 size: posterBackend.size,
               });
-          const bytes = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol)
+          const bytes = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol, this.arkBackend(posterBackend))
             && shot.mime === 'image/png'
             ? cropBottom(shot.bytes, WATERMARK_CROP_RATIO)
             : shot.bytes;
@@ -1497,14 +1510,16 @@ export const photoMethods: Record<string, any> = {
     spot: string,
     castHint: string,
     doing: string,
-  ): { paths: string[]; labels: string[]; dropped: string[] } {
-    const out: { paths: string[]; labels: string[]; dropped: string[] } = { paths: [], labels: [], dropped: [] };
+  ): { paths: string[]; labels: string[]; dropped: string[]; hasPersonRef: boolean } {
+    const out: { paths: string[]; labels: string[]; dropped: string[]; hasPersonRef: boolean } = {
+      paths: [], labels: [], dropped: [], hasPersonRef: false,
+    };
     if (!this.cfg.imageUseRefs) return out;
     // 抬头拍天：带人物参考图只会让模型往天上塞人。
     if (subject === 'sky') return out;
 
-    const addEntry = (root: string, cat: string, entry: LibEntry | null, max: number): void => {
-      if (!entry) return;
+    const addEntry = (root: string, cat: string, entry: LibEntry | null, max: number): number => {
+      if (!entry) return 0;
       let n = 0;
       for (const img of entry.images) {
         if (n >= max) break;
@@ -1515,18 +1530,20 @@ export const photoMethods: Record<string, any> = {
         out.labels.push(img);
         n += 1;
       }
+      return n;
     };
 
     try {
       const pack = this.libraryPack();
       if (pack) {
         // 人物最多两张：第一张定脸，第二张补侧面/全身；再多只是把请求体撑大。
-        addEntry(pack.root, 'characters', castOn ? matchLibraryEntry(
+        const charAdded = addEntry(pack.root, 'characters', castOn ? matchLibraryEntry(
           loadLibraryCategory(pack.root, 'characters'), [castHint, this.opts.botName ?? ''], true,
         ) : null, 2);
-        addEntry(pack.root, 'outfits', castOn ? matchLibraryEntry(
+        const outfitAdded = addEntry(pack.root, 'outfits', castOn ? matchLibraryEntry(
           loadLibraryCategory(pack.root, 'outfits'), [pack.outfitHint, doing, castHint], false,
         ) : null, 1);
+        if (charAdded > 0 || outfitAdded > 0) out.hasPersonRef = true;
         addEntry(pack.root, 'scenes', matchLibraryEntry(
           loadLibraryCategory(pack.root, 'scenes'), [spot], false,
         ), 1);
@@ -1560,6 +1577,7 @@ export const photoMethods: Record<string, any> = {
       if (out.paths.includes(fp)) continue;
       out.paths.push(fp);
       out.labels.push(fp);
+      if (!always) out.hasPersonRef = true;
     }
     return out;
   },
@@ -1622,24 +1640,47 @@ export const photoMethods: Record<string, any> = {
     return /volces\.com|ark\.cn-beijing/.test(host) || /doubao-seedream/.test(model);
   },
 
-  /** 按文件名在库内找回参考图（重拍沿用旧名单用）。找不到就返回空，交给调用方回退。 */
-  findLibraryRefsByName(names: readonly string[]): string[] {
-    if (!names.length) return [];
-    const pack = this.libraryPack();
-    if (!pack) return [];
+  /** 按文件名在库内及手填路径里找回参考图（重拍沿用旧名单用）。找不到就返回空，交给调用方回退。 */
+  findLibraryRefsByName(names: readonly string[]): { paths: string[]; hasPersonRef: boolean } {
+    if (!names.length) return { paths: [], hasPersonRef: false };
     const out: string[] = [];
-    for (const cat of ['characters', 'outfits', 'scenes', 'props']) {
-      const dir = join(pack.root, cat);
-      if (!existsSync(dir)) continue;
-      for (const sub of readdirSync(dir).sort()) {
-        for (const nm of names) {
-          if (!nm || nm.includes('/') || nm.includes('\\')) continue;
-          const fp = join(dir, sub, nm);
-          if (existsSync(fp) && !out.includes(fp)) out.push(fp);
+    let hasPersonRef = false;
+    const pack = this.libraryPack();
+    if (pack) {
+      for (const cat of ['characters', 'outfits', 'scenes', 'props']) {
+        const dir = join(pack.root, cat);
+        if (!existsSync(dir)) continue;
+        for (const sub of readdirSync(dir).sort()) {
+          for (const nm of names) {
+            if (!nm || nm.includes('/') || nm.includes('\\')) continue;
+            const fp = join(dir, sub, nm);
+            if (existsSync(fp) && !out.includes(fp)) {
+              out.push(fp);
+              if (cat === 'characters' || cat === 'outfits') hasPersonRef = true;
+            }
+          }
         }
       }
     }
-    return out;
+    // 兜底匹配手填参考图里的文件名，避免非图鉴用户重拍时每次都回退重建。
+    const manualLines = String(this.cfg.imageRefs ?? '').split(/\r?\n/);
+    for (const nm of names) {
+      if (!nm || nm.includes('/') || nm.includes('\\')) continue;
+      for (const line of manualLines) {
+        const marked = line.trim();
+        if (!marked) continue;
+        const always = marked.startsWith('*');
+        const raw = always ? marked.slice(1).trim() : marked;
+        if (!raw) continue;
+        const fp = raw.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(raw) ? raw : resolve(this.opts.dataDir, raw);
+        const base = fp.split(/[\\/]/).pop();
+        if (base === nm && existsSync(fp) && !out.includes(fp)) {
+          out.push(fp);
+          if (!always) hasPersonRef = true;
+        }
+      }
+    }
+    return { paths: out, hasPersonRef };
   },
 
   photoDoingNow(city: { id: string; tz: string }, hour: number): string {

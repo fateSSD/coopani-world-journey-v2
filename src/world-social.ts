@@ -562,7 +562,7 @@ export const socialMethods: Record<string, any> = {
     this.meetRetryStep = Math.min(this.meetRetryStep + 1, 8);
     const here = this.cityOrNull(this.st.hereId);
     if (!here) return;
-    const slot = slotOf(now.getHours());
+    const slot = slotOf(localMoment(now, here.tz).hour);
     const b = await findNeighbors(meet, here.id, slot).catch(() => null);
     if (!b?.ok) return;
     /*
@@ -572,7 +572,7 @@ export const socialMethods: Record<string, any> = {
      * （失败也占住那一小时），面板上的「今天来过几只」还要再等近一小时 ——
      * 灯绿了、数字还是错的，等于只修了一半。
      */
-    this.noteNeighbors(here.id, localMoment(this.realNow(), here.tz).dateKey, b, real);
+    this.noteNeighbors(here.id, localMoment(now, here.tz).dateKey, b, real);
   },
 
 
@@ -635,7 +635,8 @@ export const socialMethods: Record<string, any> = {
     if (!city) return;
     const realDate = this.realNow();
     const real = realDate.getTime();
-    const day = localMoment(realDate, city.tz).dateKey;
+    const moment = localMoment(now, city.tz);
+    const day = moment.dateKey;
     const same = this.nearbyProbe?.cityId === city.id && this.nearbyProbe?.day === day;
     if (same && real - (this.nearbyProbe?.at ?? 0) < STATUS_PROBE_MS) return;
     /*
@@ -647,7 +648,7 @@ export const socialMethods: Record<string, any> = {
       here: same ? (this.nearbyProbe?.here ?? 0) : 0,
       n: same ? (this.nearbyProbe?.n ?? 0) : 0,
     };
-    const b = await findNeighbors(meet, city.id, slotOf(now.getHours())).catch(() => null);
+    const b = await findNeighbors(meet, city.id, slotOf(moment.hour)).catch(() => null);
     if (!b?.ok) {
       /*
        * 断线要亮灯，并且占住退避位（2026-11-20 回补）。
@@ -885,6 +886,13 @@ export const socialMethods: Record<string, any> = {
     }
     /* 见面城和目的地相同时没有「见面」这一级，按老口径发。 */
     if (meetCity && meetCity.id === c.id) meetCity = null;
+    const fromStop = meetCity ?? here;
+    if (!canTravel(fromStop, c)) {
+      return {
+        text: `${meetCity ? `从见面的${meetCity.name}` : `从${here.name}这儿`}没路去${c.name}（隔着海，或者那边没有机场）—— 先别约人，约了也走不成。`,
+        isError: true,
+      };
+    }
 
     const d = Math.min(14, Math.max(1, Math.round(Number(days) || 2)));
     /*
@@ -895,10 +903,10 @@ export const socialMethods: Record<string, any> = {
      */
     const legs = meetCity
       ? [
-          { km: Math.round(distanceKm(here, meetCity)), crossBorder: here.country !== meetCity.country },
-          { km: Math.round(distanceKm(meetCity, c)), crossBorder: meetCity.country !== c.country },
+          { from: here, to: meetCity, km: Math.round(distanceKm(here, meetCity)), crossBorder: here.country !== meetCity.country },
+          { from: meetCity, to: c, km: Math.round(distanceKm(meetCity, c)), crossBorder: meetCity.country !== c.country },
         ]
-      : [{ km: Math.round(distanceKm(here, c)), crossBorder: here.country !== c.country }];
+      : [{ from: here, to: c, km: Math.round(distanceKm(here, c)), crossBorder: here.country !== c.country }];
     const trip = this.pledgeAffordable(legs, d, c);
     if (!trip.ok) {
       return {
@@ -1215,10 +1223,10 @@ export const socialMethods: Record<string, any> = {
      */
     const legs = useMeet
       ? [
-          { km: Math.round(distanceKm(here, useMeet)), crossBorder: here.country !== useMeet.country },
-          { km: Math.round(distanceKm(useMeet, dest)), crossBorder: useMeet.country !== dest.country },
+          { from: here, to: useMeet, km: Math.round(distanceKm(here, useMeet)), crossBorder: here.country !== useMeet.country },
+          { from: useMeet, to: dest, km: Math.round(distanceKm(useMeet, dest)), crossBorder: useMeet.country !== dest.country },
         ]
-      : [{ km, crossBorder: here.country !== firstStop.country }];
+      : [{ from: here, to: firstStop, km, crossBorder: here.country !== firstStop.country }];
     const trip = this.pledgeAffordable(legs, one.days, dest);
     if (!trip.ok) {
       return {
@@ -1292,7 +1300,7 @@ export const socialMethods: Record<string, any> = {
      * 她已经往家走了，接了也兑现不了 —— 那才是真的「答应了做不到」。
      */
     if (this.st.returning) {
-      return { text: '她已经在往回走了，这时候接不了新的约 —— 先到家再说。' };
+      return { text: '她已经在往回走了，这时候接不了新的约 —— 先到家再说。', isError: true };
     }
     const r = await acceptInvite(meet, id);
     if (!r.ok) return { text: `没接成：${r.reason}。`, isError: true };
@@ -1405,7 +1413,9 @@ export const socialMethods: Record<string, any> = {
           : reopen === 'at-hour'
             // 八点前接的。那天还没判过 —— 说「明天才走」同样是假话。
             ? '\n（今天八点那个点会判走不走，到时候多半就直接动身了。别把时间说死。）'
-            : '\n（今天这一趟不安排动身了：这会儿太晚，或者她在睡。别跟他说「这就走」。）')
+            : reopen === 'here'
+              ? ''
+              : '\n（今天这一趟不安排动身了：这会儿太晚，或者她在睡。别跟他说「这就走」。）')
         + '这件事该跟他说一句 —— 说清跟谁、先去哪儿碰头、去哪儿、几天，别当成通知念。',
     };
   },

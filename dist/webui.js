@@ -1463,6 +1463,7 @@ export default {
         const lbClose = () => {
           lb.hidden = true;
           lbImg.src = '';
+          lbImg.removeAttribute?.('src');
           lbList = [];
         };
         lbX.addEventListener('click', lbClose, { signal: ctx.signal });

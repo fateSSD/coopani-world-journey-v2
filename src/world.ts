@@ -2776,10 +2776,16 @@ export class JourneyWorld implements World {
    *   - `at-hour`：今天的决策点还没到（当地 8 点前），那一拍自己会读到
    *   - `later`：太晚、在睡、或者本来就在那座城 —— 今天不安排动身
    */
-  private reopenTodayDecision(now: Date): 'reopened' | 'at-hour' | 'later' {
+  private reopenTodayDecision(now: Date): 'reopened' | 'at-hour' | 'here' | 'later' {
     if (this.st.phase !== 'staying') return 'later';
     const here = this.cityOrNull(this.st.hereId);
     if (!here) return 'later';
+    /* 约定的下一站就是脚下这座城（或就在会合城等人）—— 本来就在，不用赶车。 */
+    const pledge = this.activePledge(now);
+    if (pledge && (this.pledgeStop(pledge) === here.id
+      || (pledge.meetCityId && !pledge.arrivedAt && pledge.meetArrivedAt && here.id === pledge.meetCityId))) {
+      return 'here';
+    }
     const moment = localMoment(now, here.tz);
     /*
      * 21 点之后不重开。`depart` 本身有 7–21 这个窗口，`moveOn` 却没有 ——
@@ -2787,15 +2793,13 @@ export class JourneyWorld implements World {
      */
     if (moment.decimal >= 21) return 'later';
     if (this.asleepUntil() > this.realNow().getTime()) return 'later';
-    /* 约定的下一站就是脚下这座城 —— 她本来就在，没有什么可动身的。 */
-    const pledge = this.activePledge(now);
-    if (pledge && this.pledgeStop(pledge) === here.id) return 'later';
     /*
      * 今天的决策点还没到（当地八点前）：不用清，那一拍自己会读到 pledge。
      * **但也不能说「今天不动身」** —— 那是另一句错话。
      */
     if (moment.decimal < DECIDE_HOUR) return 'at-hour';
-    if (this.st.decidedOn !== moment.dateKey) return 'at-hour';
+    /* 八点已过且今天还没判过：下一拍会立刻进决策并动身，语义等同 reopened。 */
+    if (this.st.decidedOn !== moment.dateKey) return 'reopened';
 
     this.st = { ...this.st, decidedOn: null };
     this.persist();

@@ -165,3 +165,23 @@ test('接约：钱够就照常接，不因为新判据被挡住', async () => {
     assert.equal(world.st.pledge.cityId, 'chengdu');
   } finally { restore(); }
 });
+
+test('跨海线：cheapestFare 按真实能走的方式算（大陆→台北只能飞，不按火车 0.21 算）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'jr-pledge-sea-'));
+  const w = makeWorld(dir, { moneyEnabled: true, budget: 2000 });
+  const xian = cityById('xian');
+  const taibei = cityById('taibei');
+  const seaFare = w.cheapestFare(1700, false, { from: xian, to: taibei });
+  const landFare = w.cheapestFare(1700, false);
+  assert.ok(seaFare > landFare, `跨海还按地面火车价算：sea=${seaFare} vs land=${landFare}`);
+});
+
+test('发约：第二段隔海/无路可走时，入口直接拦住', async () => {
+  const { world, restore } = boot(50_000);
+  try {
+    /* 西安 → 京都无直达地面且京都无机场，第二段（西安→京都）走不通。 */
+    const r = await world.inviteSomeone('京都', 2, '', '西安');
+    assert.equal(r.isError, true, `第二段走不通的约居然发出去了：${r.text}`);
+    assert.match(r.text, /没路去/, `报错没说清哪一段不通：${r.text}`);
+  } finally { restore(); }
+});

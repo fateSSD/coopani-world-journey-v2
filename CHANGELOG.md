@@ -1,5 +1,15 @@
 # 更新日志
 
+## 2.3.1 — 2026-11-21（修复 2.1–2.3.0 五组逻辑与边界缺口 + 跨洲机票校准）
+
+- **跨洲机票校准 + 整趟算钱按真实可用方式算**：3000km 以上跨国机票按 `2550 + (km - 3000) * 0.56` 计算（11000km ≈ 7030 元，对齐实际报价）；`cheapestFare` / `canAffordTrip` / `pledgeAffordable` 传入起终点后按 `usableModesFor` 过滤可用方式，跨海 / 跨洲 / 大陆 ↔ 台湾不再拿 0.21 元/公里的火车价低估票钱；`inviteSomeone` 补齐第二段连通性检查。
+- **参考图与提示词四处防呆**：提前解析出图后端；仅当后端认参考图且真带了人物/服饰/非 `*` 手填图（`hasPersonRef`）时才清空文字 `cast` 并设 `castFromRef`，非方舟后端或仅带 `*` 画风图/场景图不再丢人物描述；后端拒收参考图降级时不再写入 `photos.json`；`castFromRef` 不再在未填 `imageStyle` 时被硬塞写实胶片底色。
+- **同城探针时钟/时区与换城脏数**：`refreshMeetIfDown` 与 `probeNearby` 统一改用目的地当地小时和世界日期（`localMoment(now, city.tz)`），消除倍速与跨时区下的错位；`uiSnapshot().social` 读取 `nearbyProbe` 时先校验 `cityId === hereId`，换城未刷新探针前不再漏出旧城数字。
+- **接约回执与竞态**：`reopenTodayDecision` 拆出 `'here'`（已在目的地或已在会合城等人）并把八点后未判归入 `'reopened'`，消除「已在会合城等人却说这就赶车」与「大白天说太晚/在睡」的自相矛盾；`takeInvite` 返程竞态补上 `isError: true`。
+- **细节补齐**：月报海报水印检查补传 `arkBackend`；手填 `imageRefs` 支持重拍按文件名找回；相册放大层关闭时追加 `removeAttribute('src')`。
+
+测试：新增 6 条回归断言，全量 `test/*.test.mjs` **1195/1195**、`ui-smoke` **25/25**、`clock-sync` **8/8**、`home-e2e` **37/37**、`home-reason` **8/8**、`photo-e2e` **38/38** 通过。
+
 ## 2.3.0 — 2026-11-21（钱不够就别接约：算的是整趟，不是一张票）
 
 Mr.Q：「钱不够最好让她不要接邀约比较好（花销开关打开的情况下）」。

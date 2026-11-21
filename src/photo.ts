@@ -2429,7 +2429,7 @@ export function photoPrompt(scene: PhotoScene): string {
    * 「一张真实旅行照片：」+「胶片质感，自然光」把 `anime style` 压过去了。
    * 风格是跟着人物走的，人物说了算，不该再被这几句拽回来。
    */
-  const realism = !cast && !custom && !bare;
+  const realism = !cast && !scene.castFromRef && !custom && !bare;
   const lead = bare ? '' : custom ? `${raw}：` : realism ? '一张真实旅行照片：' : '';
 
   /*
