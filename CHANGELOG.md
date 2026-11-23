@@ -1,5 +1,15 @@
 # 更新日志
 
+## 2.6.2 — 2026-11-23（离线误判节流阈值 + 查伴失败冷却重试不冻结日程 + 上报原因分流 + `sight-cf` 按 uid 均匀分街）
+
+- **离线判定滤除 5 分钟落盘节流噪声 & 查伴失败重试（zzy1053 第二封反馈）**：
+  - `src/constants.ts`、`src/world.ts`：新增 `AWAY_CROSS_MIN_MS = 2 * SEEN_SAVE_MS`（10 分钟），仅当 `awayMs >= 10 分钟` 时才认定「离线跨过当地 8 点决策点」，不再把正常巡检的 0–5 分钟落盘节流当成离线；「今天不补判」日志移入 `stayTick()` 的 `lockToday` 实落分支（用 `awayCrossedMs` 记录真实离线时长）。
+  - `src/world.ts`：`matesHere()` 返回 `ok: false` 时回退 `decidedOn = null`，按 `MEET_RETRY_GAP_MS = 30 分钟` 冷却最多重试 `MEET_RETRY_MAX = 2` 次；**冷却期仅跳过发车决策分支（`!meetCooling`），不提前 `return` 冻结当天排表、生活日程协同与景点节拍推进**。
+  - `src/meet.ts`、`src/world-social.ts`：`reportPresence()` 改为返回 `{ ok, why }`，非 2xx 带回状态码（如 `服务器回了 503`），异常走 `explainNet()`（`请求没发出去 —— ...`），日志再也不用一句「没回 200」盖过去；恢复时同步清空 `reportWhy`。
+- **`sight-cf` 街道分布均匀化与过时街名拦截**：
+  - `cloud/sight-cf/src/worker.js`：新增与 `coopani-world-life@1.1.4` 同源的 `pickTownStreet()`（FNV-1a 按 `uid` 稳定均匀挑选）；`POST /town/join` 遇空街名或 `custom` 城收到非本城街名（如旧客户端残留成都 `'春熙路'`）时按 `uid` 落入本城街道；`POST /admin/town` 改街迁移按 `uid` 均匀散列失效旧街道，不再全部压进 `streets[0]`。
+- **测试**：新增节流噪声边界、冷却期照常推日常节拍、2 次耗尽锁定当天、上报 503 状态码、`/town/join` 拦 `'春熙路'` 与 `/admin/town` 均匀迁街断言。
+
 ## 2.6.1 — 2026-11-23（见面判定放宽到 24 小时窗口 + 碰头记忆 `meetSeenAt` + 文案分档）
 
 - **约好了却一直见不着人（zzy1053 邮件反馈）**：原来「能不能碰头」的实际判据是「早八点判定那一分钟，对方客户端是否开着」——位置上报只保留 2 小时，而判定一天只有一次。现在判定这一路走 24 小时窗口，只要对方 24 小时内在过见面城就算见着了。
