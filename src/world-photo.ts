@@ -366,7 +366,7 @@ export const photoMethods: Record<string, any> = {
     if (backend.protocol === 'comfyui' && !(this.cfg.imageWorkflow ?? '').trim()) {
       return '生图接口选的是 ComfyUI，但还没粘 workflow —— 在 ComfyUI 里用「Save (API Format)」导出，整份贴进设置';
     }
-    if (backend.protocol === 'openai' && !backend.model) {
+    if (backend.protocol !== 'comfyui' && !backend.model) {
       return '云端生图还差模型名 —— 上面挑一个服务商，或手填模型 ID';
     }
     return null;
@@ -903,7 +903,7 @@ export const photoMethods: Record<string, any> = {
       if (refsOn && !canSendRefs) {
         this.log?.warn(
           `配了 ${refPack.urls.length} 张参考图，但当前服务端（${backend.model || backend.api}）不吃这套参考图，`
-          + '这一张按纯文生图发；参考图目前只对火山方舟的 seedream 系开放。',
+          + '这一张按纯文生图发；参考图目前只对火山方舟的 seedream 系与阿里千问的 qwen-image 系开放。',
         );
       }
       if (shot.refsDropped) {
@@ -1624,7 +1624,8 @@ export const photoMethods: Record<string, any> = {
    * 且看模型。**无条件发等于把不是方舟的用户打挂**，所以只按明示的 preset /
    * 域名 / 模型名放行，其余一律不发图。
    */
-  refsAllowedBackend(backend: { api?: string; model?: string }): boolean {
+  refsAllowedBackend(backend: { api?: string; model?: string; protocol?: string }): boolean {
+    if (/^qwen/i.test(String(backend.protocol ?? ''))) return true;
     return this.arkBackend(backend);
   },
 

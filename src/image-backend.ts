@@ -126,8 +126,19 @@ function normEndpoint(v: string | undefined): string {
   return (v ?? '').trim().toLowerCase().replace(/\/+$/, '');
 }
 
+/** 千问已知官方域名（百炼国内/国际 + Token Plan 国内/国际）。 */
+const QWEN_OFFICIAL_APIS: readonly string[] = [
+  'https://dashscope.aliyuncs.com',
+  'https://token-plan.maas.qianwenaiapi.com',
+  'https://dashscope-intl.aliyuncs.com',
+  'https://token-plan.ap-southeast-1.maas.aliyuncs.com',
+];
+
 /** 预设自带的地址 / 模型名，用来认「这个值是常量，不是他手填的」。 */
-const PRESET_APIS: readonly string[] = Object.values(PRESETS).map((p) => normEndpoint(p.api));
+const PRESET_APIS: readonly string[] = Array.from(new Set([
+  ...Object.values(PRESETS).map((p) => normEndpoint(p.api)),
+  ...QWEN_OFFICIAL_APIS.map((u) => normEndpoint(u)),
+]));
 const PRESET_MODELS: readonly string[] = Object.values(PRESETS).map((p) => normEndpoint(p.model));
 
 /**
@@ -146,11 +157,15 @@ const PRESET_MODELS: readonly string[] = Object.values(PRESETS).map((p) => normE
  * 自己的中转地址（`https://my-proxy.example.com/v1`）永远认不出，永远保留 ——
  * 那条是真手填，覆盖它才是真的接管用户配置。
  */
-function isForeignPresetValue(value: string, mine: string | undefined, table: readonly string[]): boolean {
+function isForeignPresetValue(
+  value: string,
+  mine: string | readonly string[] | undefined,
+  table: readonly string[],
+): boolean {
   const v = normEndpoint(value);
   if (!v) return false;
-  const m = normEndpoint(mine);
-  if (m && v === m) return false;          // 就是这一档自己的值，照用
+  const ownList = Array.isArray(mine) ? mine : (mine ? [mine] : []);
+  if (ownList.some((x) => normEndpoint(x) === v)) return false; // 就是这一档自己的值，照用
   return table.includes(v);
 }
 
@@ -247,24 +262,25 @@ export function resolveImageBackend(cfg: {
   const preset = presetName === 'doubao' || presetName === 'openai' || presetName === 'qwen'
     ? PRESETS[presetName]
     : null;
+  const typedApi = (cfg.imageApi ?? '').trim();
+  const typedModel = (cfg.imageModel ?? '').trim();
   /*
    * 千问的那一支（2026-11-23）。
    *
-   * 判据只有「预设」这一条，**不看地址后缀**：有人会把自定义地址填成
-   * `https://dashscope.aliyuncs.com/compatible-mode/v1`（百炼确实有 OpenAI
-   * 兼容模式），那种配置走的是 `/images/generations`，硬按千问的路径发反而是错的。
-   * 所以「走哪条协议」只由他选的那一档决定，不由地址长什么样去猜。
+   * 判据主路看「预设」，**不看域名**（避免把 `/compatible-mode/v1` 误判成千问）；
+   * 但若用户在「自定义」里明确粘了完整端点 `/services/aigc/multimodal-generation/generation`，
+   * 那是 DashScope 多模态生成专有路径，不可能是 OpenAI `/images/generations`，直接认作千问协议。
    */
-  const isQwen = presetName === 'qwen';
+  const isQwen = presetName === 'qwen'
+    || (presetName === 'custom' && /\/services\/aigc\/multimodal-generation\/generation\/?$/i.test(typedApi));
 
   /*
    * 手填优先 —— 但**别家预设写进去的旧值不算手填**（2026-11-23）。
    * 判据见 `isForeignPresetValue`：只认「和某个预设的常量一模一样」这一种，
    * 自己的中转地址一律保留。
    */
-  const typedApi = (cfg.imageApi ?? '').trim();
-  const typedModel = (cfg.imageModel ?? '').trim();
-  const staleApi = !!preset && isForeignPresetValue(typedApi, preset.api, PRESET_APIS);
+  const ownApis = presetName === 'qwen' ? QWEN_OFFICIAL_APIS : preset?.api;
+  const staleApi = !!preset && isForeignPresetValue(typedApi, ownApis, PRESET_APIS);
   const staleModel = !!preset && isForeignPresetValue(typedModel, preset.model, PRESET_MODELS);
 
   const api = (staleApi ? '' : typedApi) || preset?.api || '';

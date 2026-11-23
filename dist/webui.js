@@ -2258,10 +2258,18 @@ export default {
          * 只认「和某个预设的常量一模一样」—— 自己填的中转地址永远认不出，永远保留。
          */
         const normEndpoint = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+        const QWEN_OFFICIAL_APIS = [
+          'https://dashscope.aliyuncs.com',
+          'https://token-plan.maas.qianwenaiapi.com',
+          'https://dashscope-intl.aliyuncs.com',
+          'https://token-plan.ap-southeast-1.maas.aliyuncs.com',
+        ];
         const foreignPreset = (value, mine) => {
           const v = normEndpoint(value);
           if (!v) return null;
-          if (mine && normEndpoint(mine) === v) return null;
+          const ownList = Array.isArray(mine) ? mine : (mine ? [mine] : []);
+          if (ownList.some((m) => normEndpoint(m) === v)) return null;
+          if (QWEN_OFFICIAL_APIS.some((u) => normEndpoint(u) === v)) return 'qwen';
           const all = (data && data.presets) || {};
           for (const key of Object.keys(all)) {
             const p = all[key];
@@ -2531,7 +2539,8 @@ export default {
            */
           const snapDefault = (data.presets && data.presets[draft.preset]) || null;
           if (snapDefault) {
-            if (foreignPreset(draft.api.openai, snapDefault.api)) draft.api.openai = '';
+            const ownApis = draft.preset === 'qwen' ? QWEN_OFFICIAL_APIS : snapDefault.api;
+            if (foreignPreset(draft.api.openai, ownApis)) draft.api.openai = '';
             if (foreignPreset(draft.model, snapDefault.model)) draft.model = '';
           }
           draft.workflow = data.workflow || '';

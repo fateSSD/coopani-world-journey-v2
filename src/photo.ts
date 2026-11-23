@@ -2807,7 +2807,7 @@ export function photoTitle(
  * 后者会让画面横向拉长，构图整个变了。
  */
 export function nearestSize(errText: string, want: string): string | null {
-  const tail = /must be one of[：:]\s*([\s\S]+)/i.exec(errText)?.[1] ?? '';
+  const tail = /must be one of(?:[：:]|\s)+([\s\S]+)/i.exec(errText)?.[1] ?? '';
   const cands = [...tail.matchAll(/(\d{2,5})\s*[x×*]\s*(\d{2,5})/gi)].map((m) => `${m[1]}x${m[2]}`);
   if (!cands.length) return null;
 
@@ -2936,15 +2936,13 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
    * 参考图。只收 data URI —— 传路径或 URL 的服务端行为各不相同，
    * 而这里的图全来自本机文件，直传 base64 最不容易出岔子。
    *
-   * **千问这条暂不发参考图。** 它的图生图/编辑是另一套 `content` 结构
-   * （图片和文字平级塞进 messages），`qwen-image-edit` 那一页文档现在 404，
-   * 字段名只能靠猜 —— 猜错的代价是每张图都 400，或者更糟：被静默忽略，
-   * 用户以为「图鉴配好了」而画面里换了个人。宁可先只做文生图，
-   * 上层会把「参考图没生效」如实写进日志。
+   * 千问（`qwen-image-3.0-pro` 等生成/编辑一体模型）直接在 `input.messages[0].content`
+   * 数组里并列传 `{"image": dataUri}`（最多 3 张）与 `{"text": prompt}`。
+   * 若遇到不支持图生图的老模型报 400，下面的重试阶梯会自动去掉 `image` 重发并标记 `refsDropped`。
    */
   const refs = (req.refs ?? []).filter((u) => typeof u === 'string' && u.startsWith('data:image/'));
-  let withRefs = refs.length > 0 && !isQwen;
-  if (withRefs) body.image = refs;
+  let withRefs = refs.length > 0;
+  if (withRefs && !isQwen) body.image = refs;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (req.key.trim()) headers.authorization = `Bearer ${req.key.trim()}`;
   const timeout = req.timeoutMs ?? PHOTO_TIMEOUT_MS;
@@ -2986,9 +2984,12 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
     if (isQwen) {
       const parameters: Record<string, unknown> = {};
       if (withQwenSize) parameters.size = sizeValue.replace(/[×xX]/g, '*');
+      const content: Record<string, unknown>[] = withRefs
+        ? [...refs.slice(0, 3).map((u) => ({ image: u })), { text: req.prompt }]
+        : [{ text: req.prompt }];
       const payload: Record<string, unknown> = {
         model: req.model?.trim() || QWEN_MODEL,
-        input: { messages: [{ role: 'user', content: [{ text: req.prompt }] }] },
+        input: { messages: [{ role: 'user', content }] },
       };
       /* 空对象也发出去会让一部分网关报参数错，没参数就整段不带。 */
       if (Object.keys(parameters).length) payload.parameters = parameters;
@@ -3015,14 +3016,24 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
       const before = `${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}|${withRefs}|${withQwenSize}`;
       if (isQwen) {
         /*
-         * 千问这条只有一个可降级项：尺寸。
-         *
-         * `parameters` 里的 `response_format` / `n` / `watermark` 都有默认值，
-         * 不发也不会 400；参考图本来就没发。所以没有阶梯可退 ——
-         * 尺寸被拒（总像素必须落在 512×512 – 2048×2048）就整段不带，
-         * 让模型按提示词自己选分辨率。**留着一个会被拒的尺寸反复重试没有意义。**
+         * 千问可降级两项：尺寸与参考图。
+         * - 若报固定枚举 `must be one of`，优先按宽高比挑最近枚举保住横竖构图；
+         * - 否则整段不带 `parameters.size`，退回模型推荐分辨率；
+         * - 若遇到纯文生图老模型（如不支持 `image`），摘掉参考图重发并记 `refsDropped`。
          */
-        if (withQwenSize && /size|尺寸|分辨率|像素|resolution/i.test(peek)) withQwenSize = false;
+        if (withQwenSize && /must be one of/i.test(peek)) {
+          const alt = nearestSize(peek, sizeValue);
+          if (alt) sizeValue = alt;
+          else withQwenSize = false;
+        } else if (withQwenSize && /size|尺寸|分辨率|像素|resolution/i.test(peek)) {
+          withQwenSize = false;
+        } else if (
+          withRefs
+          && /image|refer|multimodal|编辑|图片|参考/i.test(peek)
+          && /(too many|invalid|unsupported|not support|exceed|maximum|超出|不支持|无效)/i.test(peek)
+        ) {
+          withRefs = false;
+        }
       } else if (/image_size/i.test(peek) && sizeField !== 'image_size') {
         // 硅基流动、阿里百炼那一支：只认 image_size，传 size 直接拒
         sizeField = 'image_size';

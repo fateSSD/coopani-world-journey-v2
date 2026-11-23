@@ -240,3 +240,41 @@ test('自定义档不做这个判断 —— 没有预设可回，旧值就是他
   });
   assert.equal(b.api, 'https://ark.cn-beijing.volces.com/api/v3');
 });
+
+test('千问其余官方域名（Token Plan / 国际站）切档会拦，自用保留', () => {
+  const keep = resolveImageBackend({
+    imageProtocol: 'openai',
+    imagePreset: 'qwen',
+    imageApi: 'https://token-plan.maas.qianwenaiapi.com',
+  });
+  assert.equal(keep.api, 'https://token-plan.maas.qianwenaiapi.com');
+  assert.equal(keep.note.includes('别家'), false);
+
+  for (const api of [
+    'https://token-plan.maas.qianwenaiapi.com',
+    'https://dashscope-intl.aliyuncs.com',
+    'https://token-plan.ap-southeast-1.maas.aliyuncs.com',
+  ]) {
+    const sw = resolveImageBackend({ imageProtocol: 'openai', imagePreset: 'doubao', imageApi: api });
+    assert.equal(sw.api, 'https://ark.cn-beijing.volces.com/api/v3', `${api} 切回豆包没被拦住`);
+    assert.match(sw.note, /别家/);
+  }
+});
+
+test('custom 档粘入千问完整生成路径自动认成 qwen 协议，兼容路径保持 openai', () => {
+  const q = resolveImageBackend({
+    imageProtocol: 'openai',
+    imagePreset: 'custom',
+    imageApi: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+    imageModel: 'qwen-image-3.0-pro',
+  });
+  assert.equal(q.protocol, 'qwen');
+
+  const c = resolveImageBackend({
+    imageProtocol: 'openai',
+    imagePreset: 'custom',
+    imageApi: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    imageModel: 'qwen-image-3.0-pro',
+  });
+  assert.equal(c.protocol, 'openai');
+});

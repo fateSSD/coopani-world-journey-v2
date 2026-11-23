@@ -234,6 +234,9 @@ test('refsAllowedBackend：只放行方舟系，别家一律不发图', () => {
 
     const silicon = makeWorld(dir, { imagePreset: 'custom' });
     assert.equal(silicon.refsAllowedBackend({ api: 'https://api.siliconflow.cn/v1', model: 'Kwai-Kolors/Kolors' }), false);
+
+    const qwen = makeWorld(dir, { imagePreset: 'qwen' });
+    assert.equal(qwen.refsAllowedBackend({ api: 'https://dashscope.aliyuncs.com', model: 'qwen-image-3.0-pro', protocol: 'qwen' }), true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

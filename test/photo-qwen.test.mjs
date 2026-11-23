@@ -184,13 +184,40 @@ test('404 要说清地址该填到哪儿 —— 只说 not found 等于没说', 
   } finally { restore(); }
 });
 
-test('千问这条暂不发参考图，但要如实标记 refsDropped', async () => {
-  /*
-   * 千问的图生图是另一套 content 结构，字段名没验证过 —— 发过去要么 400，
-   * 要么被静默忽略（用户以为图鉴生效了，画面里却换了个人）。所以先不发，
-   * 但必须把「没生效」告诉上层，不能装作发过了。
-   */
+test('千问支持参考图：最多 3 张拼进 content，放在 text 之前', async () => {
   const { calls, restore } = fakeFetch(jsonThenPng());
+  try {
+    const out = await shootPhoto({
+      api: 'https://dashscope.aliyuncs.com',
+      protocol: 'qwen',
+      key: 'k',
+      prompt: 'p',
+      refs: [PNG_DATA_URI, PNG_DATA_URI, PNG_DATA_URI, PNG_DATA_URI],
+    });
+    const content = calls[0].body.input.messages[0].content;
+    assert.equal(content.length, 4, '最多 3 张参考图 + 1 条 text');
+    assert.equal(content[0].image, PNG_DATA_URI);
+    assert.equal(content[2].image, PNG_DATA_URI);
+    assert.deepEqual(content[3], { text: 'p' });
+    assert.equal('image' in calls[0].body, false, '顶层的 image 字段不是千问的写法');
+    assert.equal(Boolean(out.refsDropped), false);
+  } finally { restore(); }
+});
+
+test('千问老模型拒收参考图（400 含 image）：自动摘除参考图降级重试并标 refsDropped', async () => {
+  let n = 0;
+  const { calls, restore } = fakeFetch(() => {
+    n += 1;
+    if (n === 1) {
+      return new Response(JSON.stringify({ code: 'InvalidParameter', message: 'image input not supported' }), {
+        status: 400, headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (n === 2) {
+      return new Response(JSON.stringify(okPayload()), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(Buffer.from(PNG_B64, 'base64'), { status: 200, headers: { 'content-type': 'image/png' } });
+  });
   try {
     const out = await shootPhoto({
       api: 'https://dashscope.aliyuncs.com',
@@ -199,10 +226,36 @@ test('千问这条暂不发参考图，但要如实标记 refsDropped', async ()
       prompt: 'p',
       refs: [PNG_DATA_URI],
     });
-    const body = calls[0].body;
-    const content = body.input.messages[0].content;
-    assert.equal(content.length, 1, '参考图不该出现在 content 里');
-    assert.equal('image' in body, false, '顶层的 image 字段不是千问的写法');
+    assert.equal(calls[0].body.input.messages[0].content.length, 2);
+    assert.deepEqual(calls[1].body.input.messages[0].content, [{ text: 'p' }]);
     assert.equal(out.refsDropped, true);
+  } finally { restore(); }
+});
+
+test('千问 400 报 must be one of 尺寸错：优先按相近比例挑枚举重试，再退回不带 size', async () => {
+  let n = 0;
+  const { calls, restore } = fakeFetch(() => {
+    n += 1;
+    if (n === 1) {
+      return new Response(JSON.stringify({
+        code: 'InvalidParameter',
+        message: 'size must be one of [1664*928, 1328*1328, 928*1664]',
+      }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    if (n === 2) {
+      return new Response(JSON.stringify(okPayload()), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(Buffer.from(PNG_B64, 'base64'), { status: 200, headers: { 'content-type': 'image/png' } });
+  });
+  try {
+    await shootPhoto({
+      api: 'https://dashscope.aliyuncs.com',
+      protocol: 'qwen',
+      key: 'k',
+      prompt: 'p',
+      size: '1280x720',
+    });
+    assert.equal(calls[0].body.parameters.size, '1280*720');
+    assert.equal(calls[1].body.parameters.size, '1664*928', '横屏应优先挑 1664*928 而不是直接删 size');
   } finally { restore(); }
 });

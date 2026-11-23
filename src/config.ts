@@ -292,7 +292,7 @@ export interface JourneyConfigSection extends WorldSection {
    * 会被读出来、压到长边 1600、base64 塞进生图请求。**图会离开这台机器**，
    * 发给云端服务商并过它的内容审核 —— 所以必须由人主动打开，不能默认替人决定。
    *
-   * 只有火山方舟系（`imagePreset: 'doubao'`，或域名/模型名指向方舟）才真的发图；
+   * 火山方舟系（`imagePreset: 'doubao'`，或域名/模型名指向方舟）与阿里千问（`imagePreset: 'qwen'` / `qwen` 协议）会真的发图；
    * 其余服务商发了会被拒，代码会跳过并写日志。本地 ComfyUI 不走这条（它有自己的 workflow）。
    */
   imageUseRefs: boolean;
