@@ -7,7 +7,7 @@
   - `src/meet.ts`、`src/world-social.ts`：`findNeighbors()` 支持 `windowMs`；`matesHere()` 传 24 小时 / 20 条，命中约定同伴即写入 `pledge.meetSeenAt` 并落盘 —— 判定通过之后，面板与文案立刻同步，不会出现「八点已经一起出发、日记还说人没露面」。
   - `src/state.ts`：`Pledge` 新增 `meetSeenAt`（同城名单里确认看见约定同伴的时刻）。
   - `src/world-social.ts`：`noteNeighbors()` 在见面城撞见约定同伴时当场记 `meetSeenAt`，并在白天重开当日决策（不用干等到第二天八点）；`matesHere()` 判断没命中时打一条 `info` 日志，列出同城实际查到的名单，方便区分「没人」与「名字对不上」。
-  - `src/world-social.ts`、`src/world-purse.ts`：`mateLine` / `pledgeText` 改为三档写实 —— 已确认碰头 / 最近看见过对方落脚 / **暂时还没见着人**。不再断言「人还没露面」（24 小时窗口下这句话不成立），也修掉了到店不满一天时「你人还没露面」的残句。
+  - `src/world-social.ts`、`src/world-purse.ts`：`mateLine` / `pledgeText` 改为**两档**写实 —— 「等到了对方的消息（最近在这座城落过脚）」/ **「暂时还没见着人」**；`meetSeenAt`（24 小时判定通过）与 `plan.neighbors`（2 小时快照命中）共用前一档，都只算「看见过」。不再断言「人还没露面」（24 小时窗口下这句话不成立），也修掉了到店不满一天时「你人还没露面」的残句。
 - **README**：同城名单口径写清「日常列表看近 2 小时，赴约碰头看近 24 小时」。
 - **⚠️ 部署顺序**：本版 `matesHere()` 依赖服务端的 `window` 参数。**旧服务端会静默忽略它并退回 2 小时窗口**，新客户端装上也等于没修。请**先部署 `cloud/sight-cf`（向后兼容，旧客户端不受影响），再发客户端**。
 - **测试**：`test/sight-cf.test.mjs` 补窗口默认值 / 24 小时可见 8 小时前记录 / 48 小时钳位 / 按 `uid` 去重四条；`test/meet-city.test.mjs` 补六条，其中「2 小时排表看不见 → 八点 24 小时命中即写 `meetSeenAt` 并出发」用的是**按 `window` 参数分流的假服务端**，不再是「无条件返回名单」那种恒真桩。
