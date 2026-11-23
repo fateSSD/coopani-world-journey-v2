@@ -40,9 +40,9 @@ function fakeHost(events) {
   };
 }
 
-async function boot(trip, nowISO) {
-  const dataDir = mkdtempSync(join(tmpdir(), 'jr-meet-'));
-  new StateStore(dataDir).save({ ...initialState('lanzhou'), ...trip });
+async function boot(trip, nowISO, existingDir = null) {
+  const dataDir = existingDir ?? mkdtempSync(join(tmpdir(), 'jr-meet-'));
+  if (!existingDir) new StateStore(dataDir).save({ ...initialState('lanzhou'), ...trip });
   const events = [];
   const origFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error('offline'); };
@@ -426,4 +426,148 @@ test('约满那天要单独说一句「散了」，不能只在出发句里带�
     assert.match(String(part.text), /大肥鱼/, `没说跟谁散的：${part.text}`);
     assert.match(String(part.text), /2 天/, `没说待了几天：${part.text}`);
   } finally { restore(); }
+});
+
+/* ---------------- 2026-11-23 zzy1053：零点见过人、早八点却已下线 & 文案自打脸 ---------------- */
+
+test('mateLine 不满一天说「你已经到了，对方还没露面」；看见对方就不再自相矛盾', async () => {
+  const now = new Date('2026-11-23T00:05:00Z');
+  const { world, restore } = await boot({ phase: 'staying', hereId: 'shenyang' }, now.toISOString());
+  try {
+    const p = {
+      cityId: 'changchun',
+      days: 2,
+      withPet: '潮信',
+      withPets: ['潮信'],
+      inviteId: 'abcdef0123456789',
+      acceptedAt: '2026-11-22T12:00:00Z',
+      arrivedAt: null,
+      meetCityId: 'shenyang',
+      meetArrivedAt: '2026-11-22T16:00:00Z', // 刚到 8 小时，不足 1 天
+    };
+    const unseen = world.mateLine(p, 'shenyang', 0, now);
+    assert.doesNotMatch(unseen, /你人还没露面/, `出现语病：${unseen}`);
+    assert.match(unseen, /你已经到了，对方还没露面/, `不满一天文案不对：${unseen}`);
+
+    // 排表已经刷出同城名单里有「潮信」
+    world.plan = { neighbors: [{ pet: '潮信', doing: '逛中街' }] };
+    const seenLine = world.mateLine(p, 'shenyang', 0, now);
+    assert.doesNotMatch(seenLine, /还没露面/, `同城名单都有对方了还在说没露面：${seenLine}`);
+    assert.match(seenLine, /等到了潮信/, `未体现已经等到同伴：${seenLine}`);
+  } finally { restore(); }
+});
+
+test('00:00 排表看见同伴并记下 meetSeenAt：早上 8 点对方关机离线了照样一起出发', async () => {
+  // 00:05 跨天（北京时间 11-23 00:05 = UTC 11-22 16:05），服务端同城名单有「潮信」
+  const midnight = '2026-11-22T16:05:00Z';
+  const { world, events, dir, restore } = await boot({
+    phase: 'staying',
+    hereId: 'shenyang',
+    tripStartedAt: '2026-11-20T00:00:00Z',
+    stayStartedAt: '2026-11-21T16:00:00Z',
+    stayDateKey: '2026-11-22',
+    pledge: {
+      cityId: 'changchun',
+      days: 2,
+      withPet: '潮信',
+      withPets: ['潮信'],
+      inviteId: 'abcdef0123456789',
+      acceptedAt: '2026-11-21T00:00:00Z',
+      arrivedAt: null,
+      meetCityId: 'shenyang',
+      meetArrivedAt: '2026-11-21T16:00:00Z',
+    },
+  }, midnight);
+  try {
+    world.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    globalThis.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/sight/status')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, pool: 5, invites: [], taken: 0 }) };
+      }
+      if (u.includes('/sight?')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, list: [{ pet: '潮信', doing: '逛中街' }], pool: 5, here: 2 }) };
+      }
+      if (u.includes('/sight/invite')) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, list: [] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    };
+    await world.tick();
+    assert.ok(world.st.pledge?.meetSeenAt, '00:00 排表看到同伴后应立刻写入 meetSeenAt');
+    const dayEv = events.find((e) => e.type === 'journey.day');
+    assert.ok(dayEv, '跨天应推 journey.day');
+    assert.doesNotMatch(String(dayEv.text), /还没露面/, `同一段话里不许既说没露面又说潮信也在这儿：\n${dayEv.text}`);
+    assert.match(String(dayEv.text), /等到了潮信/, `日记应说明已经等到潮信：\n${dayEv.text}`);
+  } finally { restore(); }
+
+  // 早上 08:05（UTC 11-23 00:05）重启再开且服务端返回空名单（对方客户端关机），照样带着走
+  const morning = '2026-11-23T00:05:00Z';
+  const { world: w2, restore: restore2 } = await boot({}, morning, dir);
+  try {
+    assert.ok(w2.st.pledge?.meetSeenAt, '重启加载后 meetSeenAt 应持久化保留');
+    w2.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, list: [] }) });
+    await w2.tick();
+    assert.equal(w2.st.phase, 'traveling', '早上 8 点即使对方已离线，也应带着同伴出发去长春');
+    assert.equal(w2.st.leg?.toId, 'changchun');
+  } finally { restore2(); }
+});
+
+test('白天探针刷出同伴立刻重开决策发车；matesHere 传 24h 窗口且未命中记录日志', async () => {
+  // 1) 上午 10:05（UTC 02:05），decidedOn 今天已判过干等，probeNearby 刷到潮信后重开决策
+  const { world, restore } = await boot({
+    phase: 'staying',
+    hereId: 'shenyang',
+    tripStartedAt: '2026-11-20T00:00:00Z',
+    stayStartedAt: '2026-11-22T00:00:00Z',
+    stayDateKey: '2026-11-23',
+    decidedOn: '2026-11-23',
+    pledge: {
+      cityId: 'changchun',
+      days: 2,
+      withPet: '潮信',
+      withPets: ['潮信'],
+      inviteId: 'abcdef0123456789',
+      acceptedAt: '2026-11-21T00:00:00Z',
+      arrivedAt: null,
+      meetCityId: 'shenyang',
+      meetArrivedAt: '2026-11-22T00:00:00Z',
+    },
+  }, '2026-11-23T02:05:00Z');
+  try {
+    world.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    world.noteNeighbors('shenyang', '2026-11-23', { list: [{ pet: '潮信', doing: '喝茶' }], here: 2 }, Date.parse('2026-11-23T02:05:00Z'));
+    assert.ok(world.st.pledge?.meetSeenAt, 'noteNeighbors 命中同伴应记录 meetSeenAt');
+    assert.equal(world.st.decidedOn, null, '白天看见同伴应重开今日决策');
+    await world.tick();
+    assert.equal(world.st.phase, 'traveling', '重开决策后下一拍应立即出发');
+    assert.equal(world.st.leg?.toId, 'changchun');
+  } finally { restore(); }
+
+  // 2) matesHere 传 window=86400000 & limit=20，且未命中时打 info 日志列出实际名单
+  const { world: wLog, restore: restoreLog } = await boot({ phase: 'staying', hereId: 'shenyang' }, '2026-11-23T00:05:00Z');
+  try {
+    wLog.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    const seenUrls = [];
+    const infos = [];
+    wLog.log = { trace() {}, debug() {}, info(m) { infos.push(String(m)); }, warn() {}, error() {} };
+    globalThis.fetch = async (url) => {
+      seenUrls.push(String(url));
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [{ pet: '路人甲', doing: '逛街' }] }) };
+    };
+    const r = await wLog.matesHere(
+      meetPledge({ withPet: '潮信', withPets: ['潮信'], meetCityId: 'shenyang', meetArrivedAt: '2026-11-22T00:00:00Z' }),
+      cityById('shenyang'),
+      new Date('2026-11-23T00:05:00Z'),
+    );
+    assert.equal(r.ok, true);
+    assert.equal(r.names.length, 0);
+    assert.equal(seenUrls.length, 4);
+    for (const u of seenUrls) {
+      assert.match(u, /window=86400000/, `matesHere 未传 24h window：${u}`);
+      assert.match(u, /limit=20/, `matesHere 未放宽 limit：${u}`);
+    }
+    assert.ok(infos.some((m) => m.includes('路人甲') && m.includes('潮信')), `未记录实际查到的同城名单：${infos.join('|')}`);
+  } finally { restoreLog(); }
 });

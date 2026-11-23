@@ -417,6 +417,8 @@ export async function findNeighbors(
    * 那边现在四个时段全查再合并，见 `matesHere` 的注释。
    */
   limit = MEET_MAX - 1,
+  /** 可选回溯窗口（毫秒）；未传则走服务端默认（2 小时）。见面判定传 24 小时。 */
+  windowMs?: number,
 ): Promise<NeighborBoard> {
   const url = clean(opt.url);
   if (!url || !clean(opt.uid)) return { list: [], pool: 0, here: 0, ok: false };
@@ -433,6 +435,9 @@ export async function findNeighbors(
     slot,
     exclude: clean(opt.uid),
     limit: String(limit),
+    ...(windowMs !== undefined && Number.isFinite(windowMs) && windowMs > 0
+      ? { window: String(Math.round(windowMs)) }
+      : {}),
   });
   try {
     const res = await fetch(`${endpointOf(url)}?${q}`, {

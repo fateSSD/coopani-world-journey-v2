@@ -1534,6 +1534,11 @@ export const purseMethods: Record<string, any> = {
      */
     if (p.meetCityId && !p.arrivedAt) {
       if (p.meetArrivedAt) {
+        const want = new Set(namesIn(p).map((x) => x.trim()));
+        const seenInPlan = (this.plan?.neighbors ?? []).some((n: { pet: string }) => want.has(n.pet.trim()));
+        if (p.meetSeenAt || seenInPlan) {
+          return `跟${this.whoOfPledge(p)}约在${meetName}见 —— 已经在这儿等到了，准备一起去${name}，在那儿待 ${p.days} 天。`;
+        }
         const waited = pledgeWaitDays(now, p);
         return `跟${this.whoOfPledge(p)}约在${meetName}见，你已经到了`
           // 别写「等了两三天（第 1 天）」——两个数放在一起会自相矛盾。

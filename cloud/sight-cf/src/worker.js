@@ -64,6 +64,7 @@ const SLOTS = new Set(['morning', 'afternoon', 'evening', 'night']);
 import petsPage from './pets-page.js';
 
 const MAX = 3;
+const MAX_NEIGHBOR_LIMIT = 20;
 
 /** 一个宠物一天的写入上限。正常人一天 4–8 次，50 是给反复调试留的余量。 */
 const UID_PER_DAY = 50;
@@ -325,6 +326,7 @@ const okDate = (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
  * `slot` 留着：4 个值撞得上，而且它担着语义（凌晨三点不该说「她也在这一带」）。
  */
 const RECENT_NEIGHBOR_MS = 2 * 3600_000;
+const MAX_NEIGHBOR_WINDOW_MS = 24 * 3600_000;
 const clean = (v, max) => String(v == null ? '' : v)
   .replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
 
@@ -2731,6 +2733,14 @@ export default {
         const city = clean(url.searchParams.get('city'), 40);
         const slot = clean(url.searchParams.get('slot'), 12);
         const exclude = clean(url.searchParams.get('exclude'), 64);
+        const rawWin = Number(url.searchParams.get('window'));
+        const windowMs = Number.isFinite(rawWin) && rawWin > 0
+          ? Math.min(MAX_NEIGHBOR_WINDOW_MS, Math.max(60_000, Math.round(rawWin)))
+          : RECENT_NEIGHBOR_MS;
+        const rawLim = Number(url.searchParams.get('limit'));
+        const limit = Number.isFinite(rawLim) && rawLim > 0
+          ? Math.min(MAX_NEIGHBOR_LIMIT, Math.max(1, Math.floor(rawLim)))
+          : MAX;
         /*
          * `date` 不再参与筛选（2026-11-10），参数收到也不报错 ——
          * 旧客户端还在传，多一个没用的参数不该让它 400。
@@ -2739,17 +2749,20 @@ export default {
           return reply(400, { ok: false, error: 'bad query' });
         }
 
-        const since = new Date(Date.now() - RECENT_NEIGHBOR_MS).toISOString();
+        const since = new Date(Date.now() - windowMs).toISOString();
+        // 按 uid 去重并取该 uid 在窗口内的最新一条，防止 24h 窗口下高倍速鱼用多个 date_key 占满名额。
         const stmt = exclude
           ? db.prepare(
-            `SELECT pet, doing FROM presence
+            `SELECT pet, doing, MAX(at) AS lat FROM presence
              WHERE city = ?1 AND slot = ?2 AND at >= ?3 AND uid <> ?4
-             ORDER BY at DESC LIMIT ${MAX}`,
+             GROUP BY uid
+             ORDER BY lat DESC LIMIT ${limit}`,
           ).bind(city, slot, since, exclude)
           : db.prepare(
-            `SELECT pet, doing FROM presence
+            `SELECT pet, doing, MAX(at) AS lat FROM presence
              WHERE city = ?1 AND slot = ?2 AND at >= ?3
-             ORDER BY at DESC LIMIT ${MAX}`,
+             GROUP BY uid
+             ORDER BY lat DESC LIMIT ${limit}`,
           ).bind(city, slot, since);
 
         /*

@@ -351,6 +351,7 @@ export const socialMethods: Record<string, any> = {
       cityId: string; days: number; withPet: string;
       withPets?: readonly string[]; arrivedAt: string | null;
       meetCityId?: string; meetArrivedAt?: string | null; pausedWaitMs?: number;
+      meetSeenAt?: string | null;
     } | null,
     hereId: string,
     stayDays: number,
@@ -365,9 +366,14 @@ export const socialMethods: Record<string, any> = {
      * 这是这个系统里最常见的一类缺陷：状态在，但她看不见。
      */
     if (p.meetCityId && !p.arrivedAt && p.meetArrivedAt && p.meetCityId === hereId) {
+      const want = new Set(namesIn(p).map((x) => x.trim()));
+      const seenInPlan = (this.plan?.neighbors ?? []).some((n: { pet: string }) => want.has(n.pet.trim()));
+      if (p.meetSeenAt || seenInPlan) {
+        return `在这儿等到了${this.whoOfPledge(p)}，准备一起去${this.cityName(p.cityId)}，在那儿待 ${p.days} 天。`;
+      }
       const met = now ? pledgeWaitDays(now, p) : Math.max(0, stayDays);
       return `在这儿不是玩：跟${this.whoOfPledge(p)}约在${this.cityName(p.meetCityId)}碰头，`
-        + `你${met > 0 ? `已经等了 ${met} 天，` : ''}人还没露面。`
+        + `${met > 0 ? `你已经等了 ${met} 天，` : '你已经到了，'}对方还没露面。`
         + `等见了面再一起去${this.cityName(p.cityId)}，在那儿待 ${p.days} 天。`
         + '等着的时候也可以在城里转转，但别走远 —— 人家随时会到。';
     }
@@ -609,6 +615,21 @@ export const socialMethods: Record<string, any> = {
     this.lastMeetOk = true;
     this.meetRetryStep = 0;
     if (this.plan) this.plan = { ...this.plan, neighbors: [...board.list] };
+    /*
+     * 排表或每小时探针在见面城同城名单里直接撞见约定同伴时，当场记下 `meetSeenAt` ——
+     * 否则半夜 00:00 看见过人、等到早 8 点对方客户端关机超过 2h 就会错失碰头。
+     */
+    const now = this.worldNow();
+    const p = this.activePledge(now);
+    if (p && p.meetCityId && !p.arrivedAt && p.meetArrivedAt && p.meetCityId === cityId && !p.meetSeenAt) {
+      const want = new Set(namesIn(p).map((x) => x.trim()));
+      if (board.list.some((x) => want.has(x.pet.trim()))) {
+        this.st = { ...this.st, pledge: { ...p, meetSeenAt: now.toISOString() } };
+        this.persist();
+        this.log?.info(`在${this.cityName(cityId)}的同城名单里看见${this.whoOfPledge(p)}了，准备一起动身。`);
+        this.reopenTodayDecision?.(now);
+      }
+    }
   },
 
 
@@ -1490,7 +1511,7 @@ export const socialMethods: Record<string, any> = {
      */
     const boards = await Promise.all(
       (['morning', 'afternoon', 'evening', 'night'] as const)
-        .map((s) => findNeighbors(meet, here.id, s, 3).catch(() => null)),
+        .map((s) => findNeighbors(meet, here.id, s, 20, 24 * 3_600_000).catch(() => null)),
     );
     const have = new Set<string>();
     for (const b of boards) {
@@ -1502,7 +1523,16 @@ export const socialMethods: Record<string, any> = {
      */
     const ok = boards.some((b) => b?.ok);
     this.lastMeetOk = ok;
-    return { names: names.filter((n) => have.has(n)), ok };
+    const matched = names.filter((n) => have.has(n));
+    if (!matched.length && ok) {
+      const sample = [...have].slice(0, 8).join('、');
+      this.log?.info(
+        have.size > 0
+          ? `在${here.name}查过 24 小时同城名单（${have.size} 人：${sample}${have.size > 8 ? '…' : ''}），还没见着${names.join('、')}。`
+          : `在${here.name}查过 24 小时同城名单，这会儿还没见着别人（在等${names.join('、')}）。`,
+      );
+    }
+    return { names: matched, ok };
   },
 
 

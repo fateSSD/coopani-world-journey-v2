@@ -155,6 +155,8 @@ export interface Pledge {
    * 人可能在 M 等三天，那三天里 `arrivedAt` 还是 null。
    */
   readonly meetArrivedAt?: string | null;
+  /** 在见面城里已经于同城名单看见约定同伴的时刻（排表/探针命中即记下，防早八点对方离线错失）。 */
+  readonly meetSeenAt?: string | null;
   /** 赶路阶段累计扣除的大段停机离线世界毫秒数（单次停机 > 12 小时）。 */
   readonly pausedTravelMs?: number;
   /** 见面城等伴阶段累计扣除的大段停机离线世界毫秒数（单次停机 > 12 小时）。 */
@@ -832,6 +834,9 @@ export class StateStore {
         const meetArrived = typeof o.meetArrivedAt === 'string' && Number.isFinite(Date.parse(o.meetArrivedAt))
           ? o.meetArrivedAt
           : null;
+        const meetSeenAt = typeof o.meetSeenAt === 'string' && Number.isFinite(Date.parse(o.meetSeenAt))
+          ? o.meetSeenAt
+          : null;
         // 认不出的走法当「没点名」—— 动身时她自己挑，比卡在一个已删掉的 modeId 上好。
         const modeId = typeof o.modeId === 'string' && modeById(o.modeId as ModeId) ? o.modeId as ModeId : undefined;
         const pausedTravelMs = Number.isFinite(Number(o.pausedTravelMs)) && Number(o.pausedTravelMs) > 0
@@ -852,7 +857,7 @@ export class StateStore {
           inviteId: typeof o.inviteId === 'string' ? o.inviteId.slice(0, 32) : '',
           acceptedAt: o.acceptedAt,
           arrivedAt: arrived,
-          ...(meetCityId ? { meetCityId, meetArrivedAt: meetArrived } : {}),
+          ...(meetCityId ? { meetCityId, meetArrivedAt: meetArrived, ...(meetSeenAt ? { meetSeenAt } : {}) } : {}),
           ...(modeId ? { modeId } : {}),
           ...(pausedTravelMs ? { pausedTravelMs } : {}),
           ...(pausedWaitMs ? { pausedWaitMs } : {}),

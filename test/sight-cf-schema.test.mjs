@@ -162,11 +162,11 @@ test('邻居：同城 + 同时段 + 近期活跃，不再按 date_key 筛', () =
   assert.match(WORKER, /const RECENT_NEIGHBOR_MS\s*=/, 'RECENT_NEIGHBOR_MS 没了');
 
   /*
-   * 只认「查邻居」那几条语句的形状：`SELECT pet, doing FROM presence ... ORDER BY at DESC`。
+   * 只认「查邻居」那几条语句的形状：`SELECT pet, doing ... FROM presence ... GROUP BY uid ORDER BY ... DESC`。
    * 按 `method === 'GET'` 切块不牢 —— 文件里不止一个 GET 分支，切到别处就会误报。
    */
   const wheres = [...WORKER.matchAll(
-    /SELECT pet, doing FROM presence\s+WHERE([\s\S]{0,200}?)ORDER BY at DESC/g,
+    /SELECT pet, doing(?:, MAX\(at\) AS lat)? FROM presence\s+WHERE([\s\S]{0,220}?)ORDER BY (?:lat|at) DESC/g,
   )].map((m) => m[1]);
   assert.ok(wheres.length >= 1, '找不到邻居查询');
 
@@ -177,6 +177,7 @@ test('邻居：同城 + 同时段 + 近期活跃，不再按 date_key 筛', () =
       + '「这一带还有谁」会永远返回空（2026-11-10 实测就是这个现象）',
     );
     assert.match(w, /at >= \?\d/, `邻居查询没按 at 划活跃窗口：${w.trim()}`);
+    assert.match(w, /GROUP BY uid/, `邻居查询必须按 uid 去重：${w.trim()}`);
   }
 });
 

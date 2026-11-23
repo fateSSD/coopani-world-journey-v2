@@ -1369,3 +1369,56 @@ test('换了 IP 不算内容变化 —— 移动网络天天换', async () => {
   const second = db.query('SELECT at FROM presence')[0].at;
   assert.equal(second, first, '只是换了个 IP 就重写整行，条件写入等于没做');
 });
+
+test('window 参数：默认 2h 不变；传 24h 可见 8h 前上报的伴，超 24h 钳位', async () => {
+  const db = makeDB();
+  const env = { DB: db };
+  assert.equal((await worker.fetch(post(rec({ uid: UID_B, pet: '潮信', city: 'shenyang', slot: 'night', doing: '逛中街' })), env)).status, 200);
+
+  // 拨回 8 小时前（00:00 上报 → 08:00 查询）
+  const at8h = new Date(Date.now() - 8 * 3600_000).toISOString();
+  db.exec(`UPDATE presence SET at = '${at8h}' WHERE uid = '${UID_B}'`);
+
+  const defBody = await (await worker.fetch(get('city=shenyang&slot=night'), env)).json();
+  assert.equal(defBody.list.length, 0, '默认 2h 窗口下 8 小时前记录不应返回');
+
+  const win24 = await (await worker.fetch(get(`city=shenyang&slot=night&window=${24 * 3600_000}&limit=20`), env)).json();
+  assert.equal(win24.list.length, 1, '传 24h 窗口时应看见 8 小时前上报的同伴');
+  assert.equal(win24.list[0].pet, '潮信');
+
+  // 拨回 25 小时前，就算传 48h 也要被钳死在 24h 上限内
+  const at25h = new Date(Date.now() - 25 * 3600_000).toISOString();
+  db.exec(`UPDATE presence SET at = '${at25h}' WHERE uid = '${UID_B}'`);
+  const win48 = await (await worker.fetch(get(`city=shenyang&slot=night&window=${48 * 3600_000}`), env)).json();
+  assert.equal(win48.list.length, 0, 'window 参数必须封顶 24 小时');
+});
+
+test('24h 窗口按 uid 去重：倍速鱼跨多个 date_key 不占满同城名额', async () => {
+  const db = makeDB();
+  const env = { DB: db };
+  // UID_A 开 24x 写了 4 个不同 date_key 的 night 行；UID_B 写 1 行
+  const dates = ['2026-11-20', '2026-11-21', '2026-11-22', '2026-11-23'];
+  for (let i = 0; i < dates.length; i += 1) {
+    const d = dates[i];
+    assert.equal((await worker.fetch(post(rec({
+      uid: UID_A, pet: '倍速鱼', city: 'shenyang', date: d, slot: 'night', doing: `第${d}天`,
+    })), env)).status, 200);
+    const ts = new Date(Date.now() - (5 - i) * 3600_000).toISOString();
+    db.exec(`UPDATE presence SET at = '${ts}' WHERE uid = '${UID_A}' AND date_key = '${d}'`);
+  }
+  assert.equal((await worker.fetch(post(rec({
+    uid: UID_B, pet: '潮信', city: 'shenyang', date: '2026-11-20', slot: 'night', doing: '等同伴',
+  })), env)).status, 200);
+
+  // 让倍速鱼的 4 行时间戳全部晚于潮信，看按 uid 去重后 limit=2 能否保留潮信
+  const tOld = new Date(Date.now() - 6 * 3600_000).toISOString();
+  db.exec(`UPDATE presence SET at = '${tOld}' WHERE uid = '${UID_B}'`);
+
+  const body = await (await worker.fetch(get(`city=shenyang&slot=night&window=${24 * 3600_000}&limit=2`), env)).json();
+  assert.deepEqual(
+    body.list.map((x) => x.pet).sort(),
+    ['倍速鱼', '潮信'],
+    `倍速鱼占了多个坑把潮信挤掉了：${JSON.stringify(body.list)}`,
+  );
+  assert.equal(body.list.find((x) => x.pet === '倍速鱼')?.doing, '第2026-11-23天', '按 uid 去重应保留最新那条 doing');
+});

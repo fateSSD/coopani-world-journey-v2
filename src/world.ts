@@ -2311,7 +2311,9 @@ export class JourneyWorld implements World {
          * 三天见不着人，算这趟没成，她自己接着走（并且说出为什么）。
          */
         if (pledge.meetCityId && !pledge.arrivedAt && pledge.meetArrivedAt) {
-          const mates = await this.matesHere(pledge, here, now);
+          const mates = pledge.meetSeenAt
+            ? { names: namesIn(pledge), ok: true }
+            : await this.matesHere(pledge, here, now);
           if (!mates.names.length) {
             /*
              * **查不成和没人要分开说**（2026-11-17，zzy1053 报的）。
@@ -2809,10 +2811,10 @@ export class JourneyWorld implements World {
     if (this.st.phase !== 'staying') return 'later';
     const here = this.cityOrNull(this.st.hereId);
     if (!here) return 'later';
-    /* 约定的下一站就是脚下这座城（或就在会合城等人）—— 本来就在，不用赶车。 */
+    /* 约定的下一站就是脚下这座城（或在见面城干等、尚未看见同伴）—— 本来就在，不用赶车。 */
     const pledge = this.activePledge(now);
     if (pledge && (this.pledgeStop(pledge) === here.id
-      || (pledge.meetCityId && !pledge.arrivedAt && pledge.meetArrivedAt && here.id === pledge.meetCityId))) {
+      || (pledge.meetCityId && !pledge.arrivedAt && pledge.meetArrivedAt && !pledge.meetSeenAt && here.id === pledge.meetCityId))) {
       return 'here';
     }
     const moment = localMoment(now, here.tz);
