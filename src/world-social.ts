@@ -178,6 +178,7 @@ export const socialMethods: Record<string, any> = {
         this.log?.info(`位置上报恢复（之前连续失败 ${this.reportFails} 次）`);
       }
       this.reportFails = 0;
+      this.reportWhy = '';
       /*
        * 记一笔「今天这座城市我报过到」。
        *

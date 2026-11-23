@@ -2190,8 +2190,6 @@ export class JourneyWorld implements World {
        * **今天这一天已经不在了，别补判。**（判据见 `tick()` 里的 `awayCrossedDecide`）
        *
        * 例外照旧：打工期间、以及有急约在身，宁可当天就动身也不把今天锁死。
-       * 日志只在**真的锁死**这一支打 —— 原来它在 `tick()` 里无条件打，
-       * 而这一拍之后未必走到这儿，于是「今天不补判」说过又说没做。
        */
       const lockToday = this.awayCrossedDecide && !this.st.work && !urgentPledge;
       this.st = {
@@ -2267,11 +2265,11 @@ export class JourneyWorld implements World {
     const canDecideHour = this.st.work ? true : moment.decimal < 21;
     /*
      * 上一拍名单**没查成**，今天这一趟判定已经还给下一次了（2026-11-23）。
-     * 冷却没到之前整段决策跳过 —— 巡检最快 3 秒一轮，四个时段一次就是四个请求，
-     * 不拦就是拿断连中的服务器当压测对象。换日自动重置。
+     * 冷却没到之前只跳过**发车决策分支** —— 绝不能在 stayTick 顶层 return，
+     * 否则整整 30 分钟内下面的 `syncPlanWithLife` 与 `advanceBeats` 都会被冻结。
      */
-    if (this.meetRetry.day === moment.dateKey && this.meetRetry.at > decideNowMs) return;
-    if (moment.decimal >= DECIDE_HOUR && canDecideHour && this.st.decidedOn !== moment.dateKey && !busyForDepart) {
+    const meetCooling = this.meetRetry.day === moment.dateKey && this.meetRetry.at > decideNowMs;
+    if (!meetCooling && moment.decimal >= DECIDE_HOUR && canDecideHour && this.st.decidedOn !== moment.dateKey && !busyForDepart) {
 
       this.st = { ...this.st, decidedOn: moment.dateKey };
       this.persist();

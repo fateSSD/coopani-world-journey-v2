@@ -713,10 +713,21 @@ test('碰面名单全查不成：把今天这次判定还回去、缓一下再�
     assert.equal(w.st.phase, 'staying');
     assert.equal(events.filter((e) => e.type === 'journey.depart').length, 0, '没查成不该发车');
 
-    // 冷却期内连走两拍：不许每拍都打四组请求
+    // 冷却期内连走两拍：不许每拍都打四组请求，但当天的排表与日常节拍必须照常推进（不得在 stayTick 顶层 return 卡死）
+    let meetReqs = 0;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/sight?')) meetReqs += 1;
+      throw new Error('ECONNREFUSED');
+    };
     await w.tick();
     await w.tick();
     assert.equal(w.st.decidedOn, null, '冷却没到就重判了 —— 断连的服务器会被打成压测对象');
+    assert.equal(meetReqs, 0, '冷却期内不应再向碰面接口发查询请求');
+    assert.ok(w.plan && w.plan.dateKey === '2026-11-23', '冷却期内应照常建出当天排表');
+    assert.ok(
+      events.some((e) => e.type === 'journey.beat'),
+      '冷却期内应照常推进当天日常节拍，不能被 stayTick 顶层 return 冻结 30 分钟',
+    );
 
     // 把冷却拨回 = 「30 分钟到了」。这次服务器好了，名单里有潮信。
     w.meetRetry.at = 0;
@@ -724,5 +735,45 @@ test('碰面名单全查不成：把今天这次判定还回去、缓一下再�
     await w.tick();
     assert.equal(w.st.phase, 'traveling', '重试成功却没动身 —— 修复等于没做');
     assert.equal(w.st.leg?.toId, 'changchun');
+  } finally { restore(); }
+});
+
+test('碰面名单重试耗尽（2次）后锁定当天不再无限重试', async () => {
+  const morning = '2026-11-23T00:05:00Z';
+  const { world: w, restore } = await boot({
+    phase: 'staying',
+    hereId: 'shenyang',
+    tripStartedAt: '2026-11-20T00:00:00Z',
+    stayStartedAt: '2026-11-21T16:00:00Z',
+    stayDateKey: '2026-11-23',
+    decidedOn: null,
+    pledge: {
+      cityId: 'changchun',
+      days: 2,
+      withPet: '潮信',
+      withPets: ['潮信'],
+      inviteId: 'abcdef0123456789',
+      acceptedAt: '2026-11-21T00:00:00Z',
+      arrivedAt: null,
+      meetCityId: 'shenyang',
+      meetArrivedAt: '2026-11-21T16:00:00Z',
+    },
+  }, morning);
+  try {
+    w.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
+
+    await w.tick(); // 1次失败 → 还剩 1 次，decidedOn 置回 null
+    assert.equal(w.st.decidedOn, null);
+    assert.equal(w.meetRetry.left, 1);
+
+    w.meetRetry.at = 0;
+    await w.tick(); // 2次失败 → 还剩 0 次，decidedOn 置回 null
+    assert.equal(w.st.decidedOn, null);
+    assert.equal(w.meetRetry.left, 0);
+
+    w.meetRetry.at = 0;
+    await w.tick(); // 第3次失败 → 额度耗尽，锁定 decidedOn 为当天
+    assert.equal(w.st.decidedOn, '2026-11-23', '额度耗尽后应锁定当天，不再继续重判');
   } finally { restore(); }
 });

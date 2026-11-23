@@ -465,6 +465,20 @@ function safeText(raw, max, extra) {
   return looksBad(s, extra) ? '' : s;
 }
 
+/** 按 uid 稳定且均匀地挑一条街（与生活端同一 FNV-1a 算法，避免全落到 streets[0]）。 */
+function pickTownStreet(streets, seed) {
+  const list = Array.isArray(streets) ? streets.map((s) => String(s || '').trim()).filter(Boolean) : [];
+  if (!list.length) return '';
+  const key = String(seed || '').trim();
+  if (!key) return list[0];
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return list[(h >>> 0) % list.length];
+}
+
 /** 把库里那一行（或者没有）整理成一份能用的设定：缺的补默认，脏的整条丢掉。 */
 function normTown(row, env) {
   const extra = bannedExtra(env);
@@ -1292,7 +1306,7 @@ async function townJoinRoute(request, env, method) {
   const extra = bannedExtra(env);
   const washed = safePet(body?.pet, extra);
   const pet = washed.name;
-  const street = safeDoing(clean(body?.street, 24), extra);
+  let street = safeDoing(clean(body?.street, 24), extra);
   if (!okUid(uid) || !pet) return reply(400, { ok: false, error: 'bad fields' });
 
   try {
@@ -1305,6 +1319,12 @@ async function townJoinRoute(request, env, method) {
     const rKey = `tj:${uid}:${day}`;
     if (await rateOf(db, rKey) >= 12) return reply(429, { ok: false, error: 'too many' });
 
+    const town = await readTown(db, env);
+    // 没带街名，或服务器明确配过城且上报了非本城街名（如切城后旧客户端发来「春熙路」）时，按 uid 均匀落到本城街道。
+    if (town.streets.length && (!street || (town.custom && !town.streets.includes(street)))) {
+      street = pickTownStreet(town.streets, uid);
+    }
+
     const expIso = new Date(now + TOWN_KEEP_DAYS * 86_400_000).toISOString();
     await db.prepare(
       `INSERT INTO town (uid, pet, street, lane, at, expires_at)
@@ -1316,7 +1336,6 @@ async function townJoinRoute(request, env, method) {
          expires_at = excluded.expires_at`,
     ).bind(uid, pet, street, nowIso, expIso).run();
     await bumpRate(db, rKey, day);
-    const town = await readTown(db, env);
     return reply(200, { ok: true, town: town.id, name: town.name, street });
   } catch (e) {
     if (/no such table/i.test(String(e?.message || e))) {
@@ -2529,13 +2548,21 @@ async function adminRoute(request, env, url, method) {
           error: `清理旧城设定失败：${e instanceof Error ? e.message : String(e)}`,
         });
       }
-      /* 街道清单变更后，把 town 表里不再属于新街道的旧街名迁到首条新街，避免面板继续挂着旧城街名。 */
+      /* 街道清单变更后，把 town 表里不再属于新街道的旧街名按 uid 均匀分到新街，不再全挤到 streets[0]。 */
       let migrated = 0;
       try {
-        const ph = streets.map((_, idx) => `?${idx + 2}`).join(',');
-        const res = await db.prepare(`UPDATE town SET street = ?1 WHERE street NOT IN (${ph})`)
-          .bind(streets[0], ...streets).run();
-        migrated = Number(res?.meta?.changes ?? 0);
+        const ph = streets.map((_, idx) => `?${idx + 1}`).join(',');
+        const stale = await db.prepare(`SELECT uid FROM town WHERE street NOT IN (${ph})`)
+          .bind(...streets).all();
+        const rows = stale?.results ?? [];
+        if (rows.length) {
+          const stmts = rows.map((row) =>
+            db.prepare('UPDATE town SET street = ?1 WHERE uid = ?2')
+              .bind(pickTownStreet(streets, row.uid), row.uid));
+          if (typeof db.batch === 'function') await db.batch(stmts);
+          else for (const st of stmts) await st.run();
+          migrated = rows.length;
+        }
       } catch { /* town 表未迁移时忽略 */ }
       return reply(200, { ok: true, town: await readTown(db, env), migrated });
     }
