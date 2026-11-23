@@ -28,7 +28,15 @@ import worker from '../cloud/sight-cf/src/worker.js';
  * @param {object} opt.seed     一开始就往表里放一行。
  */
 function fakeDB({ hasTable = true, seed = null } = {}) {
-  const state = { row: seed };
+  const rows = new Map();
+  if (seed) rows.set(seed.id, seed);
+  const state = {
+    get row() {
+      const list = Array.from(rows.values());
+      return list.length ? list[list.length - 1] : null;
+    },
+    rows,
+  };
   return {
     state,
     prepare(sql) {
@@ -38,7 +46,11 @@ function fakeDB({ hasTable = true, seed = null } = {}) {
         async first() {
           if (/FROM town_meta/.test(rec.sql)) {
             if (!hasTable) throw new Error('D1_ERROR: no such table: town_meta');
-            return state.row;
+            const list = Array.from(rows.values());
+            if (/ORDER BY at DESC/i.test(rec.sql)) {
+              list.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+            }
+            return list[0] ?? null;
           }
           return null;
         },
@@ -47,7 +59,15 @@ function fakeDB({ hasTable = true, seed = null } = {}) {
           if (/INSERT INTO town_meta/.test(rec.sql)) {
             if (!hasTable) throw new Error('D1_ERROR: no such table: town_meta');
             const [id, name, origin, streets, rules, at] = rec.args;
-            state.row = { id, name, origin, streets, rules, at };
+            rows.set(id, { id, name, origin, streets, rules, at });
+            return { success: true };
+          }
+          if (/DELETE FROM town_meta WHERE id <> \?1/.test(rec.sql)) {
+            if (!hasTable) throw new Error('D1_ERROR: no such table: town_meta');
+            const keepId = rec.args[0];
+            for (const key of Array.from(rows.keys())) {
+              if (key !== keepId) rows.delete(key);
+            }
             return { success: true };
           }
           return { success: true };
@@ -81,15 +101,15 @@ test('没设过的时候回默认城，并且明说「这是默认」', async ()
   const r = await call('/town/info', { envKey: null });
   assert.equal(r.status, 200, r.text);
   assert.equal(r.json.ok, true);
-  assert.equal(r.json.town, 'luhuatang');
-  assert.equal(r.json.name, '芦花塘');
+  assert.equal(r.json.town, 'lanzhou');
+  assert.equal(r.json.name, '兰州');
   /*
-   * `custom` 是最要紧的一格：没有它，服务器主打开面板看到「芦花塘」
+   * `custom` 是最要紧的一格：没有它，服务器主打开面板看到「兰州」
    * 会以为自己早就设过了，然后改一个字段就以为只改了那一个。
    */
   assert.equal(r.json.custom, false, '没设过却说设过了');
   assert.equal(r.json.api, 1, '跨机接口没有版本号 —— 第一次改结构就会弄坏所有老客户端');
-  assert.deepEqual(r.json.streets, ['早市街', '灶前巷', '望水坡']);
+  assert.deepEqual(r.json.streets, ['南滨河路', '张掖路', '皋兰路', '雁滩路']);
   assert.equal(r.json.rules.length, 4);
 });
 
@@ -106,7 +126,7 @@ test('表没建也回 200 + 默认值，不许 500', async () => {
    */
   const r = await call('/town/info', { envKey: null, db: fakeDB({ hasTable: false }) });
   assert.equal(r.status, 200, '表没建就 500 —— 迁移晚一步，整页就白了');
-  assert.equal(r.json.name, '芦花塘');
+  assert.equal(r.json.name, '兰州');
   assert.equal(r.json.custom, false);
 });
 
@@ -227,21 +247,54 @@ test('库里存着坏 JSON 时读那侧兜住，不许整页崩', async () => {
    * 展示用的字段，兜住退默认比抛出去好。
    */
   const db = fakeDB({
-    seed: { id: 'luhuatang', name: '芦花塘', origin: '', streets: '{"不是数组"', rules: 'null', at: '2026-11-15' },
+    seed: { id: 'lanzhou', name: '兰州', origin: '', streets: '{"不是数组"', rules: 'null', at: '2026-11-15' },
   });
   const r = await call('/town/info', { envKey: null, db });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.json.streets, ['早市街', '灶前巷', '望水坡'], '坏 JSON 没退默认');
+  assert.deepEqual(r.json.streets, ['南滨河路', '张掖路', '皋兰路', '雁滩路'], '坏 JSON 没退默认');
   assert.equal(r.json.rules.length, 4);
 });
 
-test('街名和城规各封顶 5 条', async () => {
-  const many = ['一', '二', '三', '四', '五', '六', '七'];
+test('街名和城规各封顶 20 条', async () => {
+  const many = Array.from({ length: 25 }, (_, i) => `条目${i + 1}`);
   const r = await call('/admin/town', {
     method: 'POST',
     body: { id: 'luhuatang', name: '芦花塘', streets: many, rules: many },
   });
   assert.equal(r.status, 200, r.text);
-  assert.equal(r.json.town.streets.length, 5);
-  assert.equal(r.json.town.rules.length, 5);
+  assert.equal(r.json.town.streets.length, 20);
+  assert.equal(r.json.town.rules.length, 20);
+});
+
+test('改换城 id 保存后会清掉旧 id 记录，不会读回旧城', async () => {
+  const db = fakeDB({
+    seed: {
+      id: 'luhuatang',
+      name: '芦花塘',
+      origin: '旧来历',
+      streets: JSON.stringify(['早市街']),
+      rules: JSON.stringify(['货不过夜']),
+      at: '2026-11-15T00:00:00.000Z',
+    },
+  });
+  const w = await call('/admin/town', {
+    method: 'POST',
+    db,
+    body: {
+      id: 'lanzhou',
+      name: '兰州',
+      origin: '黄河穿城而过，两岸群山夹着长长一条街。',
+      streets: ['正宁路', '张掖路', '南滨河路'],
+      rules: ['塘里的不吃塘里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
+    },
+  });
+  assert.equal(w.status, 200, w.text);
+  assert.equal(w.json.town.id, 'lanzhou');
+  assert.equal(w.json.town.name, '兰州');
+  assert.equal(db.state.rows.size, 1);
+
+  const r = await call('/town/info', { envKey: null, db });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.town, 'lanzhou');
+  assert.equal(r.json.name, '兰州');
 });

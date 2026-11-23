@@ -427,38 +427,29 @@ function safeDoing(raw, extra) {
  * 客户端不许各自写一份 —— 改默认值要改三处就是 bug 的温床。
  * ------------------------------------------------------------------ */
 
+/** 本城设定的街道与城规各最多几条。需与前端 `site/pets.html` 的 `SLOTS` 一致。 */
+const TOWN_LIST_MAX = 20;
+
 const TOWN_DEFAULTS = {
-  id: 'luhuatang',
-  name: '芦花塘',
+  id: 'lanzhou',
+  name: '兰州',
   /*
-   * 来历。**要说成她讲得出来的话**（方案 §4.17）：
-   * 不是宣传文案，是一段有因果的旧事 —— 为什么是「埠」而不是「城」。
-   */
-  /*
-   * 2026-11-15 改名：原「浅水埠」→「芦花塘」。
-   * 用户说不好听。不只是音的问题 —— 「浅」是自贬，「埠」是货的落脚点不是活物待的地方。
+   * 来历（2026-11-21 定城兰州）。
    * ⚠ 这份要和客户端 `coopani-world-life/src/bridge.ts` 的 `BUILTIN_TOWN` 一致，
    * 两边都改才不漂。
    */
-  origin: '这一片是活水，不深，长着芦苇。每年秋天芦花一开，整片塘白得像落了雪。'
-    + '塘边最早只有两户人家，一户在浅滩上种藕，一户磨豆腐。后来人多了，就有了街。'
-    + '住在这儿的人出门回来，望见那片白，就知道到家了。',
-  /* 三条街各对应一个地方：市集 / 厨房 / 高处。她住其中一条。 */
-  streets: ['早市街', '灶前巷', '望水坡'],
+  origin: '黄河自西向东穿城，两岸黄土山梁夹着长长一溜灯火，铁桥横在河面上。'
+    + '早上出门沿着河边走两步就能吃碗热面，晚上不管走多远，望见河谷里的灯就知道到家了。',
+  /* 默认四条街，生活层按此落址并统计同城居民。 */
+  streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'],
   /*
-   * 三条城规 —— **它们各自就是一条机制的另一种说法**，不是装饰：
+   * 四条城规 —— 第一条对应底线（不吃同类），后三条各自对应一条机制，不是装饰：
    *   货不过夜              → stalls 3 天过期、qty 会坏
    *   价自己定              → 回执不带金额，定价权在卖方
    *   赊账记在心里不记账上  → 货跨机、钱本地、不设中心账本
    * 改文案可以，别改意思 —— 改了意思，她按城规过日子就不再等于按规则过日子。
    */
-  /*
-   * 2026-11-15 补第一条。Mr.Q：「这是肥鱼们住的地方，你在这杀鱼卖鱼，这合理嘛」。
-   *
-   * 那一问点破了整个方案最难看的一处：住的是鱼，卖的是鱼，腌的是鱼。
-   * 前三条各自对一条机制；**第一条不对应机制，它对应这个世界的底线。**
-   */
-  rules: ['塘里的不吃塘里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
+  rules: ['河里的不吃河里的', '货不过夜', '价自己定，别人说贵你就听着', '赊账记在心里，不记在账上'],
 };
 
 /**
@@ -486,8 +477,8 @@ function normTown(row, env) {
   };
   const id = okCity(row?.id) ? clean(row.id, 40) : d.id;
   const name = safeText(row?.name, 24, extra) || d.name;
-  const streets = arr(row?.streets, 12, 5);
-  const rules = arr(row?.rules, 60, 5);
+  const streets = arr(row?.streets, 12, TOWN_LIST_MAX);
+  const rules = arr(row?.rules, 60, TOWN_LIST_MAX);
   return {
     id,
     name,
@@ -515,7 +506,7 @@ async function readTown(db, env) {
   if (!db) return normTown(null, env);
   try {
     const row = await db.prepare(
-      'SELECT id, name, origin, streets, rules, at FROM town_meta LIMIT 1',
+      'SELECT id, name, origin, streets, rules, at FROM town_meta ORDER BY at DESC LIMIT 1',
     ).first();
     return normTown(row, env);
   } catch {
@@ -2498,8 +2489,8 @@ async function adminRoute(request, env, url, method) {
         .map((x) => safeText(x, max, extra))
         .filter(Boolean)
         .slice(0, n);
-      const streets = list(body?.streets, 12, 5);
-      const rules = list(body?.rules, 60, 5);
+      const streets = list(body?.streets, 12, TOWN_LIST_MAX);
+      const rules = list(body?.rules, 60, TOWN_LIST_MAX);
       /*
        * 两条都不能空 —— **空街名等于她没地方住，空城规等于没有城规**。
        * 允许清空会让「她住在一条没有名字的街上」这种状态合法化，
@@ -2527,7 +2518,24 @@ async function adminRoute(request, env, url, method) {
           error: '写不进去：town_meta 表可能不存在，先跑 migrate-2026-11-15-town-meta.sql。',
         });
       }
-      return reply(200, { ok: true, town: await readTown(db, env) });
+      /* 本城设定全库只存一份；改换城 id 时清掉旧 id 那行，避免 readTown 读回旧记录。 */
+      try {
+        await db.prepare('DELETE FROM town_meta WHERE id <> ?1').bind(id).run();
+      } catch (e) {
+        return reply(500, {
+          ok: false,
+          error: `清理旧城设定失败：${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+      /* 街道清单变更后，把 town 表里不再属于新街道的旧街名迁到首条新街，避免面板继续挂着旧城街名。 */
+      let migrated = 0;
+      try {
+        const ph = streets.map((_, idx) => `?${idx + 2}`).join(',');
+        const res = await db.prepare(`UPDATE town SET street = ?1 WHERE street NOT IN (${ph})`)
+          .bind(streets[0], ...streets).run();
+        migrated = Number(res?.meta?.changes ?? 0);
+      } catch { /* town 表未迁移时忽略 */ }
+      return reply(200, { ok: true, town: await readTown(db, env), migrated });
     }
 
     if (url.pathname === '/admin/flag' && method === 'POST') {

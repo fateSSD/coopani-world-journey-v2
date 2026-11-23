@@ -651,3 +651,66 @@ export function beatText(
   }
 }
 
+/** 模拟鱼生公开广播的睡眠、正在进行的动作与五条需求快照结构。 */
+export interface LifeScheduleView {
+  asleepUntilMs: number;
+  activity: {
+    id: string;
+    kind: 'act' | 'work';
+    label: string;
+    untilMs: number;
+    occupiesPlace: boolean;
+  } | null;
+  vitals: {
+    food: number | null;
+    energy: number;
+    clean: number | null;
+    fun: number | null;
+    social: number | null;
+    fitness: number;
+  } | null;
+}
+
+/** 从已读取的 life 快照推导当前独占占用结束时刻（ms）。 */
+export function lifeBusyUntilFromView(sch: LifeScheduleView | null, nowMs: number): number {
+  if (!sch) return 0;
+  let until = sch.asleepUntilMs > nowMs ? sch.asleepUntilMs : 0;
+  if (sch.activity?.occupiesPlace && sch.activity.untilMs > until) {
+    until = sch.activity.untilMs;
+  }
+  return until;
+}
+
+/** 从已读取的 life 快照判断此刻是否急需照顾生理需求。 */
+export function lifeNeedsCareFromView(sch: LifeScheduleView | null): { reasons: string[]; critical: boolean } | null {
+  const v = sch?.vitals;
+  if (!v) return null;
+  const reasons: string[] = [];
+  let critical = false;
+  if (v.food !== null && v.food < 30) {
+    reasons.push('饿了');
+    if (v.food < 15) critical = true;
+  }
+  if (v.clean !== null && v.clean < 30) {
+    reasons.push('该洗漱了');
+    if (v.clean < 15) critical = true;
+  }
+  if (v.energy < 30) {
+    reasons.push('困乏');
+    if (v.energy < 15) critical = true;
+  }
+  return reasons.length ? { reasons, critical } : null;
+}
+
+/** 见面城已等待天数（统一扣除大段停机离线宽限 pausedWaitMs，保证现状与日记口径一致）。 */
+export function pledgeWaitDays(
+  now: Date,
+  p: { meetArrivedAt?: string | null; pausedWaitMs?: number },
+): number {
+  if (!p.meetArrivedAt) return 0;
+  const ms = Date.parse(p.meetArrivedAt);
+  if (!Number.isFinite(ms)) return 0;
+  const waitedMs = Math.max(0, now.getTime() - ms - Math.max(0, p.pausedWaitMs ?? 0));
+  return Math.max(0, Math.floor(waitedMs / 86_400_000));
+}
+

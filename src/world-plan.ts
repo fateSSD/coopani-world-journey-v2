@@ -23,7 +23,7 @@ import { readNowPlaying, songLine, cityMentioned, type NowPlaying } from './musi
 import { rollTrouble } from './easter.ts';
 import { makeSchedule, scheduleText } from './plan/timetable.ts';
 import { join, dirname, resolve } from 'node:path';
-import { planDay, fmtHour, pickFood, CAR_TIERS, type DayPlan, type BeatKind } from './plan/dayplan.ts';
+import { planDay, fmtHour, pickFood, CAR_TIERS, type Beat, type DayPlan, type BeatKind } from './plan/dayplan.ts';
 import { banterWith, bondWith, partWith, stayWith, travelWith } from './mate-talk.ts';
 import type { Pilgrim } from './geo/pilgrim.ts';
 import { actionsPrompt } from './pet-vocab.ts';
@@ -96,7 +96,8 @@ import {
   slotClock, slotBrief, coverLine, whoOf, namesIn, impressionAsk, festivalCities,
   photoProtocolOf, shouldCropWatermark, gist, homeReasonText, weatherLine,
   partWord, seededRandom, modeIdOf, roadText, matchSpot, todayPilgrimLines, clockInText,
-  pilgrimNote, beatText,
+  pilgrimNote, beatText, lifeBusyUntilFromView, lifeNeedsCareFromView,
+  type LifeScheduleView,
 } from './helpers.ts';
 export * from './helpers.ts';
 
@@ -112,6 +113,191 @@ export * from './helpers.ts';
  * 判据：**容差是给口误留的，不是给「差不多那个意思」留的。**
  */
 export const SLOT_NEAR_HOURS = 0.25;
+
+export interface LifeSyncInput {
+  /** 当地小数小时（例如 9.25 = 09:15） */
+  readonly localNow: number;
+  /** 已经推出去的最大节点时刻，<= pushedAt 的历史节点绝对不改 */
+  readonly pushedAt: number | null;
+  /** 若 life 正在睡觉或做独占动作，该动作预计结束的当地小数小时 */
+  readonly busyUntilHour: number | null;
+  /** 正在进行的 life 动作 id（如 'wash' / 'sleep' / 'eat'） */
+  readonly busyActId?: string;
+  /** 是否在酒店/室内进行生活动作（sleep/nap/wash/spa/tidy/cook） */
+  readonly isHotelAct?: boolean;
+  /** 生理需求低于 30（饱腹/清爽/精力任一） */
+  readonly needsCare: boolean;
+}
+
+const HOTEL_ONLY_LIFE_ACTS = new Set(['sleep', 'nap', 'wash', 'spa', 'tidy', 'cook']);
+const BOUNDARY_KINDS = new Set<BeatKind>(['lunch', 'dinner', 'hotel', 'night', 'sleep']);
+
+const ceilToMin = (h: number): number => Math.ceil(Math.round(h * 6000) / 100) / 60;
+
+/**
+ * 生理需求优先：按生活层状态调整今天尚未发生的旅行日程。
+ *
+ * 三条规则：
+ * 1. 历史红线：<= pushedAt 的已推节点绝不修改。
+ * 2. 独占占用 / 生理需求低时：还没出发的「通勤 + 景点」出门块往后顺延；
+ *    若顺延后撞上正餐/回酒店边界且剩余游玩不足半小时，则取消该波出门，不挤到半夜。
+ * 3. 人已回酒店洗漱/睡觉时：若还落在某景点的区间内，截断该景点并移除后续中段插话。
+ */
+export function adjustPlanForLife(
+  plan: DayPlan,
+  input: LifeSyncInput,
+): { plan: DayPlan; changed: boolean; droppedSpots: string[] } {
+  if ((input.busyUntilHour === null || !(input.busyUntilHour > input.localNow)) && !input.needsCare) {
+    return { plan, changed: false, droppedSpots: [] };
+  }
+  const minMutableAt = input.pushedAt ?? -Infinity;
+  const beats: Beat[] = plan.beats.map((b) => ({ ...b }));
+  let changed = false;
+  const droppedSpots: string[] = [];
+
+  /*
+   * 1. 若还在清晨/白天睡懒觉且当晚 22 点前醒来，跳过没发生的日出、把起床挪到醒来时。
+   *    夜间入睡跨夜到明早时（busyUntilHour 映射成 23.95 或 >= 22），绝不把早上起床改到 23:57。
+   */
+  if (input.busyActId === 'sleep' && input.busyUntilHour !== null && input.busyUntilHour < 22 && input.localNow < 18) {
+    for (let i = beats.length - 1; i >= 0; i--) {
+      const b = beats[i]!;
+      if (b.at <= minMutableAt) continue;
+      if (b.kind === 'sunrise' && b.at < input.busyUntilHour) {
+        beats.splice(i, 1);
+        changed = true;
+      } else if (b.kind === 'wake' && b.at < input.busyUntilHour) {
+        beats[i] = { ...b, at: ceilToMin(input.busyUntilHour) };
+        changed = true;
+      }
+    }
+  }
+
+  /* 2. 人已在生活层开启酒店独占动作（洗澡/睡觉/做饭等），截断仍在进行的景点区间。 */
+  const isHotelAct = Boolean(input.isHotelAct || (input.busyActId && HOTEL_ONLY_LIFE_ACTS.has(input.busyActId)));
+  if (isHotelAct) {
+    for (let i = 0; i < beats.length; i++) {
+      const b = beats[i]!;
+      if (b.kind === 'activity' && b.until !== undefined && b.at <= input.localNow && input.localNow < b.until) {
+        const cutAt = Math.max(b.at + 0.02, ceilToMin(input.localNow));
+        if (cutAt < b.until) {
+          beats[i] = { ...b, until: cutAt };
+          changed = true;
+        }
+        for (let j = beats.length - 1; j > i; j--) {
+          const sub = beats[j]!;
+          if (sub.at <= minMutableAt) continue;
+          if (sub.at > b.at && sub.at <= b.until && ((sub.kind === 'activity' && sub.until === undefined) || sub.kind === 'beat')) {
+            beats.splice(j, 1);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  /* 3. 识别未开始的出门块（commute + 主 activity + 附属节点）并顺延/退让。 */
+  type OutingBlock = { indices: number[]; commuteIdx: number | null; actIdx: number };
+  const blocks: OutingBlock[] = [];
+  for (let i = 0; i < beats.length; i++) {
+    const b = beats[i]!;
+    if (b.at <= minMutableAt) continue;
+    if (b.kind === 'commute') {
+      const nextActIdx = beats.findIndex((x, idx) => idx > i && x.kind === 'activity' && x.until !== undefined);
+      if (nextActIdx > i) {
+        const act = beats[nextActIdx]!;
+        const indices = [i];
+        for (let k = i + 1; k < beats.length; k++) {
+          const sub = beats[k]!;
+          if (k === nextActIdx) {
+            indices.push(k);
+          } else if (sub.at > act.at && act.until !== undefined && sub.at <= act.until
+            && ((sub.kind === 'activity' && sub.until === undefined) || sub.kind === 'beat')) {
+            indices.push(k);
+          }
+        }
+        blocks.push({ indices, commuteIdx: i, actIdx: nextActIdx });
+        i = Math.max(i, ...indices);
+      }
+    } else if (b.kind === 'activity' && b.until !== undefined) {
+      const prevIsCommute = i > 0 && beats[i - 1]!.kind === 'commute';
+      if (!prevIsCommute) {
+        const indices = [i];
+        for (let k = i + 1; k < beats.length; k++) {
+          const sub = beats[k]!;
+          if (sub.at > b.at && sub.at <= b.until
+            && ((sub.kind === 'activity' && sub.until === undefined) || sub.kind === 'beat')) {
+            indices.push(k);
+          }
+        }
+        blocks.push({ indices, commuteIdx: null, actIdx: i });
+        i = Math.max(i, ...indices);
+      }
+    }
+  }
+
+  const dropSet = new Set<number>();
+  for (const blk of blocks) {
+    const firstBeat = beats[blk.indices[0]!]!;
+    const mainAct = beats[blk.actIdx]!;
+    if (firstBeat.at <= minMutableAt) continue;
+    /* 已经推出且正在景点内（且未在酒店动作中）：不倒回去平移正在逛的景点。 */
+    if (mainAct.at <= input.localNow && mainAct.at <= minMutableAt) continue;
+
+    let targetStart: number | null = null;
+    let byCare = false;
+    if (input.busyUntilHour !== null && input.busyUntilHour > input.localNow) {
+      const busyTarget = ceilToMin(input.busyUntilHour + 5 / 60);
+      if (firstBeat.at < busyTarget) targetStart = busyTarget;
+    } else if (input.needsCare && !firstBeat.careDeferred && firstBeat.at - input.localNow <= 0.25) {
+      // 生理需求低时只向后锚定顺延一次，不再每拍无限连环推迟导致景点被隐形吃掉。
+      targetStart = ceilToMin(Math.max(firstBeat.at, input.localNow) + 0.5);
+      byCare = true;
+    }
+
+    if (targetStart === null || !(targetStart > firstBeat.at + 1e-4)) continue;
+
+    const lastIdx = Math.max(...blk.indices);
+    const boundary = beats.find((x, idx) => idx > lastIdx && BOUNDARY_KINDS.has(x.kind));
+    const hardStop = boundary ? boundary.at : 21.5;
+    const delta = targetStart - firstBeat.at;
+    const newActStart = mainAct.at + delta;
+
+    if (newActStart >= hardStop - 0.5 || targetStart >= 22.0) {
+      for (const idx of blk.indices) dropSet.add(idx);
+      const spotName = mainAct.spot ?? mainAct.what;
+      if (spotName && !droppedSpots.includes(spotName)) droppedSpots.push(spotName);
+      changed = true;
+      continue;
+    }
+
+    const oldUntil = mainAct.until!;
+    const newUntil = Math.min(oldUntil + delta, hardStop - 0.25);
+    for (const idx of blk.indices) {
+      const cur = beats[idx]!;
+      const shiftedAt = Math.round((cur.at + delta) * 6000) / 6000;
+      const deferredMark = byCare ? { careDeferred: true } : {};
+      if (idx === blk.actIdx) {
+        beats[idx] = { ...cur, ...deferredMark, at: shiftedAt, until: Math.round(newUntil * 6000) / 6000 };
+      } else if (shiftedAt >= newUntil && cur.kind !== 'commute') {
+        dropSet.add(idx);
+      } else {
+        beats[idx] = { ...cur, ...deferredMark, at: shiftedAt };
+      }
+    }
+    changed = true;
+  }
+
+  if (!changed) return { plan, changed: false, droppedSpots };
+  const finalBeats = beats
+    .filter((_, idx) => !dropSet.has(idx))
+    .sort((a, b) => a.at - b.at);
+  return {
+    plan: { ...plan, beats: finalBeats },
+    changed: true,
+    droppedSpots,
+  };
+}
 
 export const planMethods: Record<string, any> = {
   /** 在这个城市已经待了几天。按「到达这里的时刻」算，不按整趟旅行算。 */
@@ -557,6 +743,8 @@ export const planMethods: Record<string, any> = {
         }
       : patched;
 
+    await this.syncPlanWithLife?.(now, c);
+
     /* 上报「我在这儿」。不 await —— 报不上去也不该拖慢她这一天。 */
     if (meet) {
       const doing = this.plan.beats.find((b) => b.kind === 'activity')?.what ?? '';
@@ -634,6 +822,63 @@ export const planMethods: Record<string, any> = {
   },
 
 
+  /** 依据生活层（life-public.json）实时安排与生理需求调整当天尚未发生的行程。 */
+  async syncPlanWithLife(now: Date, city: City, preReadSch?: LifeScheduleView | null): Promise<boolean> {
+    if (!this.plan || this.st.phase !== 'staying') return false;
+    const moment = localMoment(now, city.tz);
+    if (this.plan.dateKey !== moment.dateKey) return false;
+    if (this.st.rest && this.st.rest.dateKey === moment.dateKey) return false;
+
+    const sch = preReadSch !== undefined ? preReadSch : (this.readLifeSchedule?.() ?? null);
+    if (!sch) return false;
+
+    const realNowMs = this.realNow().getTime();
+    const speed = this.speedNow();
+    const busyUntilMs = lifeBusyUntilFromView(sch, realNowMs);
+    let busyUntilHour: number | null = null;
+    if (busyUntilMs > realNowMs) {
+      const endWorld = new Date(now.getTime() + (busyUntilMs - realNowMs) * speed);
+      const endMoment = localMoment(endWorld, city.tz);
+      busyUntilHour = endMoment.dateKey === moment.dateKey ? endMoment.decimal : 23.95;
+    }
+
+    const busyActId = sch.asleepUntilMs > realNowMs
+      ? 'sleep'
+      : (sch.activity?.occupiesPlace ? sch.activity.id : undefined);
+    const care = lifeNeedsCareFromView(sch);
+    const needsCare = Boolean(care);
+    const isHotelAct = Boolean(
+      sch.asleepUntilMs > realNowMs
+      || (sch.activity?.occupiesPlace && HOTEL_ONLY_LIFE_ACTS.has(sch.activity.id)),
+    );
+
+    const res = adjustPlanForLife(this.plan, {
+      localNow: moment.decimal,
+      pushedAt: this.lastPushedAt(moment.dateKey),
+      busyUntilHour,
+      busyActId,
+      isHotelAct,
+      needsCare,
+    });
+    if (!res.changed) return false;
+
+    this.plan = res.plan;
+    if (res.droppedSpots.length > 0) {
+      const reason = busyUntilHour !== null
+        ? (sch.asleepUntilMs > realNowMs ? '还在补觉' : `正在「${sch.activity?.label ?? '忙生活里的事'}」`)
+        : (care ? care.reasons.join('、') : '临时腾不出时间');
+      const spots = res.droppedSpots.join('、');
+      await this.push(
+        'journey.plan',
+        `plan-drop-${moment.dateKey}-${spots}`,
+        `因为${reason}，原本安排的「${spots}」时间赶不上了，这一段先不去。`,
+        'debounce',
+      );
+    }
+    return true;
+  },
+
+
   async advanceBeats(now: Date, city: City, localNow: number, dateKey: string): Promise<void> {
     const plan = this.plan;
     if (!plan) return;
@@ -705,15 +950,26 @@ export const planMethods: Record<string, any> = {
       },
     });
 
-    /* 旅行节点反哺 life 五维（不扣钱，请客模式同样生效）。 */
+    /* 旅行节点反哺 life 五维（不扣钱，请客模式同样生效）。若生活侧刚吃饱或正在吃饭，不重复加饱腹。 */
     const tier = plan.lodging?.tier ?? 'budget';
     const hasMate = Boolean(this.st.pledge && this.st.pledge.arrivedAt && this.st.pledge.cityId === city.id);
+    const lifeSch = this.readLifeSchedule?.();
+    const skipFood = Boolean(
+      (lifeSch?.vitals?.food !== null && lifeSch?.vitals?.food !== undefined && lifeSch.vitals.food >= 88)
+      || (lifeSch?.activity && ['eat', 'feast', 'cook', 'supper'].includes(lifeSch.activity.id)),
+    );
     if (last.kind === 'breakfast') {
-      this.queueLifeEffect?.('旅途早饭', { vitalsDelta: { food: 22, social: hasMate ? 5 : 2 } });
+      const vitalsDelta = skipFood
+        ? { social: hasMate ? 5 : 2 }
+        : { food: 22, social: hasMate ? 5 : 2 };
+      this.queueLifeEffect?.('旅途早饭', { vitalsDelta });
     } else if (last.kind === 'lunch' || last.kind === 'dinner') {
       const richMeal = tier === 'luxury' || this.purseRich();
+      const vitalsDelta = skipFood
+        ? { social: hasMate ? 8 : 2 }
+        : { food: richMeal ? 36 : 30, social: hasMate ? 8 : 2 };
       this.queueLifeEffect?.('旅途正餐', {
-        vitalsDelta: { food: richMeal ? 36 : 30, social: hasMate ? 8 : 2 },
+        vitalsDelta,
         ...(richMeal ? { moodlet: { text: '在当地吃了顿顺口的好饭', kind: 'good', hours: 3 } } : {}),
       });
     } else if (last.kind === 'activity') {

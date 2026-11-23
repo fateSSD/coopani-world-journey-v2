@@ -526,6 +526,11 @@ export const JOURNEY_DESCRIBE = {
       tags: ['snapshot'] as const,
     },
     {
+      type: 'journey.plan',
+      description: { zh: '因作息冲突或照顾身体，当日取消了某段原定景点安排。', en: 'A planned spot outing was dropped due to a schedule conflict or urgent self-care.' },
+      trigger: 'debounce' as const,
+    },
+    {
       type: 'journey.photo',
       description: { zh: '路上拍的空镜风景或题材照片（无本人出镜），附件随行。', en: 'A scenery photo you took on the road. Scenery only, never yourself. Attached directly.' },
       trigger: 'debounce' as const,

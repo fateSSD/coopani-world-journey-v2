@@ -103,6 +103,15 @@ export const PLEDGE_TRAVEL_WINDOW_MS = 3 * 86_400_000;
 export const MEET_WAIT_WINDOW_MS = 3 * 86_400_000;
 
 /**
+ * 单次停机离线对应的世界时间超过 12 小时时，视为「大段停机离线」。
+ *
+ * 与 `PLEDGE_TRAVEL_WINDOW_MS` / `MEET_WAIT_WINDOW_MS`（均按 3 天世界时间算）保持同一尺度：
+ * 1x 下对应 12 小时真实时间，4x 下对应 3 小时真实时间，24x 下对应 30 分钟真实时间。
+ * 正常巡检间隔（最多推进 15 分钟世界时间）远低于此门限，不会误扣。
+ */
+export const PLEDGE_OFFLINE_THRESHOLD_MS = 12 * 3_600_000;
+
+/**
  * 她问出口的那件事，等多久算没人答。
  *
  * 20 小时：比一个世界日短一点，这样「早上问、晚上还没回」就会自己作废，

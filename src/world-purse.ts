@@ -96,9 +96,60 @@ import {
   slotClock, slotBrief, coverLine, whoOf, namesIn, impressionAsk, festivalCities,
   photoProtocolOf, shouldCropWatermark, gist, homeReasonText, weatherLine,
   partWord, seededRandom, modeIdOf, roadText, matchSpot, todayPilgrimLines,
-  pilgrimNote, beatText,
+  pilgrimNote, beatText, lifeBusyUntilFromView, lifeNeedsCareFromView, pledgeWaitDays,
+  type LifeScheduleView,
 } from './helpers.ts';
 export * from './helpers.ts';
+
+/** 读取生活层公开广播的睡眠、正在进行的动作与五条需求（30 分钟内有效）。 */
+export function readLifeScheduleFromDir(dataDir: string, nowMs: number): LifeScheduleView | null {
+  try {
+    const raw = JSON.parse(readFileSync(join(dataDir, 'life-public.json'), 'utf8'));
+    const upd = Date.parse(String(raw?.updatedAt ?? ''));
+    if (!Number.isFinite(upd) || Math.abs(nowMs - upd) > 30 * 60_000) return null;
+
+    const asleepRaw = Date.parse(String(raw?.asleepUntil ?? ''));
+    const asleepUntilMs = Number.isFinite(asleepRaw) && asleepRaw > nowMs ? asleepRaw : 0;
+
+    let activity: LifeScheduleView['activity'] = null;
+    if (raw?.activity && typeof raw.activity === 'object') {
+      const untilMs = Date.parse(String(raw.activity.until ?? ''));
+      const id = String(raw.activity.id ?? '');
+      const label = String(raw.activity.label ?? id);
+      const kind = raw.activity.kind === 'work' ? 'work' : 'act';
+      if (id && Number.isFinite(untilMs) && untilMs > nowMs) {
+        const occupiesPlace = typeof raw.activity.occupiesPlace === 'boolean'
+          ? raw.activity.occupiesPlace
+          : (kind === 'work' || (id !== 'chat' && id !== 'rest'));
+        activity = { id, kind, label, untilMs, occupiesPlace };
+      }
+    }
+
+    let vitals: LifeScheduleView['vitals'] = null;
+    const e = Number(raw?.vitals?.energy);
+    if (Number.isFinite(e)) {
+      const f = Number(raw?.vitals?.fitness);
+      const clampOpt = (x: unknown): number | null => {
+        const n = Number(x);
+        return x !== undefined && x !== null && Number.isFinite(n)
+          ? Math.max(0, Math.min(100, n))
+          : null;
+      };
+      vitals = {
+        food: clampOpt(raw?.vitals?.food),
+        energy: Math.max(0, Math.min(100, e)),
+        clean: clampOpt(raw?.vitals?.clean),
+        fun: clampOpt(raw?.vitals?.fun),
+        social: clampOpt(raw?.vitals?.social),
+        fitness: Number.isFinite(f) ? Math.max(0, Math.min(100, f)) : 25,
+      };
+    }
+
+    return { asleepUntilMs, activity, vitals };
+  } catch {
+    return null;
+  }
+}
 
 export const purseMethods: Record<string, any> = {
   /**
@@ -240,21 +291,28 @@ export const purseMethods: Record<string, any> = {
 
   /** 读模拟鱼生广播的精力与体质（30 分钟内有效，用于影响交通方式/景区代步与脚酸文案）。 */
   readLifeVitals(): { energy: number; fitness: number } | null {
-    try {
-      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
-      const nowMs = this.realNow().getTime();
-      const upd = Date.parse(String(raw?.updatedAt ?? ''));
-      if (!Number.isFinite(upd) || Math.abs(nowMs - upd) > 30 * 60_000) return null;
-      const e = Number(raw?.vitals?.energy);
-      const f = Number(raw?.vitals?.fitness);
-      if (!Number.isFinite(e)) return null;
-      return {
-        energy: Math.max(0, Math.min(100, e)),
-        fitness: Number.isFinite(f) ? Math.max(0, Math.min(100, f)) : 25,
-      };
-    } catch {
-      return null;
-    }
+    const nowMs = (this.realNow ? this.realNow() : new Date()).getTime();
+    const sch = readLifeScheduleFromDir(this.opts.dataDir, nowMs);
+    if (!sch?.vitals) return null;
+    return { energy: sch.vitals.energy, fitness: sch.vitals.fitness };
+  },
+
+  /** 读模拟鱼生完整实时状态（30 分钟内有效）：睡眠截止、正在做的动作、五条与体质。 */
+  readLifeSchedule(): LifeScheduleView | null {
+    const nowMs = (this.realNow ? this.realNow() : new Date()).getTime();
+    return readLifeScheduleFromDir(this.opts.dataDir, nowMs);
+  },
+
+  /** 若 life 正在睡觉或做独占场所的活动（洗澡/吃饭/做饭/打工等），返回结束时间戳（ms），否则 0。 */
+  lifeBusyUntilMs(): number {
+    const nowMs = (this.realNow ? this.realNow() : new Date()).getTime();
+    return lifeBusyUntilFromView(readLifeScheduleFromDir(this.opts.dataDir, nowMs), nowMs);
+  },
+
+  /** life 是否急需照顾生理需求（饱腹 / 清爽 / 精力任一 < 30，仅在生活层明确传出相应数值时判断）。 */
+  lifeNeedsCare(): { reasons: string[]; critical: boolean } | null {
+    const nowMs = (this.realNow ? this.realNow() : new Date()).getTime();
+    return lifeNeedsCareFromView(readLifeScheduleFromDir(this.opts.dataDir, nowMs));
   },
 
 
@@ -878,6 +936,8 @@ export const purseMethods: Record<string, any> = {
       const partyNames = pl
         ? [...(pl.withPets?.length ? pl.withPets : (pl.withPet ? [pl.withPet] : []))]
         : [];
+      const atSpot = this.atSpotNow();
+      const onWay = atSpot ? null : this.onWayNow();
       const snap = publicSnapshot({
         worldNow: now.getTime(),
         speed: this.speedNow(),
@@ -910,6 +970,8 @@ export const purseMethods: Record<string, any> = {
         applied: this.st.rideApplied ?? [],
         /* 下一站，给鱼鱼出行的包车续站用。见 `nextStopForPublic`。 */
         nextStop: this.nextStopForPublic(),
+        onWay,
+        atSpot,
       });
       const file = join(this.opts.dataDir, PUBLIC_FILE);
       const tmp = `${file}.tmp`;
@@ -990,6 +1052,27 @@ export const purseMethods: Record<string, any> = {
   },
 
 
+  /** 此刻是否正在某个景点区间内。 */
+  atSpotNow(): { name: string; until: string } | null {
+    if (this.st.phase !== 'staying') return null;
+    if (this.st.work) return null;
+    const here = this.cityOrNull(this.st.hereId);
+    const plan = this.plan;
+    if (!here || !plan) return null;
+    const moment = localMoment(this.worldNow(), here.tz);
+    if (this.st.rest && this.st.rest.dateKey === moment.dateKey) return null;
+    const b = plan.beats.findLast(
+      (x) => x.kind === 'activity' && x.until !== undefined
+        && x.at <= moment.decimal && moment.decimal < x.until,
+    );
+    if (!b || b.until === undefined) return null;
+    return {
+      name: b.spot ?? b.what,
+      until: utcFromLocal(plan.dateKey, b.until, here.tz).toISOString(),
+    };
+  },
+
+
   /**
    * 此刻是不是正在城里移动（打车 / 公交 / 骑车去下一个点）。
    *
@@ -1004,6 +1087,7 @@ export const purseMethods: Record<string, any> = {
    * 分开写迟早会出现「她说的」和「面板写的」对不上。
    */
   onWayNow(): { what: string; leftMin: number; arriveAt: string } | null {
+    if (this.st.work) return null;
     const here = this.cityOrNull(this.st.hereId);
     const plan = this.plan;
     if (!here || !plan) return null;
@@ -1275,6 +1359,20 @@ export const purseMethods: Record<string, any> = {
       restingToday && this.st.rest
         ? `今天歇着，剩下的点都不去了（${this.st.rest.reason}）—— 饭点照吃，晚上照常回酒店。`
         : '',
+      (() => {
+        const sch = this.readLifeSchedule?.() ?? null;
+        if (!sch) return '';
+        const realMs = this.realNow().getTime();
+        const busyMs = lifeBusyUntilFromView(sch, realMs);
+        const care = lifeNeedsCareFromView(sch);
+        if (busyMs > realMs && sch.activity?.occupiesPlace) {
+          return `这会儿正在「${sch.activity.label}」，出门的日程跟着往后顺延，等忙完再走。`;
+        }
+        if (care) {
+          return `这会儿先照看身体（${care.reasons.join('、')}），出门安排顺延着等你先补好。`;
+        }
+        return '';
+      })(),
       this.todaySoFar(plan, moment.decimal),
       next ? `下一个点：${fmtHour(next.at)} ${next.what}。` : '今天的点都过完了，该睡了。',
       /*
@@ -1436,7 +1534,7 @@ export const purseMethods: Record<string, any> = {
      */
     if (p.meetCityId && !p.arrivedAt) {
       if (p.meetArrivedAt) {
-        const waited = Math.max(0, Math.floor((now.getTime() - Date.parse(p.meetArrivedAt)) / 86_400_000));
+        const waited = pledgeWaitDays(now, p);
         return `跟${this.whoOfPledge(p)}约在${meetName}见，你已经到了`
           // 别写「等了两三天（第 1 天）」——两个数放在一起会自相矛盾。
           + (waited > 0 ? `、在这儿等了 ${waited} 天` : '')

@@ -155,6 +155,10 @@ export interface Pledge {
    * 人可能在 M 等三天，那三天里 `arrivedAt` 还是 null。
    */
   readonly meetArrivedAt?: string | null;
+  /** 赶路阶段累计扣除的大段停机离线世界毫秒数（单次停机 > 12 小时）。 */
+  readonly pausedTravelMs?: number;
+  /** 见面城等伴阶段累计扣除的大段停机离线世界毫秒数（单次停机 > 12 小时）。 */
+  readonly pausedWaitMs?: number;
   /**
    * 他点名要的走法（缺省 = 动身时她自己挑）。
    *
@@ -830,6 +834,12 @@ export class StateStore {
           : null;
         // 认不出的走法当「没点名」—— 动身时她自己挑，比卡在一个已删掉的 modeId 上好。
         const modeId = typeof o.modeId === 'string' && modeById(o.modeId as ModeId) ? o.modeId as ModeId : undefined;
+        const pausedTravelMs = Number.isFinite(Number(o.pausedTravelMs)) && Number(o.pausedTravelMs) > 0
+          ? Math.round(Number(o.pausedTravelMs))
+          : undefined;
+        const pausedWaitMs = Number.isFinite(Number(o.pausedWaitMs)) && Number(o.pausedWaitMs) > 0
+          ? Math.round(Number(o.pausedWaitMs))
+          : undefined;
         return {
           cityId: o.cityId,
           days: Number.isFinite(Number(o.days)) ? Math.min(30, Math.max(1, Math.round(Number(o.days)))) : 1,
@@ -844,6 +854,8 @@ export class StateStore {
           arrivedAt: arrived,
           ...(meetCityId ? { meetCityId, meetArrivedAt: meetArrived } : {}),
           ...(modeId ? { modeId } : {}),
+          ...(pausedTravelMs ? { pausedTravelMs } : {}),
+          ...(pausedWaitMs ? { pausedWaitMs } : {}),
         };
       })(),
       spent: Number.isFinite(Number(r.spent)) && Number(r.spent) >= 0 ? Math.round(Number(r.spent)) : 0,

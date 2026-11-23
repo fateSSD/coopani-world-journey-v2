@@ -89,6 +89,8 @@ export interface Beat {
    * 提示词那边单独拿这一条去说 —— 两边各用各的。
    */
   readonly pilgrim?: Pilgrim;
+  /** 本节点是否已因生理需求低被顺延过一次（防止连拍无限向后漂移）。 */
+  readonly careDeferred?: boolean;
 }
 
 /**

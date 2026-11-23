@@ -152,17 +152,19 @@
   }
   .field.narrow { max-width: 260px; margin-bottom: 12px; }
   .group { margin: 14px 0 4px; }
-  .group > label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 6px; }
+  .grouphd { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .grouphd > label { font-size: 12px; color: var(--dim); margin: 0; }
   .group .slots { display: flex; flex-wrap: wrap; gap: 8px; }
-  .group .slots input {
-    flex: 1 1 168px; padding: 7px 10px; border: 1px solid var(--line);
+  .group .slots.stack { flex-direction: column; }
+  .group .slot-row { display: flex; align-items: center; gap: 6px; flex: 1 1 200px; min-width: 0; }
+  .group .slots.stack .slot-row { flex: 1 1 auto; width: 100%; }
+  .group .slot-row input {
+    flex: 1 1 auto; min-width: 0; padding: 7px 10px; border: 1px solid var(--line);
     border-radius: 7px; font: inherit; background: #fbfcfd;
   }
-  /*
-   * 空的槽位画成虚线 —— 一眼看出「这三条是填了的，这两个是空的」。
-   * 不这样标，五个框长得一样，人会以为必须要填满。
-   */
-  .group .slots input:placeholder-shown { border-style: dashed; background: #fdfdfe; }
+  .group .slot-row input:placeholder-shown { border-style: dashed; background: #fdfdfe; }
+  .group .slot-del { color: var(--dim); padding: 6px 9px; line-height: 1.2; }
+  .group .slot-del:hover { color: var(--bad); border-color: #f0cfcb; }
   .townfoot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
               display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .townfoot .msg { margin: 0; min-height: 0; }
@@ -208,7 +210,7 @@
       环游世界 · Journey <small>旅行遇鱼池 / 在线 / 封禁</small>
     </button>
     <button id="worldLife" class="world-btn" data-world="life" type="button">
-      芦花塘 · Life <small>居民鱼数 / 市集 / 本城设定</small>
+      <span id="worldLifeTitle">兰州 · Life</span> <small>居民鱼数 / 市集 / 本城设定</small>
     </button>
   </div>
 
@@ -258,7 +260,7 @@
   </section>
 
   <section class="box view" data-view="life" hidden>
-    <h2>芦花塘 · Life 居民与市集 <small id="lifeNote">连上之后才有数据</small></h2>
+    <h2><span id="lifeHeading">兰州 · Life 居民与市集</span> <small id="lifeNote">连上之后才有数据</small></h2>
     <p class="viewhint">
       统计 <b>模拟鱼生</b> 30 天内来城里报到的在册鱼数、街区分布与鱼市街摆摊/成交概况，不混入 Journey 旅途鱼。
     </p>
@@ -294,28 +296,34 @@
     <div class="grid2">
       <div class="field">
         <label for="townName">城名</label>
-        <input id="townName" type="text" maxlength="24" placeholder="芦花塘">
+        <input id="townName" type="text" maxlength="24" placeholder="兰州">
       </div>
       <div class="field">
         <label for="townId">城 id（<code>[a-z0-9_-]</code>）</label>
-        <input id="townId" type="text" maxlength="40" spellcheck="false" placeholder="luhuatang">
+        <input id="townId" type="text" maxlength="40" spellcheck="false" placeholder="lanzhou">
       </div>
     </div>
 
     <div class="field">
       <label for="townOrigin">小城来历（一句话故事）</label>
       <textarea id="townOrigin" rows="3" maxlength="400"
-        placeholder="这一片是活水，长着芦苇。秋天芦花开时整片塘白得像落了雪……"></textarea>
+        placeholder="黄河自西向东穿城，两岸黄土山梁夹着长长一溜灯火，铁桥横在河面上……"></textarea>
     </div>
 
     <div class="group">
-      <label>街道名称（1–5 条，空行自动忽略）</label>
+      <div class="grouphd">
+        <label>街道名称（1–20 条，每条最多 12 字，空行自动忽略）</label>
+        <button type="button" class="mini" id="addStreet">+ 添加街道</button>
+      </div>
       <div class="slots" id="townStreets"></div>
     </div>
 
     <div class="group">
-      <label>小城规矩（1–5 条）</label>
-      <div class="slots" id="townRules"></div>
+      <div class="grouphd">
+        <label>小城规矩（1–20 条，每条最多 60 字，空行自动忽略）</label>
+        <button type="button" class="mini" id="addRule">+ 添加城规</button>
+      </div>
+      <div class="slots stack" id="townRules"></div>
     </div>
 
     <div class="townfoot">
@@ -654,6 +662,19 @@
   var tabOf = { live: 'tabLive', all: 'tabAll', life: 'tabLife', town: 'tabTown' };
   var WORLD_OF = { live: 'journey', all: 'journey', life: 'life', town: 'life' };
   var lastViewOfWorld = { journey: 'live', life: 'life' };
+  var townDisplayName = '兰州';
+
+  function setTownDisplayName(name) {
+    var next = String(name || '').trim() || '兰州';
+    townDisplayName = next;
+    var btnTitle = $('worldLifeTitle');
+    if (btnTitle) btnTitle.textContent = next + ' · Life';
+    var h = $('lifeHeading');
+    if (h) h.textContent = next + ' · Life 居民与市集';
+    if ((WORLD_OF[view] || 'journey') === 'life') {
+      $('worldSub').textContent = '这里是 ' + next + ' · Life（模拟鱼生）：专门看小城住了多少只鱼、街区市集与修改本城设定，不混入 Journey 旅途鱼。';
+    }
+  }
 
   var view = /\/all\/?$/.test(location.pathname) ? 'all'
     : /\/life\/?$/.test(location.pathname) ? 'life'
@@ -679,7 +700,7 @@
     $('footLife').hidden = world !== 'life';
     $('autoWrap').hidden = view !== 'live';
     $('worldSub').textContent = world === 'life'
-      ? '这里是 芦花塘 · Life（模拟鱼生）：专门看小城住了多少只鱼、街区市集与修改本城设定，不混入 Journey 旅途鱼。'
+      ? '这里是 ' + townDisplayName + ' · Life（模拟鱼生）：专门看小城住了多少只鱼、街区市集与修改本城设定，不混入 Journey 旅途鱼。'
       : '这里是 环游世界 · Journey：管旅行池子的此刻在线、累计花名册与改名/封禁治理。';
     document.title = (TITLES[view] || '此刻') + ' · 池子里的鱼';
   }
@@ -714,7 +735,8 @@
     var activeStalls = Number(meta.activeStalls) || 0;
     var deals24h = Number(meta.deals24h) || 0;
     var keepDays = Number(meta.keepDays) || 30;
-    var tName = (meta.town && meta.town.name) ? meta.town.name : '芦花塘';
+    var tName = (meta.town && meta.town.name) ? meta.town.name : townDisplayName;
+    setTownDisplayName(tName);
 
     $('lifeNote').textContent = tName
       + ' · 共 ' + total + ' 条鱼在册（保留 ' + keepDays + ' 天）'
@@ -862,35 +884,79 @@
   }
 
   /* ------------------------------------------------------------------
-   * 本城（2026-11-15）
+   * 本城（2026-11-15；2026-11-21 改为按需增删项目）
    *
-   * 五个槽位固定渲染，不用「加一条」按钮 —— 城规和街名本来就是几条就几条，
-   * 动态增删行会让这一屏变成一个小表单编辑器，而它只需要改几行字。
-   * 空槽位不提交，服务端会丢掉空串（它自己也会再过滤一遍，两边都拦）。
+   * 每类最多 20 条，与服务端 `TOWN_LIST_MAX` 一致。空行不提交，
+   * 服务端也会清洗丢弃空串，两边对齐避免静默截断。
    * ------------------------------------------------------------------ */
 
-  /* 每类最多几条。服务端也是 5，两边必须一致 —— 不一致时多的那条会被静默吞掉。 */
-  var SLOTS = 5;
+  var SLOTS = 20;
+  var SLOT_GROUPS = {
+    street: { root: 'townStreets', addBtn: 'addStreet', ph: '街名（最多 12 字）', maxlen: 12 },
+    rule: { root: 'townRules', addBtn: 'addRule', ph: '城规（最多 60 字）', maxlen: 60 }
+  };
 
-  function slotsHTML(rootId, cls, ph, maxlen) {
-    var box = $(rootId);
+  function makeSlotRow(kind, value) {
+    var cfg = SLOT_GROUPS[kind];
+    var row = document.createElement('div');
+    row.className = 'slot-row';
+    var input = document.createElement('input');
+    input.className = kind;
+    input.type = 'text';
+    input.maxLength = cfg.maxlen;
+    input.placeholder = cfg.ph;
+    input.value = value == null ? '' : String(value);
+    var del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'mini slot-del';
+    del.setAttribute('data-slot-del', kind);
+    del.title = '删除这一条';
+    del.textContent = '×';
+    row.appendChild(input);
+    row.appendChild(del);
+    return row;
+  }
+
+  function syncSlotAddBtn(kind) {
+    var cfg = SLOT_GROUPS[kind];
+    var box = $(cfg.root);
+    var btn = $(cfg.addBtn);
+    if (!box || !btn) return;
+    btn.disabled = box.querySelectorAll('.slot-row').length >= SLOTS;
+  }
+
+  function fillSlots(kind, list) {
+    var cfg = SLOT_GROUPS[kind];
+    var box = $(cfg.root);
     if (!box) return;
-    var html = '';
-    for (var i = 0; i < SLOTS; i++) {
-      html += '<input class="' + cls + '" type="text" maxlength="' + maxlen
-        + '" placeholder="' + esc(ph) + '">';
+    var items = (Array.isArray(list) && list.length) ? list.slice(0, SLOTS) : [''];
+    box.innerHTML = '';
+    for (var i = 0; i < items.length; i++) {
+      box.appendChild(makeSlotRow(kind, items[i]));
     }
-    box.innerHTML = html;
+    syncSlotAddBtn(kind);
+  }
+
+  function addSlot(kind) {
+    var cfg = SLOT_GROUPS[kind];
+    var box = $(cfg.root);
+    if (!box || box.querySelectorAll('.slot-row').length >= SLOTS) return;
+    var row = makeSlotRow(kind, '');
+    box.appendChild(row);
+    syncSlotAddBtn(kind);
+    var inp = row.querySelector('input');
+    if (inp) inp.focus();
   }
 
   /** 把一份设定填进表单。 */
   function fillTown(t) {
     if (!t) return;
+    setTownDisplayName(t.name);
     $('townName').value = t.name || '';
     $('townId').value = t.id || '';
     $('townOrigin').value = t.origin || '';
-    fillSlots('townStreets', '.street', t.streets || []);
-    fillSlots('townRules', '.rule', t.rules || []);
+    fillSlots('street', t.streets || []);
+    fillSlots('rule', t.rules || []);
     /*
      * 没设过的时候要说清楚「这是默认值」。
      * 不说的话，人会以为早就存过了 —— 然后改城名时以为自己只改了一个字，
@@ -898,24 +964,16 @@
      */
     $('townNote').textContent = t.custom
       ? '这台服务器设过　·　最后改于 ' + fmtTime(t.at)
-      : '还在用默认值（芦花塘）　·　改完点保存才算设过';
+      : '还在用默认值（' + (t.name || '兰州') + '）　·　改完点保存才算设过';
     $('townMsg').className = 'msg';
     $('townMsg').textContent = '';
   }
 
-  function fillSlots(rootId, sel, list) {
-    var box = $(rootId);
-    if (!box) return;
-    var inputs = box.querySelectorAll(sel);
-    for (var i = 0; i < inputs.length; i++) {
-      inputs[i].value = list[i] == null ? '' : String(list[i]);
-    }
-  }
-
-  function readSlots(rootId, sel) {
-    var box = $(rootId);
+  function readSlots(kind) {
+    var cfg = SLOT_GROUPS[kind];
+    var box = $(cfg.root);
     if (!box) return [];
-    var inputs = box.querySelectorAll(sel);
+    var inputs = box.querySelectorAll('.' + kind);
     var out = [];
     for (var i = 0; i < inputs.length; i++) {
       var v = String(inputs[i].value || '').trim();
@@ -966,8 +1024,8 @@
     var id = String($('townId').value || '').trim();
     var name = String($('townName').value || '').trim();
     var origin = String($('townOrigin').value || '').trim();
-    var streets = readSlots('townStreets', '.street');
-    var rules = readSlots('townRules', '.rule');
+    var streets = readSlots('street');
+    var rules = readSlots('rule');
 
     /*
      * 前端先拦一遍，不是因为不信服务端，是为了**说得出哪里不对**。
@@ -1041,6 +1099,12 @@
     loadView().then(function () {
       btn.disabled = false; btn.textContent = '连上';
       try { localStorage.setItem(STORE, JSON.stringify({ url: urlIn.value, key: key })); } catch (e) {}
+      if (WORLD_OF[view] !== 'life') {
+        fetch(base + '/town', { headers: hdr, cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (d) { if (d && d.town && d.town.name) setTownDisplayName(d.town.name); })
+          .catch(function () {});
+      }
       schedule();
     });
   }
@@ -1065,6 +1129,25 @@
    * 两份默认值迟早会不一样，然后没人知道哪份才算数。
    */
   $('townRevert').addEventListener('click', function () { loadTown(); });
+  Object.keys(SLOT_GROUPS).forEach(function (kind) {
+    var cfg = SLOT_GROUPS[kind];
+    $(cfg.addBtn).addEventListener('click', function () { addSlot(kind); });
+    $(cfg.root).addEventListener('click', function (e) {
+      var del = e.target.closest('button[data-slot-del]');
+      if (!del) return;
+      var box = $(cfg.root);
+      var rowsList = box.querySelectorAll('.slot-row');
+      var row = del.closest('.slot-row');
+      if (!row) return;
+      if (rowsList.length > 1) {
+        row.remove();
+        syncSlotAddBtn(kind);
+      } else {
+        var inp = row.querySelector('input');
+        if (inp) { inp.value = ''; inp.focus(); }
+      }
+    });
+  });
   $('auto').addEventListener('change', schedule);
   keyIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') connect(); });
   if (findIn) findIn.addEventListener('input', function () { render(allPets); });
@@ -1089,9 +1172,9 @@
    */
   if (!urlIn.value && /^https?:/.test(location.protocol)) urlIn.value = location.origin;
 
-  /* 五个槽位先建出来，内容等连上之后由 fillTown 填。 */
-  slotsHTML('townStreets', 'street', '街名（空的不用）', 12);
-  slotsHTML('townRules', 'rule', '城规（空的不用）', 60);
+  /* 初始各放一个空白框，连上后由 fillTown 按服务端条数展开。 */
+  fillSlots('street', []);
+  fillSlots('rule', []);
 
   /* 进来先按地址定页：`/pets/all` 落在「在册」、`/pets/town` 落在「本城」。 */
   paint();

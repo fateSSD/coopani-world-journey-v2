@@ -105,7 +105,7 @@ import {
   slotClock, slotBrief, coverLine, whoOf, namesIn, impressionAsk, festivalCities,
   photoProtocolOf, shouldCropWatermark, gist, homeReasonText, weatherLine,
   partWord, seededRandom, modeIdOf, roadText, matchSpot, todayPilgrimLines,
-  pilgrimNote, beatText,
+  pilgrimNote, beatText, lifeBusyUntilFromView,
 } from './helpers.ts';
 export * from './helpers.ts';
 
@@ -627,6 +627,15 @@ export class JourneyWorld implements World {
       // 待批单子和它的冷却也在同一条时间轴上，同一偏移量平移。
       ask: st.ask ? { ...st.ask, askedAt: move(st.ask.askedAt)! } : null,
       askNoAt: move(st.askNoAt),
+      // 手上有约时一并平移时间轴起点，避免切回 1x 后 now - acceptedAt 为负导致约定丢失。
+      pledge: st.pledge
+        ? {
+            ...st.pledge,
+            acceptedAt: move(st.pledge.acceptedAt) ?? st.pledge.acceptedAt,
+            arrivedAt: move(st.pledge.arrivedAt),
+            ...(st.pledge.meetCityId ? { meetArrivedAt: move(st.pledge.meetArrivedAt ?? null) } : {}),
+          }
+        : null,
       stayDateKey: st.stayDateKey === null ? null : (todayKey ?? st.stayDateKey),
       decidedOn: st.decidedOn === null ? null : (todayKey ?? st.decidedOn),
       lastBeatKey: null,   // 日期变了，去重键要跟着作废
@@ -982,6 +991,8 @@ export class JourneyWorld implements World {
     if (this.ticking) return;
     this.ticking = true;
     try {
+      // 在 ensureClock() 改写倍速前记下停机期间实际运行的倍速，使离线世界时长与时钟结算完全同口径。
+      const prevSpeed = this.st.clock?.speed ?? this.speedNow();
       this.ensureClock();
       /*
        * **他离开了多久** —— 基准是**上一次巡检**（2026-11-13 改）。
@@ -1000,6 +1011,7 @@ export class JourneyWorld implements World {
       const realNowMs = this.realNow().getTime();
       const seenAt = this.st.lastSeenAt ? Date.parse(this.st.lastSeenAt) : Number.NaN;
       this.awayMs = Number.isFinite(seenAt) ? Math.max(0, realNowMs - seenAt) : 0;
+      const worldAwayMs = this.awayMs * prevSpeed;
       // 每拍重算，别让上一拍的结论漏到这一拍（见 `awayCrossedDecide` 的声明）。
       this.awayCrossedDecide = false;
       this.markSeen(realNowMs);
@@ -1011,7 +1023,15 @@ export class JourneyWorld implements World {
        * 而「在家打个车」恰恰是最常见的场景。
        */
       this.settleRides();
-      this.prunePledge(now);
+      // 先扣除超过 12 小时世界时间的大段停机离线时间，必须在下面 awayNote 清空 awayMs 之前执行。
+      this.creditPledgeOffline(now, worldAwayMs);
+      /*
+       * 若此刻正在路上，等下面 `travelTick(now)` 先结算到站再核对约定 ——
+       * 否则离线期间其实已经按时坐车到了约定城，开机第一拍会先被 `prunePledge` 判成「没赶上」。
+       */
+      if (this.st.phase !== 'traveling') {
+        this.prunePledge(now);
+      }
       // 日记目录可能被用户热改（换同步盘），每次巡检顺便对一次。
       const health = this.diary.configure(this.cfg.memoryDir);
       if (health.problem && health.problem !== this.diary.current.problem) this.log?.warn(health.problem);
@@ -1052,8 +1072,7 @@ export class JourneyWorld implements World {
         const here = this.cityOrNull(this.st.hereId);
         const today = here ? localMoment(now, here.tz) : null;
         if (here && today && this.st.decidedOn !== today.dateKey) {
-          const speed = Math.max(0.1, this.cfg.speed || 1);
-          const before = new Date(now.getTime() - this.awayMs * speed);
+          const before = new Date(now.getTime() - worldAwayMs);
           if (decisionCrossedWhileAway(before, now, here.tz)) {
             /*
              * 真正的落地在 `stayTick` 的「新的一天」分支 —— 那里决定 `decidedOn`
@@ -1138,8 +1157,9 @@ export class JourneyWorld implements World {
 
       if (this.st.phase === 'home') {
         if (this.stillResting(now)) return;
-        /* 她在睡 —— 在家也不出门（也不弹「让我出门吧」），等醒了再说。 */
-        if (this.asleepUntil() > this.realNow().getTime()) return;
+        /* 她在睡或正忙着生活动作 —— 在家也不出门（也不弹「让我出门吧」），等忙完再说。 */
+        const nowMs = this.realNow().getTime();
+        if (this.asleepUntil() > nowMs || this.lifeBusyUntilMs() > nowMs) return;
         /*
          * 他开了「出门等点头」：她**不许自己走，但要开口问**。
          *
@@ -1156,6 +1176,7 @@ export class JourneyWorld implements World {
       }
       if (this.st.phase === 'traveling') {
         await this.travelTick(now);
+        this.prunePledge(now);
         return;
       }
       await this.stayTick(now);
@@ -2124,6 +2145,18 @@ export class JourneyWorld implements World {
           this.st = { ...this.st, car: null };
         }
       }
+      /*
+       * 有赴约在身（要去下一站、在见面城等伴、或约定已满期待走）时，
+       * 离线跨过早上八点也不把今天锁死 —— 否则周末关机后周一开机还要干等到周二，直接把赶路窗口拖穿。
+       */
+      const urgentPledge = (() => {
+        const p = this.activePledge(now);
+        if (!p) return false;
+        if (p.meetCityId && !p.arrivedAt && p.meetArrivedAt) return true;
+        if (here.id !== this.pledgeStop(p)) return true;
+        if (p.arrivedAt && here.id === p.cityId && this.pledgeDone(now, p)) return true;
+        return false;
+      })();
       this.st = {
         ...this.st,
         stayDateKey: moment.dateKey,
@@ -2133,7 +2166,7 @@ export class JourneyWorld implements World {
          * 那种情况这个决定点已经不在了，补判等于「开机即发车」，
          * 而她那会儿正在说「我还没待够」。判据见 `tick()` 里的 `awayCrossedDecide`。
          */
-        decidedOn: (this.awayCrossedDecide && !this.st.work) ? moment.dateKey : null,
+        decidedOn: (this.awayCrossedDecide && !this.st.work && !urgentPledge) ? moment.dateKey : null,
       };
       await this.rebuildPlan(now, 'full', 0, here);
       this.persist();
@@ -2155,7 +2188,7 @@ export class JourneyWorld implements World {
        * 只在 `arrivedAt` 有值（人已经到了）且城对得上时说。人还在路上说这句
        * 就是替她提前见面。
        */
-      const mate = this.mateLine(this.st.pledge, here.id, stayDays);
+      const mate = this.mateLine(this.st.pledge, here.id, stayDays, now);
 
       await this.push(
         'journey.day',
@@ -2186,26 +2219,14 @@ export class JourneyWorld implements World {
       return;
     }
 
-    // 决策点：当地早上八点到九点之间，一天只决定一次。
+    // 决策点：当地早上八点到九点之间，一天只决定一次；21:00 后不再新开自动发车决策。
     // 放在早饭之后，这样「今天走不走」是在吃过饭、喘过气之后才想的。
-    if (moment.decimal >= DECIDE_HOUR && this.st.decidedOn !== moment.dateKey) {
-      /*
-       * **她在睡 —— 今天不决定。**（2026-11-15 Mr.Q：「睡眠时禁止 journey 的出发」）
-       *
-       * ## 位置：`decidedOn` 赋值**之前**
-       *
-       * 第一版写在 `if (this.st.work)` 前面，看着也对，但端到端一跑就露馅：
-       * 那句话在 `decidedOn = 今天` **之后**，于是她睡着那天把「今天已经判过」
-       * 白白写掉了 —— 醒来当天再也走不了，要白等一整天。
-       *
-       * 端到端实测（`/tmp/e2e-sleep.mjs`）：睡着时 `decidedOn` 被置成当天，
-       * 八小时后窗口清空、再 tick，人还在原地，`announceDepartOn` 是 null。
-       *
-       * 现在的顺序：先问她醒着没有，醒着才占今天的决策额度。
-       *
-       * 为什么不是放进 `moveOn()`：那只拦得住「出发」，拦不住「睡着还在打工」。
-       */
-      if (this.asleepUntil() > this.realNow().getTime()) return;
+    // 若此刻正在睡觉或忙生活动作，跳过发车决策（不占 decidedOn），但继续往下跑当天作息协同。
+    const decideNowMs = this.realNow().getTime();
+    const lifeSch = this.readLifeSchedule?.() ?? null;
+    const busyForDepart = this.asleepUntil() > decideNowMs || lifeBusyUntilFromView(lifeSch, decideNowMs) > decideNowMs;
+    const canDecideHour = this.st.work ? true : moment.decimal < 21;
+    if (moment.decimal >= DECIDE_HOUR && canDecideHour && this.st.decidedOn !== moment.dateKey && !busyForDepart) {
 
       this.st = { ...this.st, decidedOn: moment.dateKey };
       this.persist();
@@ -2402,7 +2423,15 @@ export class JourneyWorld implements World {
     }
 
     if (!this.plan || this.plan.dateKey !== moment.dateKey) await this.rebuildPlan(now, 'full', 0, here);
+    const prevSpot = this.atSpotNow()?.name ?? '';
+    const prevWay = this.onWayNow()?.what ?? '';
+    const adjusted = await this.syncPlanWithLife(now, here, lifeSch);
     await this.advanceBeats(now, here, moment.decimal, moment.dateKey);
+    const curSpot = this.atSpotNow()?.name ?? '';
+    const curWay = this.onWayNow()?.what ?? '';
+    if (adjusted || curSpot !== prevSpot || curWay !== prevWay) {
+      this.writePublic();
+    }
   }
 
 
@@ -2792,7 +2821,8 @@ export class JourneyWorld implements World {
      * 不在这儿挡，22 点接一条约，下一拍她就半夜买票走人了。
      */
     if (moment.decimal >= 21) return 'later';
-    if (this.asleepUntil() > this.realNow().getTime()) return 'later';
+    const nowMs = this.realNow().getTime();
+    if (this.asleepUntil() > nowMs || this.lifeBusyUntilMs() > nowMs) return 'later';
     /*
      * 今天的决策点还没到（当地八点前）：不用清，那一拍自己会读到 pledge。
      * **但也不能说「今天不动身」** —— 那是另一句错话。

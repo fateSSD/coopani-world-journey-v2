@@ -332,3 +332,33 @@ test('3.1 & 3.2：POST /town/stalls 挂摊穿透缓存上限3个、GET/POST /tow
     globalThis.caches = prevCaches;
   }
 });
+
+test('POST /admin/town 修改街道后，会把 town 表失效旧街道自动迁到首条新街', async () => {
+  const db = makeDB();
+  const now = new Date().toISOString();
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  db.rawDb.prepare(`INSERT INTO town (uid, pet, street, lane, at, expires_at) VALUES (?, '旧街鱼', '早市街', 0, ?, ?)`).run(UID_A, now, future);
+  db.rawDb.prepare(`INSERT INTO town (uid, pet, street, lane, at, expires_at) VALUES (?, '张掖鱼', '张掖路', 0, ?, ?)`).run(UID_B, now, future);
+
+  const saveRes = await worker.fetch(new Request('https://sight.test/admin/town', {
+    method: 'POST',
+    headers: { 'x-admin-key': 'secret-1', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'lanzhou',
+      name: '兰州',
+      origin: '黄河穿城',
+      streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'],
+      rules: ['河里的不吃河里的', '货不过夜'],
+    }),
+  }), { DB: db, ADMIN_KEY: 'secret-1' });
+  assert.equal(saveRes.status, 200);
+
+  const lifeRes = await worker.fetch(new Request('https://sight.test/admin/life', {
+    headers: { 'x-admin-key': 'secret-1' },
+  }), { DB: db, ADMIN_KEY: 'secret-1' });
+  assert.equal(lifeRes.status, 200);
+  const body = await lifeRes.json();
+  assert.equal(body.byStreet.some((s) => s.street === '早市街'), false);
+  assert.ok(body.byStreet.some((s) => s.street === '南滨河路' && s.count === 1));
+  assert.ok(body.byStreet.some((s) => s.street === '张掖路' && s.count === 1));
+});

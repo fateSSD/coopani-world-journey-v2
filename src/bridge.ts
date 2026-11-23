@@ -414,6 +414,8 @@ export interface PublicInput {
    * 交给 `leg` 那一段说，不在这里重复。
    */
   readonly nextStop: { readonly name: string; readonly at: string } | null;
+  readonly onWay?: { readonly what: string; readonly arriveAt: string; readonly leftMin: number } | null;
+  readonly atSpot?: { readonly name: string; readonly until: string } | null;
 }
 
 /**
@@ -473,6 +475,8 @@ export function publicSnapshot(input: PublicInput): Record<string, unknown> {
      * 对方拿 `clock.worldNow` 一比就知道还有多久，不用再处理时区。
      */
     plan: { nextStop: input.nextStop },
+    onWay: input.onWay ?? null,
+    atSpot: input.atSpot ?? null,
     rides: {
       supported: true,
       spendEnabled: money.enabled,

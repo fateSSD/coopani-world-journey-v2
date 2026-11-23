@@ -1,5 +1,16 @@
 # 更新日志
 
+## 2.6.0 — 2026-11-23（双扩展生理需求与日程协同 + 约定大段停机离线扣除 + `sight-cf` 街区切换）
+
+- **生理需求优先与生活层日程协同（搭配 `coopani-world-life@1.1.3`）**：
+  - `src/bridge.ts`、`src/world-purse.ts`：公开快照 `journey-public.json` 补全 `onWay` 与 `atSpotNow()` 区间判定；打工（`st.work`）与歇着期间不再误判为在景区或坐公交；新增 `readLifeScheduleFromDir`、`lifeBusyUntilFromView`、`lifeNeedsCareFromView` 单次读取复用于 `stayTick` 与 `nowSummary`，降低同步读盘频次。
+  - `src/world-plan.ts`、`src/plan/dayplan.ts`：新增 `adjustPlanForLife()` 与 `syncPlanWithLife()`，睡眠/洗澡/吃饭等独占生活动作自动顺延未出门安排或截断正在逛的景点；`needsCare` 仅向后锚定顺延一次（`careDeferred`）避免连拍漂移，若撞边界不得不取消景点时记录 `droppedSpots` 并推送 `journey.plan` 事件通知（已在 [describe.ts](src/describe.ts) 与 [describe.json](describe.json) 登记）；跨夜睡眠不改写清晨起床时刻；生活层已吃饱/吃饭中时 `advanceBeats` 不重复叠加 `food`；发车决策遇洗澡/独占动作暂缓且不占当日额度，当地 21 点后也不半夜自动发车。
+- **约定大段停机离线扣除与在途/到站时序保护**：
+  - `src/constants.ts`、`src/state.ts`、`src/world-social.ts`、`src/world.ts`：新增 `PLEDGE_OFFLINE_THRESHOLD_MS`（12 小时**世界时间**，1x/4x/24x 同尺度对齐），单次停机超过该门槛时分别扣除落在赶路（`pausedTravelMs`）和见面城等伴（`pausedWaitMs`）阶段的时间；`tick()` 先结算 `prevSpeed` 与 `travelTick(now)` 到站后再核对 `prunePledge(now)`，`alignToReal()` 同步平移 `pledge` 时间戳；已在开往约定下一站途中不半路掐断；离线跨过早 8 点对有约在身者放行发车/查伴（受 21 点门禁约束）；抽取 `pledgeWaitDays()` 统一 `pledgeText` 与 `mateLine` 已等待天数口径。
+- **`sight-cf` 街区默认值对齐兰州与管理后台校验**：
+  - `cloud/sight-cf/src/worker.js`、`site/pets.html`、`cloud/sight-cf/src/pets-page.js`：`TOWN_DEFAULTS` 切换为兰州与 `南滨河路 / 张掖路 / 皋兰路 / 雁滩路`，街道/城规条数上限统一 `TOWN_LIST_MAX = SLOTS = 20` 并加测试锁定一致；`/admin/town` 将清理旧城失败与建表失败分开报错，并回传街道迁出人数 `migrated`。
+- **测试**：新增 `test/life-schedule-sync.test.mjs`（8 条）与 `test/pledge-offline.test.mjs`（6 条），补充 `test/pets-page.test.mjs` 上限一致性断言并恢复 `package.json` 中文描述中的「从你所在城市出发」。
+
 ## 2.5.1 — 2026-11-21（文档与管理后台文案精简）
 
 - 精简 [package.json](package.json) 扩展简介与中英文市场描述，补明与「模拟鱼生」的公开快照和留影同步能力。

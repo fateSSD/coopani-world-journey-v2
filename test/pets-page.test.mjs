@@ -45,6 +45,7 @@ test('Worker 能发出管鱼页：是 HTML，且涵盖 /pets /pets/all /pets/lif
   assert.ok(body.includes('ADMIN_KEY'), '发出来的不是管鱼页');
   assert.ok(body.includes('id="worldJourney"') && body.includes('id="worldLife"'), '缺少 Journey 与 Life 一级分区');
   assert.ok(body.includes("base + '/life'"), '缺少 /admin/life 请求以显示 Life 多少鱼');
+  assert.ok(body.includes('id="addStreet"') && body.includes('id="addRule"'), '缺少添加街道/城规按钮');
   assert.ok(body.length > 8000, `页面太短，像是被截断了：${body.length}`);
 });
 
@@ -72,4 +73,13 @@ test('城市表覆盖 CITIES 全部 —— 少一座就显示成英文 id', () =
   /* 反向也要查：表里多出来的项会让人以为还有那些城。 */
   const extra = Object.keys(table).filter((id) => !CITIES.some((c) => c.id === id));
   assert.equal(extra.length, 0, `表里多了 CITIES 里没有的城市：${extra.slice(0, 8).join(',')}`);
+});
+
+test('前端 SLOTS 与服务端 TOWN_LIST_MAX 保持一致', () => {
+  const workerSrc = readFileSync(join(root, 'cloud/sight-cf/src/worker.js'), 'utf8');
+  const htmlMatch = /\bvar SLOTS\s*=\s*(\d+)\s*;/.exec(html);
+  const workerMatch = /\bconst TOWN_LIST_MAX\s*=\s*(\d+)\s*;/.exec(workerSrc);
+  assert.ok(htmlMatch, 'site/pets.html 中找不到 var SLOTS');
+  assert.ok(workerMatch, 'worker.js 中找不到 const TOWN_LIST_MAX');
+  assert.equal(Number(htmlMatch[1]), Number(workerMatch[1]), '前后端街道/城规条数上限不一致');
 });

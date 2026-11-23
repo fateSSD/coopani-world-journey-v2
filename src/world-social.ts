@@ -79,7 +79,7 @@ import { UiStore, hm, remainText, type UiSnapshot, type UiTimelineItem, type UiL
 import {
   BOOT_GRACE_MS, STATUS_PROBE_MS, INVITE_NOTICE_PER_DAY,
   MISS_STOP_CHANCE, MISS_STOP_EXTRA_MIN, MISS_STOP_EXTRA_MAX,
-  PLEDGE_TRAVEL_WINDOW_MS, MEET_WAIT_WINDOW_MS, ASK_TTL_MS, ASK_COOLDOWN_MS,
+  PLEDGE_TRAVEL_WINDOW_MS, MEET_WAIT_WINDOW_MS, PLEDGE_OFFLINE_THRESHOLD_MS, ASK_TTL_MS, ASK_COOLDOWN_MS,
   MEET_RETRY_MS, MEET_RETRY_MAX_MS,
   ENV_PROMPT_FILE, PKG_VERSION, TICK_MAX_MS, TICK_WORLD_BUDGET_MS, TICK_MIN_MS,
   HEARTBEAT_MS, SEEN_SAVE_MS, REPORT_RETRY_MS, STAY_DAYS_MIN, STAY_DAYS_MAX,
@@ -97,7 +97,7 @@ import {
   slotClock, slotBrief, coverLine, whoOf, namesIn, impressionAsk, festivalCities,
   photoProtocolOf, shouldCropWatermark, gist, homeReasonText, weatherLine,
   partWord, seededRandom, modeIdOf, roadText, matchSpot, todayPilgrimLines,
-  pilgrimNote, beatText,
+  pilgrimNote, beatText, pledgeWaitDays,
 } from './helpers.ts';
 export * from './helpers.ts';
 
@@ -350,10 +350,11 @@ export const socialMethods: Record<string, any> = {
     p: {
       cityId: string; days: number; withPet: string;
       withPets?: readonly string[]; arrivedAt: string | null;
-      meetCityId?: string; meetArrivedAt?: string | null;
+      meetCityId?: string; meetArrivedAt?: string | null; pausedWaitMs?: number;
     } | null,
     hereId: string,
     stayDays: number,
+    now?: Date,
   ): string {
     if (!p) return '';
     /*
@@ -364,7 +365,7 @@ export const socialMethods: Record<string, any> = {
      * 这是这个系统里最常见的一类缺陷：状态在，但她看不见。
      */
     if (p.meetCityId && !p.arrivedAt && p.meetArrivedAt && p.meetCityId === hereId) {
-      const met = Math.max(0, stayDays);
+      const met = now ? pledgeWaitDays(now, p) : Math.max(0, stayDays);
       return `在这儿不是玩：跟${this.whoOfPledge(p)}约在${this.cityName(p.meetCityId)}碰头，`
         + `你${met > 0 ? `已经等了 ${met} 天，` : ''}人还没露面。`
         + `等见了面再一起去${this.cityName(p.cityId)}，在那儿待 ${p.days} 天。`
@@ -1520,10 +1521,51 @@ export const socialMethods: Record<string, any> = {
      * 「接约后三天」只剩一天，她再等一天就整份约定作废 —— 明明人已经在约定的地方了。
      */
     const anchor = atMeet ? Date.parse(p.meetArrivedAt!) : Date.parse(p.acceptedAt);
-    const age = now.getTime() - anchor;
-    if (!Number.isFinite(age) || age < 0) return null;
+    const paused = atMeet ? (p.pausedWaitMs ?? 0) : (p.pausedTravelMs ?? 0);
+    const rawAge = now.getTime() - anchor;
+    if (!Number.isFinite(rawAge) || rawAge < 0) return null;
+    const age = Math.max(0, rawAge - Math.max(0, paused));
     const win = atMeet ? MEET_WAIT_WINDOW_MS : PLEDGE_TRAVEL_WINDOW_MS;
     return age <= win ? p : null;
+  },
+
+
+  /**
+   * 扣除超过 12 小时世界时间的大段停机离线时间（`worldAwayMs > PLEDGE_OFFLINE_THRESHOLD_MS`）。
+   *
+   * 无论 1x / 4x / 24x，判断门限和扣减都统一在「世界时间」同一尺度下，
+   * 避免高倍速时 3 天世界窗口早已走完却被真实 12 小时门限拦在外面一秒不扣。
+   */
+  creditPledgeOffline(now: Date, worldAwayMs: number): void {
+    const p = this.st.pledge;
+    if (!p || p.arrivedAt) return;
+    if (!Number.isFinite(worldAwayMs) || worldAwayMs <= PLEDGE_OFFLINE_THRESHOLD_MS) return;
+    const worldNow = now.getTime();
+    const worldBefore = worldNow - worldAwayMs;
+    const meet = p.meetCityId && cityById(p.meetCityId) ? p.meetCityId : undefined;
+    const atMeet = Boolean(meet && p.meetArrivedAt && Number.isFinite(Date.parse(p.meetArrivedAt)));
+    if (atMeet) {
+      const meetMs = Date.parse(p.meetArrivedAt!);
+      const raw = Math.max(0, worldNow - meetMs);
+      const overlap = Math.max(0, worldNow - Math.max(meetMs, worldBefore));
+      if (overlap <= 0) return;
+      const next = Math.min(raw, Math.round(Math.max(0, p.pausedWaitMs ?? 0) + overlap));
+      if (next !== (p.pausedWaitMs ?? 0)) {
+        this.st = { ...this.st, pledge: { ...p, pausedWaitMs: next } };
+        this.persist();
+      }
+      return;
+    }
+    const accMs = Date.parse(p.acceptedAt);
+    if (!Number.isFinite(accMs)) return;
+    const raw = Math.max(0, worldNow - accMs);
+    const overlap = Math.max(0, worldNow - Math.max(accMs, worldBefore));
+    if (overlap <= 0) return;
+    const next = Math.min(raw, Math.round(Math.max(0, p.pausedTravelMs ?? 0) + overlap));
+    if (next !== (p.pausedTravelMs ?? 0)) {
+      this.st = { ...this.st, pledge: { ...p, pausedTravelMs: next } };
+      this.persist();
+    }
   },
 
 
@@ -1717,6 +1759,12 @@ export const socialMethods: Record<string, any> = {
       );
       return;
     }
+    /*
+     * 人已经在前往约定下一站 `stop` 的车 / 船 / 飞机上，不在半路掐断。
+     * 接约时只估了纯行驶耗时，没算夜间等车、休息、重掷走法或坐过站延误；
+     * 既然票已经买好在赶路了，等落地后再按结果结算。
+     */
+    if (this.st.phase === 'traveling' && this.st.leg && this.st.leg.toId === stop) return;
     if (this.activePledge(now)) return;
     /*
      * 过期分三种说法。**混成一句就是替她说错话**：
