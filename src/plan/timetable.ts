@@ -117,11 +117,11 @@ export function makeSchedule(
 
   if (mode === 'bus') {
     // 长途客车没有车次号，只有班次时刻。这里给检票口。
-    return { code: '', seat: '普通座', gate: `${pick(seed, 1, 12, 3)} 号检票口` };
+    return { code: '', seat: seatHint || '普通座', gate: `${pick(seed, 1, 12, 3)} 号检票口` };
   }
 
   // 船：班次 + 舱位。
-  return { code: `S${pick(seed, 100, 989, 4)}`, seat: oneOf(['散座', '二等舱'], seed >>> 3), gate: `${pick(seed, 1, 6, 5)} 号泊位` };
+  return { code: `S${pick(seed, 100, 989, 4)}`, seat: seatHint || oneOf(['散座', '二等舱'], seed >>> 3), gate: `${pick(seed, 1, 6, 5)} 号泊位` };
 }
 
 /**

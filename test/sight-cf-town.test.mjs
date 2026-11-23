@@ -298,3 +298,43 @@ test('改换城 id 保存后会清掉旧 id 记录，不会读回旧城', async 
   assert.equal(r.json.town, 'lanzhou');
   assert.equal(r.json.name, '兰州');
 });
+
+test('街道介绍与属性增益/减益：默认返回完整四街档案，管理口保存与钳位后 /town/info 同步读回', async () => {
+  const def = await call('/town/info', { envKey: null });
+  assert.equal(def.status, 200);
+  assert.equal(Array.isArray(def.json.streetProfiles), true);
+  assert.equal(def.json.streetProfiles.length, 4);
+  assert.equal(def.json.streetProfiles[0].name, '南滨河路');
+  assert.ok(def.json.streetProfiles[0].desc.length > 10);
+  assert.deepEqual(def.json.streetProfiles[0].mods, { energy: 10, fun: 10, clean: -10 });
+
+  const db = fakeDB();
+  const w = await call('/admin/town', {
+    method: 'POST',
+    db,
+    body: {
+      id: 'lanzhou',
+      name: '兰州',
+      origin: '黄河穿城',
+      streets: ['正宁路', '白塔山巷'],
+      streetProfiles: [
+        { name: '正宁路', desc: '夜里全是牛奶鸡蛋醪糟香的热闹夜市。', mods: { food: 25, energy: -15, work: 99 } },
+        { name: '白塔山巷', desc: '半山清静院落，能望见整座黄河铁桥。', mods: { know: 20, clean: 10, social: -50 } },
+      ],
+      rules: ['河里的不吃河里的'],
+    },
+  });
+  assert.equal(w.status, 200, w.text);
+  assert.deepEqual(w.json.town.streets, ['正宁路', '白塔山巷']);
+  assert.deepEqual(w.json.town.streetProfiles[0], {
+    name: '正宁路',
+    desc: '夜里全是牛奶鸡蛋醪糟香的热闹夜市。',
+    mods: { food: 25, energy: -15, work: 30 },
+  });
+  assert.deepEqual(w.json.town.streetProfiles[1].mods, { know: 20, clean: 10, social: -30 });
+
+  const r = await call('/town/info', { envKey: null, db });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.json.streets, ['正宁路', '白塔山巷']);
+  assert.deepEqual(r.json.streetProfiles, w.json.town.streetProfiles);
+});

@@ -142,6 +142,16 @@ export const MODES: readonly TravelMode[] = [
   {
     id: 'ship', name: '轮船', kmh: 28, overhead: 2.5, maxKm: 0, needs: 'port', cost: 4,
     feel: '最慢，但只有它给你水面。江上是两岸，海上是空的；船上的时间过得和岸上不一样。',
+    grades: (km) => (km >= 300
+      ? [
+        { id: 'inside-cabin', name: '客轮内舱房', mult: 1, feel: '安静无窗的标准双床舱，能锁门睡觉洗热水澡，稳当省钱。' },
+        { id: 'ocean-balcony', name: '海景阳台房', mult: 1.8, feel: '带私人观海小阳台，推门就是海风和浪声，船上有泳池和餐厅。' },
+        { id: 'theme-cruise', name: '主题远洋游轮', mult: 3.2, feel: '移动的海上主题乐园，含轮换主题餐厅、海上大剧院演出、甲板泳池水滑道与室内电玩街区，一价全包。' },
+      ]
+      : [
+        { id: 'ferry', name: '普通渡轮', mult: 1, feel: '公共客舱座椅与露天甲板，吹着风一两个小时就到对岸。' },
+        { id: 'sightseeing-boat', name: '观光游船', mult: 1.5, feel: '上层带全景玻璃茶座和观景甲板，适合沿江海慢慢看岸边风景。' },
+      ]),
   },
   {
     id: 'plane', name: '飞机', kmh: 750, overhead: 3.2, maxKm: 0, needs: 'air', cost: 5,

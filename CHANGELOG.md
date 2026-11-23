@@ -1,5 +1,15 @@
 # 更新日志
 
+## 2.8.0 — 2026-11-23（轮船 5 档舱位与主题游轮 + `sight-cf` 街道档案管理与鱼市街自定义 `effects`）
+
+- **轮船扩展 5 档舱位与跨扩展主题游轮联动**（`src/geo/modes.ts`、`src/plan/journey.ts`、`src/plan/timetable.ts`、`src/bridge.ts`、`src/ui.ts`、`src/world.ts`、`src/world-purse.ts`、`src/world-webui.ts`、`src/helpers.ts`、`src/describe.ts`、`describe.json`、`dist/webui.js`）：
+  - `MODES` 中轮船按航程分为短途 2 档（普通渡轮 / 观光游船）与长途 3 档（客轮内舱房 / 海景阳台房 / 主题远洋游轮）；`journey_go_to` 支持直接点名「游轮」，`publicSnapshot()` 与 `uiSnapshot().leg` / `dist/webui.js` 全链路透出 `seatId / seat / seatMult / fare`，抵岸后依舱位反哺五维与心情，修正 `poor` 档轮船权重保底并补齐 3.2x 预算测算。
+- **`sight-cf` 服务端与 `/pets` 管鱼页新增街道档案管理**（`cloud/sight-cf/src/worker.js`、`site/pets.html`、`cloud/sight-cf/src/pets-page.js`）：
+  - `/admin/town` 与 `/town/info` 新增并校验 `streetProfiles`（每条街的介绍与五维/见识属性增益减益），`/pets` 「本城」页签支持城主可视编辑各街介绍与属性倍率并钳位落盘。
+- **`sight-cf` 鱼市街零表迁移支持自定义摊位 `effects`**（`cloud/sight-cf/src/worker.js`）：
+  - 在不改动 D1 表结构的前提下，于 `stalls.note` 透明打包/解包 `{ t, e }` 并向下兼容纯文本老数据；`POST /town/stalls`、`GET /town/stalls`、`POST /town/buy` 统一校验与透传 `effects`（定价浮动预算 `40–90` 点，五维 1:1 上限 `55`、`knowledge` 1:6 上限 `6`、`fitness` 1:8 上限 `4`，超预算等比折算）。
+- **测试**：`node --check dist/webui.js` 通过；全量 `test/*.test.mjs` **1276/1276**（含 `sight-cf-*.test.mjs` + `pets-page.test.mjs` **54/54**）、`ui-smoke` **25/25**、`home-e2e` **37/37**、`home-reason` **8/8**、`clock-sync` **8/8** 全过。
+
 ## 2.7.1 — 2026-11-23（千问图生图参考图 + 全官方域名防串 + `custom` 路径自动识别 + 尺寸比例优先重试）
 
 - **千问原生多图参考支持**（`src/photo.ts`、`src/world-photo.ts`、`src/config.ts`）：

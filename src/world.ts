@@ -1325,7 +1325,7 @@ export class JourneyWorld implements World {
      * 传了就不许被 `pickDestination` / `pickMode` 覆盖 —— 用户点名要坐高铁，
      * 结果安排她蹬自行车，就是这个反馈的原始现场。
      */
-    opts: { to?: City; mode?: TravelMode } = {},
+    opts: { to?: City; mode?: TravelMode; modeWord?: string } = {},
   ): Promise<void> {
     if (!manual) {
       // **刚加载完先待一会儿。**
@@ -1404,7 +1404,7 @@ export class JourneyWorld implements World {
       return;
     }
 
-    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey));
+    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey), opts.modeWord ?? '');
     const leg = this.buyTicket(buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade }));
     // 记下这一趟是从哪个家出发的 —— 用户途中改家时，面板要靠它说清「人没跟家一起搬」。
     this.st = { ...this.st, tripHomeId: home.id };
@@ -1462,7 +1462,7 @@ export class JourneyWorld implements World {
      */
     const departLocal = localMoment(now, from.tz);
     const sched = makeSchedule(
-      mode.id, from, to, departLocal.dateKey, leg.km, leg.durationWorldHours,
+      mode.id, from, to, departLocal.dateKey, leg.km, leg.durationWorldHours, leg.seat,
     );
     const how = scheduleText(mode.id, sched) || mode.name;
     await this.push(
@@ -1846,8 +1846,11 @@ export class JourneyWorld implements World {
      * 不 await —— 生图要十几秒，等它会把后面该推的节点全推迟。
      */
     if (idx === 1) {
+      const photoMode = (leg.seatId === 'theme-cruise' || leg.seatId === 'ocean-balcony')
+        ? (leg.seat || mode.name)
+        : mode.name;
       void this.maybePhoto(
-        to, hour, localMoment(now, to.tz).dateKey, '', null, false, true, mode.name,
+        to, hour, localMoment(now, to.tz).dateKey, '', null, false, true, photoMode,
       );
     }
   }
@@ -1873,7 +1876,7 @@ export class JourneyWorld implements World {
     let vitalsDelta: Partial<Record<'food' | 'energy' | 'clean' | 'fun' | 'social', number>> | undefined;
     let moodlet: { text: string; kind: 'good' | 'bad'; hours: number } | undefined;
     if (overnight) {
-      const g = leg.grade?.id ?? '';
+      const g = leg.seatId ?? (leg as { grade?: { id?: string } }).grade?.id ?? '';
       if (leg.modeId === 'bus' && g === 'sleeper-bus') {
         vitalsDelta = { energy: -8 };
         moodlet = { text: '卧铺大巴窄得翻不了身，睡得不算踏实', kind: 'bad', hours: 4 };
@@ -1899,6 +1902,12 @@ export class JourneyWorld implements World {
       } else if (leg.modeId === 'plane' && g === 'business-class') {
         vitalsDelta = { energy: 4 };
         moodlet = { text: '公务舱平躺睡了一觉，下飞机精神不错', kind: 'good', hours: 4 };
+      } else if (leg.modeId === 'ship' && (g === 'theme-cruise' || leg.seat === '主题远洋游轮')) {
+        vitalsDelta = { energy: 10, clean: 15, fun: 25, social: 12 };
+        moodlet = { text: '在主题远洋游轮上泡泳池看演出又吃大餐，像在海上过了个假', kind: 'good', hours: 5 };
+      } else if (leg.modeId === 'ship' && (g === 'ocean-balcony' || leg.seat === '海景阳台房')) {
+        vitalsDelta = { energy: 4, clean: 10, fun: 12 };
+        moodlet = { text: '海景阳台房伴着浪声睡了一觉，晨起吹海风很清醒', kind: 'good', hours: 4 };
       } else if (leg.modeId === 'ship') {
         vitalsDelta = { energy: -3 };
       }
@@ -2921,7 +2930,7 @@ export class JourneyWorld implements World {
      * 原来是先清状态再调用，于是「跟小满说好的三天到了」被写成
      * 「在这儿待够了，动身」—— 那是她自己想换地方的语气，两件事听起来不一样。
      */
-    opts: { toward?: City; afterPledge?: Pledge; to?: City; mode?: TravelMode } = {},
+    opts: { toward?: City; afterPledge?: Pledge; to?: City; mode?: TravelMode; modeWord?: string } = {},
   ): Promise<void> {
     const home = this.resolveHome().city;
     // 先记「这一城逛完没有」，再决定下一步去哪 —— 顺序反了，记的就是下一城的账。
@@ -3030,7 +3039,7 @@ export class JourneyWorld implements World {
       }
       return;
     }
-    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey));
+    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey), opts.modeWord ?? '');
     const leg = this.buyTicket(buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade }));
 
     this.st = {
@@ -3750,9 +3759,9 @@ export class JourneyWorld implements World {
     }
 
     if (this.st.phase === 'home') {
-      await this.depart(now, true, { to: dest, mode: mode ?? undefined });
+      await this.depart(now, true, { to: dest, mode: mode ?? undefined, modeWord: wanted });
     } else {
-      await this.moveOn(now, from, { to: dest, mode: mode ?? undefined });
+      await this.moveOn(now, from, { to: dest, mode: mode ?? undefined, modeWord: wanted });
     }
 
     if (this.st.phase !== 'traveling' || !this.st.leg) {
@@ -3863,7 +3872,7 @@ export class JourneyWorld implements World {
     }
 
     const refund = this.refundFare(leg);
-    const grade = this.pickSeatFor(mode.id, leg.km, this.legCrossBorder({ fromId: from.id, toId: dest.id } as Journey));
+    const grade = this.pickSeatFor(mode.id, leg.km, this.legCrossBorder({ fromId: from.id, toId: dest.id } as Journey), wanted);
     const fresh = this.buyTicket(buildJourney({
       from, to: dest, mode, km: leg.km, at: now, speed: this.speedNow(), grade,
     }));

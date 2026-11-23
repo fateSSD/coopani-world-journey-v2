@@ -163,7 +163,7 @@ export const TOOL_DECLS = [
         city: { type: 'string', description: 'Built-in city name, e.g. 上海 / 拉萨 / 巴黎.' },
         mode: {
           type: 'string',
-          description: 'Transport mode: 高铁 / 火车 / 飞机 / 自驾 / 大巴 / 轮船 / 摩托车 / 自行车 / 步行 (omit to pick automatically).',
+          description: 'Transport mode: 高铁 / 火车 / 飞机 / 自驾 / 大巴 / 轮船 / 游轮 / 摩托车 / 自行车 / 步行 (omit to pick automatically).',
         },
       },
       required: ['city'],

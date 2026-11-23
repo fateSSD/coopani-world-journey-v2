@@ -13,11 +13,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { pickGrade } = await import('../src/plan/journey.ts');
+const { pickGrade, buildJourney } = await import('../src/plan/journey.ts');
 const { modeById } = await import('../src/geo/modes.ts');
+const { cityById } = await import('../src/geo/cities.ts');
+const { modeIdOf, seatHintOf } = await import('../src/helpers.ts');
+const { publicSnapshot } = await import('../src/bridge.ts');
 
 const train = modeById('train');
 const plane = modeById('plane');
+const ship = modeById('ship');
 
 test('火车按距离换档：长途是卧铺，短途才是座位', () => {
   const short = train.grades(600).map((g) => g.name);
@@ -67,5 +71,113 @@ test('每一档都有 feel —— 没有依据，她只能瞎猜', () => {
   }
   for (const g of plane.grades(1000)) {
     assert.ok(g.feel && g.feel.length > 8, `${g.name} 没有体感描述`);
+  }
+  for (const km of [150, 1000]) {
+    for (const g of ship.grades(km)) {
+      assert.ok(g.feel && g.feel.length > 8, `${g.name} 没有体感描述`);
+    }
+  }
+});
+
+test('轮船按距离分档：短途是渡轮游船，长途含海景阳台房与主题远洋游轮', () => {
+  assert.deepEqual(ship.grades(150).map((g) => g.id), ['ferry', 'sightseeing-boat']);
+  assert.deepEqual(ship.grades(1000).map((g) => g.id), ['inside-cabin', 'ocean-balcony', 'theme-cruise']);
+
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) seen.add(pickGrade(ship, 500, 15).id);
+  assert.ok(seen.has('theme-cruise'), `长途余钱宽裕应能选中主题远洋游轮：${[...seen].join('/')}`);
+  assert.equal(pickGrade(ship, 500, 1.2).id, 'inside-cabin', '钱紧时轮船退回客轮内舱房');
+});
+
+test('听得懂游轮点名，并把 seatId / seat / seatMult 写入行程与广播快照', () => {
+  assert.equal(modeIdOf('坐主题游轮去'), 'ship');
+  assert.equal(modeIdOf('我想搭邮轮'), 'ship');
+  assert.equal(seatHintOf('迪士尼联名游轮'), 'theme-cruise');
+  assert.equal(seatHintOf('海景阳台游轮'), 'ocean-balcony');
+  assert.equal(seatHintOf('普通游轮'), 'cruise-prefer');
+
+  const sh = cityById('shanghai');
+  const qd = cityById('qingdao');
+  const themeGrade = ship.grades(700).find((g) => g.id === 'theme-cruise');
+  const leg = buildJourney({
+    from: sh, to: qd, mode: ship, km: 700,
+    at: new Date('2026-11-23T08:00:00Z'), speed: 1, grade: themeGrade,
+  });
+  assert.equal(leg.seatId, 'theme-cruise');
+  assert.equal(leg.seat, '主题远洋游轮');
+  assert.equal(leg.seatMult, 3.2);
+
+  const snap = publicSnapshot({
+    worldNow: Date.parse('2026-11-23T09:00:00Z'),
+    speed: 1,
+    phase: 'traveling',
+    city: { id: sh.id, name: sh.name, tz: sh.tz },
+    leg: {
+      fromId: sh.id, toId: qd.id, fromName: sh.name, toName: qd.name,
+      modeId: 'ship', seatId: leg.seatId, seat: leg.seat, seatMult: leg.seatMult,
+      departedAt: leg.departedAt, arriveAt: leg.arriveAt,
+    },
+    money: { enabled: true, budget: 0, spent: 0, earned: 0, unsettledRideFare: 0 },
+    diary: { enabled: true, dir: '' },
+    applied: [],
+    nextStop: null,
+  });
+  assert.equal(snap.leg.seatId, 'theme-cruise');
+  assert.equal(snap.leg.seat, '主题远洋游轮');
+  assert.equal(snap.leg.seatMult, 3.2);
+});
+
+test('审查回归：uiSnapshot().leg 透出 seatId / seat / seatMult / fare，poor 档轮船权重不低于原基准', async () => {
+  const { mkdtempSync, rmSync, readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { initialState } = await import('../src/state.ts');
+  const { pickMode } = await import('../src/plan/journey.ts');
+
+  const dir = mkdtempSync(join(tmpdir(), 'jr-seat-ui-'));
+  try {
+    const fixedNow = new Date('2026-11-23T09:00:00Z');
+    const world = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '上海' },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => fixedNow,
+    });
+    const sh = cityById('shanghai');
+    const qd = cityById('qingdao');
+    const themeGrade = ship.grades(700).find((g) => g.id === 'theme-cruise');
+    const leg = buildJourney({
+      from: sh, to: qd, mode: ship, km: 700,
+      at: new Date('2026-11-23T08:00:00Z'), speed: 1, grade: themeGrade,
+    });
+    world.st = {
+      ...initialState('shanghai'),
+      phase: 'traveling',
+      hereId: sh.id,
+      leg: { ...leg, fare: 576 },
+    };
+    const ui = world.uiSnapshot();
+    assert.ok(ui.leg, '在途状态 uiSnapshot().leg 不能为空');
+    assert.equal(ui.leg.seatId, 'theme-cruise');
+    assert.equal(ui.leg.seat, '主题远洋游轮');
+    assert.equal(ui.leg.seatMult, 3.2);
+    assert.equal(ui.leg.fare, 576);
+    assert.match(ui.leg.code, /主题远洋游轮/, 'ui.leg.code 应带上舱位名');
+
+    const webuiSrc = readFileSync(new URL('../dist/webui.js', import.meta.url), 'utf8');
+    assert.match(webuiSrc, /s\.leg\.seat/, 'dist/webui.js 应兜底展示 s.leg.seat');
+    assert.match(webuiSrc, /s\.leg\.fare/, 'dist/webui.js 应支持显示 s.leg.fare');
+
+    // 验证 poor 档下中长途轮船仍可被合理选中（权重不低于原本的 1.5/1.4）
+    let shipCount = 0;
+    for (let i = 0; i < 1000; i++) {
+      const m = pickMode(sh, qd, 600, () => (i + 0.5) / 1000, true);
+      if (m?.id === 'ship') shipCount++;
+    }
+    assert.ok(shipCount >= 25, `手头紧时坐普通船仍应保底合理频次（实测 ${shipCount}/1000）`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -165,6 +165,15 @@
   .group .slot-row input:placeholder-shown { border-style: dashed; background: #fdfdfe; }
   .group .slot-del { color: var(--dim); padding: 6px 9px; line-height: 1.2; }
   .group .slot-del:hover { color: var(--bad); border-color: #f0cfcb; }
+  .street-card { flex-direction: column; align-items: stretch !important; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #fafbfc; gap: 8px !important; }
+  .street-top { display: flex; align-items: center; gap: 6px; width: 100%; }
+  .street-top input.street { flex: 0 0 150px; min-width: 110px; font-weight: 600; }
+  .street-top input.street-desc { flex: 1 1 240px; min-width: 0; font-size: 13px; }
+  .street-mods { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .street-mod-item { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--dim); background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  .street-mod-item select { border: 0; background: transparent; font: inherit; color: var(--ink); font-weight: 600; cursor: pointer; outline: none; }
+  .street-mod-item select[data-sign="pos"] { color: var(--ok); }
+  .street-mod-item select[data-sign="neg"] { color: var(--bad); }
   .townfoot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
               display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .townfoot .msg { margin: 0; min-height: 0; }
@@ -312,10 +321,10 @@
 
     <div class="group">
       <div class="grouphd">
-        <label>街道名称（1–20 条，每条最多 12 字，空行自动忽略）</label>
+        <label>街道设定（1–20 条：街名最多 12 字、介绍最多 120 字，支持属性增益/减益）</label>
         <button type="button" class="mini" id="addStreet">+ 添加街道</button>
       </div>
-      <div class="slots" id="townStreets"></div>
+      <div class="slots stack" id="townStreets"></div>
     </div>
 
     <div class="group">
@@ -891,13 +900,95 @@
    * ------------------------------------------------------------------ */
 
   var SLOTS = 20;
+  var STREET_MOD_META = [
+    { key: 'food', label: '饱腹' },
+    { key: 'energy', label: '精力' },
+    { key: 'clean', label: '清爽' },
+    { key: 'fun', label: '娱乐' },
+    { key: 'social', label: '社交' },
+    { key: 'know', label: '见识' },
+    { key: 'work', label: '工钱' }
+  ];
+  var STREET_MOD_STEPS = [-30, -25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25, 30];
   var SLOT_GROUPS = {
     street: { root: 'townStreets', addBtn: 'addStreet', ph: '街名（最多 12 字）', maxlen: 12 },
     rule: { root: 'townRules', addBtn: 'addRule', ph: '城规（最多 60 字）', maxlen: 60 }
   };
 
+  function makeModSelect(key, label, val) {
+    var wrap = document.createElement('label');
+    wrap.className = 'street-mod-item';
+    wrap.appendChild(document.createTextNode(label));
+    var sel = document.createElement('select');
+    sel.className = 'street-mod';
+    sel.setAttribute('data-mod-key', key);
+    var cur = Math.round(Number(val) || 0);
+    if (STREET_MOD_STEPS.indexOf(cur) < 0) cur = 0;
+    for (var i = 0; i < STREET_MOD_STEPS.length; i++) {
+      var step = STREET_MOD_STEPS[i];
+      var opt = document.createElement('option');
+      opt.value = String(step);
+      opt.textContent = step > 0 ? '+' + step + '%' : step + '%';
+      if (step === cur) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    var syncSign = function () {
+      var n = Number(sel.value) || 0;
+      sel.setAttribute('data-sign', n > 0 ? 'pos' : (n < 0 ? 'neg' : 'zero'));
+    };
+    syncSign();
+    sel.addEventListener('change', syncSign);
+    wrap.appendChild(sel);
+    return wrap;
+  }
+
   function makeSlotRow(kind, value) {
     var cfg = SLOT_GROUPS[kind];
+    if (kind === 'street') {
+      var item = (value && typeof value === 'object') ? value : { name: value == null ? '' : String(value), desc: '', mods: {} };
+      var row = document.createElement('div');
+      row.className = 'slot-row street-card';
+
+      var top = document.createElement('div');
+      top.className = 'street-top';
+      var input = document.createElement('input');
+      input.className = 'street';
+      input.type = 'text';
+      input.maxLength = cfg.maxlen;
+      input.placeholder = cfg.ph;
+      input.value = item.name == null ? '' : String(item.name);
+
+      var descIn = document.createElement('input');
+      descIn.className = 'street-desc';
+      descIn.type = 'text';
+      descIn.maxLength = 120;
+      descIn.placeholder = '街道介绍（最多 120 字，写街景与生活气息）';
+      descIn.value = item.desc == null ? '' : String(item.desc);
+
+      var del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'mini slot-del';
+      del.setAttribute('data-slot-del', kind);
+      del.title = '删除这一条';
+      del.textContent = '×';
+
+      top.appendChild(input);
+      top.appendChild(descIn);
+      top.appendChild(del);
+
+      var modsBar = document.createElement('div');
+      modsBar.className = 'street-mods';
+      var rawMods = (item.mods && typeof item.mods === 'object') ? item.mods : {};
+      for (var m = 0; m < STREET_MOD_META.length; m++) {
+        var meta = STREET_MOD_META[m];
+        modsBar.appendChild(makeModSelect(meta.key, meta.label, rawMods[meta.key]));
+      }
+
+      row.appendChild(top);
+      row.appendChild(modsBar);
+      return row;
+    }
+
     var row = document.createElement('div');
     row.className = 'slot-row';
     var input = document.createElement('input');
@@ -955,7 +1046,8 @@
     $('townName').value = t.name || '';
     $('townId').value = t.id || '';
     $('townOrigin').value = t.origin || '';
-    fillSlots('street', t.streets || []);
+    var stList = (Array.isArray(t.streetProfiles) && t.streetProfiles.length) ? t.streetProfiles : (t.streets || []);
+    fillSlots('street', stList);
     fillSlots('rule', t.rules || []);
     /*
      * 没设过的时候要说清楚「这是默认值」。
@@ -967,6 +1059,30 @@
       : '还在用默认值（' + (t.name || '兰州') + '）　·　改完点保存才算设过';
     $('townMsg').className = 'msg';
     $('townMsg').textContent = '';
+  }
+
+  function readStreetProfiles() {
+    var box = $('townStreets');
+    if (!box) return [];
+    var cards = box.querySelectorAll('.street-card');
+    var out = [];
+    for (var i = 0; i < cards.length; i++) {
+      var card = cards[i];
+      var nmEl = card.querySelector('.street');
+      var name = String(nmEl && nmEl.value ? nmEl.value : '').trim();
+      if (!name) continue;
+      var descEl = card.querySelector('.street-desc');
+      var desc = String(descEl && descEl.value ? descEl.value : '').trim();
+      var mods = {};
+      var sels = card.querySelectorAll('select.street-mod');
+      for (var j = 0; j < sels.length; j++) {
+        var k = sels[j].getAttribute('data-mod-key');
+        var v = Math.round(Number(sels[j].value) || 0);
+        if (k && v !== 0) mods[k] = v;
+      }
+      out.push({ name: name, desc: desc, mods: mods });
+    }
+    return out;
   }
 
   function readSlots(kind) {
@@ -1024,7 +1140,8 @@
     var id = String($('townId').value || '').trim();
     var name = String($('townName').value || '').trim();
     var origin = String($('townOrigin').value || '').trim();
-    var streets = readSlots('street');
+    var streetProfiles = readStreetProfiles();
+    var streets = streetProfiles.map(function (p) { return p.name; });
     var rules = readSlots('rule');
 
     /*
@@ -1044,7 +1161,7 @@
     fetch(base + '/town', {
       method: 'POST',
       headers: Object.assign({ 'content-type': 'application/json' }, hdr),
-      body: JSON.stringify({ id: id, name: name, origin: origin, streets: streets, rules: rules })
+      body: JSON.stringify({ id: id, name: name, origin: origin, streets: streets, streetProfiles: streetProfiles, rules: rules })
     }).then(function (res) {
       return res.json().then(function (j) { return { ok: res.ok, status: res.status, body: j }; });
     }).then(function (r) {
@@ -1143,8 +1260,11 @@
         row.remove();
         syncSlotAddBtn(kind);
       } else {
-        var inp = row.querySelector('input');
-        if (inp) { inp.value = ''; inp.focus(); }
+        var inps = row.querySelectorAll('input');
+        for (var j = 0; j < inps.length; j++) inps[j].value = '';
+        var sels = row.querySelectorAll('select.street-mod');
+        for (var k = 0; k < sels.length; k++) { sels[k].value = '0'; sels[k].setAttribute('data-sign', 'zero'); }
+        if (inps[0]) inps[0].focus();
       }
     });
   });

@@ -384,6 +384,9 @@ export interface PublicInput {
     readonly fromId: string; readonly toId: string;
     readonly fromName: string; readonly toName: string;
     readonly modeId: string;
+    readonly seatId?: string;
+    readonly seat?: string;
+    readonly seatMult?: number;
     readonly departedAt: string; readonly arriveAt: string;
   } | null;
   readonly money: {
@@ -457,6 +460,9 @@ export function publicSnapshot(input: PublicInput): Record<string, unknown> {
         fromName: input.leg.fromName,
         toName: input.leg.toName,
         modeId: input.leg.modeId,
+        ...(input.leg.seatId ? { seatId: input.leg.seatId } : {}),
+        ...(input.leg.seat ? { seat: input.leg.seat } : {}),
+        ...(typeof input.leg.seatMult === 'number' ? { seatMult: input.leg.seatMult } : {}),
         departedAt: input.leg.departedAt,
         arriveAt: input.leg.arriveAt,
       }

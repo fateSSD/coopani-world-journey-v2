@@ -50,6 +50,10 @@ export interface UiLeg {
   readonly mode: string;
   /** 车次/航班号连同席别，如「G2028 次，二等座，5 站台」。自驾是空串。 */
   readonly code: string;
+  readonly seatId?: string;
+  readonly seat?: string;
+  readonly seatMult?: number;
+  readonly fare?: number;
   readonly km: number;
   readonly hours: number;
   /** 0–100。 */

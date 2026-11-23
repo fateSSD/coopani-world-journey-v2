@@ -1131,7 +1131,14 @@ export default {
           if (s.leg) {
             const top = el('div', 'jr-leg-top');
             top.append(el('span', 'jr-leg-route', `${s.leg.from} → ${s.leg.to}`));
-            top.append(el('span', 'jr-leg-mode', s.leg.code || s.leg.mode));
+            let legLabel = s.leg.code || s.leg.mode || '';
+            if (s.leg.seat && !legLabel.includes(s.leg.seat)) {
+              legLabel = legLabel ? `${legLabel} · ${s.leg.seat}` : s.leg.seat;
+            }
+            if (s.leg.fare > 0 && s.trip?.moneyOn) {
+              legLabel = legLabel ? `${legLabel} · ¥${s.leg.fare}` : `¥${s.leg.fare}`;
+            }
+            top.append(el('span', 'jr-leg-mode', legLabel));
             const bar = el('div', 'jr-bar');
             const fill = el('div', 'jr-bar-fill');
             fill.style.width = `${s.leg.progress}%`;

@@ -457,13 +457,25 @@ export function modeIdOf(word: string): ModeId | null {
     [/飞机|航班|机票|飞过去|飞|plane|flight|fly/i, 'plane'],
     [/自驾|开车|汽车|租车|拼车|car|drive/i, 'car'],
     [/大巴|长途汽车|客车|公交|班车|bus|coach/i, 'bus'],
-    [/轮船|渡轮|客轮|船|ship|ferry|boat/i, 'ship'],
+    [/轮船|游轮|邮轮|渡轮|客轮|游船|船|ship|cruise|ferry|boat/i, 'ship'],
     [/摩托|机车|motorcycle|motorbike/i, 'motorcycle'],
     [/自行车|单车|骑行|bike|bicycle|cycle/i, 'bike'],
     [/电瓶车|电动车|scooter|e-bike/i, 'scooter'],
     [/步行|走路|徒步|腿儿|walk|on foot/i, 'walk'],
   ];
   for (const [re, id] of rules) if (re.test(s)) return id;
+  return null;
+}
+
+/** 从用户或她点名的交通方式词中提取舱位偏好（如「主题游轮」「海景游轮」）。 */
+export function seatHintOf(word: string): string | null {
+  const s = (word ?? '').trim();
+  if (!s) return null;
+  if (/主题|迪士尼|联名|乐园|豪华游轮|豪华邮轮|远洋游轮|远洋邮轮/i.test(s)) return 'theme-cruise';
+  if (/海景|阳台/i.test(s)) return 'ocean-balcony';
+  if (/内舱/i.test(s)) return 'inside-cabin';
+  if (/观光游船|游船/i.test(s)) return 'sightseeing-boat';
+  if (/游轮|邮轮|cruise/i.test(s)) return 'cruise-prefer';
   return null;
 }
 
@@ -515,7 +527,25 @@ export function roadText(  modeId: string, idx: number, leg: Journey, from: City
         ? `车里只剩几盏小灯。有人打呼，司机没开广播。${tail}`
         : `快到了。前排的人开始收拾东西，有人站起来又坐下。${tail}`;
 
-    case 'ship':
+    case 'ship': {
+      const isTheme = leg.seatId === 'theme-cruise' || leg.seat === '主题远洋游轮';
+      const isBalcony = leg.seatId === 'ocean-balcony' || leg.seat === '海景阳台房';
+      if (isTheme) {
+        if (idx === 0) return `出了港，顶层甲板上刚开完迎宾派对，海风吹着音乐声。${route}，${tail}`;
+        if (idx === 1) return night
+          ? `海上大剧院的演出刚散场，端着热饮在船尾甲板看了一会儿夜海。${tail}`
+          : `在游轮顶层冲了两次高空水滑道，又去轮换主题餐厅吃了顿热的。窗外全是蓝的。${tail}`;
+        return night
+          ? `游轮内街的灯还亮着，电玩区和小影院有人进出，船身稳得像在陆地上。${tail}`
+          : `快靠港了。站在观海甲板上能看见远处港口的轮廓。${tail}`;
+      }
+      if (isBalcony) {
+        if (idx === 0) return `出了港，站在房间的小阳台上看着岸边灯火退远。${route}，${tail}`;
+        if (idx === 1) return night
+          ? `阳台门留了条缝，屋里全是海浪声，泡了杯茶坐在栏杆边。${tail}`
+          : `去船上餐厅吃了顿饭，回来在阳台躺椅上晒了一会儿海面上的太阳。${tail}`;
+        return `快到岸了。海鸥开始绕着船尾飞，已经能望见码头。${tail}`;
+      }
       if (idx === 0) return `出了港，岸上的灯缩成一条线。风比刚才大，站不太稳。`;
       if (idx === 1) return night
         ? `夜里在甲板上。水是黑的，船的声音从脚底下一直传上来。${tail}`
@@ -523,6 +553,7 @@ export function roadText(  modeId: string, idx: number, leg: Journey, from: City
       return night
         ? `天还没亮，甲板上已经有人在等。风冷得站不住。`
         : `快到岸了。能看见岸上的房子和一条上坡的路。${tail}`;
+    }
 
     case 'plane':
       if (idx === 0) return `起飞后平稳了。遮光板拉开，下面是云，什么也看不见。`;

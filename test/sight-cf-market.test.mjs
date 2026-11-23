@@ -401,3 +401,76 @@ test('POST /town/join 对过时街道（如「春熙路」）或空串按 uid �
   const staleCount = db.rawDb.prepare("SELECT COUNT(*) AS n FROM town WHERE street = '春熙路' OR street = ''").get();
   assert.equal(Number(staleCount.n), 0, '数据库里绝不能再写入「春熙路」或空街道');
 });
+
+test('POST /town/stalls 支持自定义 effects 并按定价预算折算，GET/buy 完整透传且兼容纯文本老数据', async () => {
+  const db = makeDB();
+  await req('/town/join', { method: 'POST', db, body: { uid: UID_A, pet: '甲鱼', street: '南滨河路' } });
+  await req('/town/join', { method: 'POST', db, body: { uid: UID_B, pet: '乙鱼', street: '正宁路' } });
+
+  // 定价 25 -> 预算 round(35 + sqrt(25)*6) = 65；35 + 16 + 2*6 = 63 <= 65
+  const r1 = await req('/town/stalls', {
+    method: 'POST',
+    db,
+    body: {
+      uid: UID_A,
+      pet: '甲鱼',
+      item: '秘制牛肉面',
+      price: 25,
+      stock: 2,
+      note: '刚出锅还热着',
+      effects: { food: 35, fun: 16, knowledge: 2 },
+    },
+  });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.json.ok, true);
+  assert.deepEqual(r1.json.effects, { food: 35, fun: 16, knowledge: 2 });
+
+  // 定价 1 -> 预算 max(40, round(35 + 6)) = 41；超预算请求自动按比例截断折算
+  const r2 = await req('/town/stalls', {
+    method: 'POST',
+    db,
+    body: {
+      uid: UID_A,
+      pet: '甲鱼',
+      item: '大杂烩',
+      price: 1,
+      stock: 1,
+      effects: { food: 55, fun: 55, knowledge: 6, fitness: 4 },
+    },
+  });
+  assert.equal(r2.status, 200);
+  assert.equal(r2.json.ok, true);
+  const fx2 = r2.json.effects;
+  assert.ok(fx2 && typeof fx2 === 'object');
+  const weighted2 = (fx2.food || 0) + (fx2.energy || 0) + (fx2.clean || 0) + (fx2.fun || 0) + (fx2.social || 0)
+    + (fx2.knowledge || 0) * 6 + (fx2.fitness || 0) * 8;
+  assert.ok(weighted2 > 0 && weighted2 <= 41, `折算后总加权点数应 <= 41，实际 ${weighted2}`);
+
+  // 插入一条老格式纯文本 note 的摊位以验证向后兼容
+  const now = new Date().toISOString();
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  db.rawDb.prepare(
+    `INSERT INTO stalls (id, uid, seller, kind, item, price, stock, fresh_veg, note, at, expires_at)
+     VALUES ('legacy-1', ?, '老邻鱼', 'goods', '老式烤红薯', 8, 2, 0, '纯文本老吆喝', ?, ?)`
+  ).run(UID_B, now, future);
+
+  const listRes = await req('/town/stalls', { db });
+  assert.equal(listRes.status, 200);
+  const s1 = listRes.json.stalls.find((s) => s.id === r1.json.id);
+  const s2 = listRes.json.stalls.find((s) => s.id === r2.json.id);
+  const sOld = listRes.json.stalls.find((s) => s.id === 'legacy-1');
+  assert.equal(s1.note, '刚出锅还热着');
+  assert.deepEqual(s1.effects, { food: 35, fun: 16, knowledge: 2 });
+  assert.deepEqual(s2.effects, fx2);
+  assert.equal(sOld.note, '纯文本老吆喝');
+  assert.equal(sOld.effects ?? null, null);
+
+  const buyRes = await req('/town/buy', {
+    method: 'POST',
+    db,
+    body: { stallId: r1.json.id, buyer: '乙鱼', buyerUid: UID_B },
+  });
+  assert.equal(buyRes.status, 200);
+  assert.equal(buyRes.json.ok, true);
+  assert.deepEqual(buyRes.json.effects, { food: 35, fun: 16, knowledge: 2 });
+});

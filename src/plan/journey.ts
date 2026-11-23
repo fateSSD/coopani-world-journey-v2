@@ -35,11 +35,12 @@ export interface Journey {
   /** 出发时的倍速。中途改倍速不影响这一段，下一段才生效。 */
   readonly speed: number;
   /**
-   * 这一趟买的座位档（二等座 / 商务座 / 硬卧 / 公务舱……）。
+   * 这一趟买的座位/舱位档 id 与中文名（二等座 / 商务座 / 海景阳台房 / 主题远洋游轮……）。
    *
    * 2026-11-06 加的。老状态里没有这一格 —— 读不到就当「最低档」，不是当没有。
    * 空串 = 这种方式不分档（走路、骑车、自己开）。
    */
+  readonly seatId?: string;
   readonly seat?: string;
   /** 座位档的票价倍数。面板/日记要拿它说「这趟花得多」。 */
   readonly seatMult?: number;
@@ -526,7 +527,7 @@ export function pickMode(
       else if (m.id === 'bus') w = 2;
       else if (m.id === 'motorcycle') w = 1.5;
       else if (m.id === 'plane') w = 0.8;
-      else if (m.id === 'ship') w = 1.5;
+      else if (m.id === 'ship') w = poor ? 1.5 : 2.4;
       else w = 0.05;
     } else if (haul === 'long') {
       if (m.id === 'train') w = 5;
@@ -543,7 +544,7 @@ export function pickMode(
        *   1500 公里以上  0.08（基本只剩「专门自驾游」这一种动机）
        */
       else if (m.id === 'car') w = km >= 1500 ? 0.08 : 0.6;
-      else if (m.id === 'ship') w = 1.4;
+      else if (m.id === 'ship') w = poor ? 1.4 : 2.2;
       else w = 0.02;
     } else {
       // 跨洲：飞机是唯一像话的。船留给「有游轮航线」的浪漫，概率很低。
@@ -623,7 +624,7 @@ export function pickGrade(
    * 600 公里大约是三到五个小时的车：坐这么久，买张舒服的票是合理的。
    * 三百公里的城际，再怎么有钱也不该买商务座。
    */
-  const long = km >= 600;
+  const long = mode.id === 'ship' ? km >= 300 : km >= 600;
 
   // 没记账当成「手头有四张票的钱」—— 不上不下，该省的时候还是会省。
   const p = Number.isFinite(purse) && purse !== null ? (purse as number) : 4;
@@ -632,6 +633,18 @@ export function pickGrade(
 
   // 长途更值得花钱：同样一笔钱，坐八小时比坐两小时值。
   const up = long ? 1.5 : 1;
+
+  /*
+   * 主题游轮（3.2x）账面测算：
+   * 长途船票基准 120–180 元，3.2x 溢价约 260–400 元；航程内可免单吃正餐(40×2) + 演出(88) + 泳池(35) + 游艺(35) ≈ 240–360 元，账面基本持平。
+   * 门槛定在 p >= 4.5（余钱至少够 4.5 张内舱票），即一次花掉余钱不超过 ~71% 时以 35% 概率入选。
+   */
+  if (mode.id === 'ship' && long && third && p >= 4.5) {
+    const r = rnd();
+    if (r < 0.35) return third;
+    if (r < 0.85) return second;
+    return base;
+  }
 
   if (p < 4) return rnd() < (long ? 0.3 : 0.15) ? second : base;
   if (p < 9) return rnd() < Math.min(0.7, 0.4 * up) ? second : base;
@@ -664,7 +677,7 @@ export function buildJourney(args: {
     toId: to.id,
     modeId: mode.id,
     km,
-    ...(grade && grade.id ? { seat: grade.name, seatMult: grade.mult } : {}),
+    ...(grade && grade.id ? { seatId: grade.id, seat: grade.name, seatMult: grade.mult } : {}),
     durationWorldHours,
     departedAt: at.toISOString(),
     arriveAt: arriveAt.toISOString(),

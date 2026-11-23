@@ -432,6 +432,31 @@ function safeDoing(raw, extra) {
 /** 本城设定的街道与城规各最多几条。需与前端 `site/pets.html` 的 `SLOTS` 一致。 */
 const TOWN_LIST_MAX = 20;
 
+const STREET_MOD_KEYS = ['food', 'energy', 'clean', 'fun', 'social', 'know', 'work'];
+
+const DEFAULT_STREET_PROFILES = [
+  {
+    name: '南滨河路',
+    desc: '傍着黄河长廊与水车园，清晨有带露水的早市，傍晚河风吹散暑气，散步慢跑最养人，就是河滩风大容易沾灰。',
+    mods: { energy: 10, fun: 10, clean: -10 },
+  },
+  {
+    name: '张掖路',
+    desc: '老城最热闹的商业步行街，茶摊、馆子与傍晚半价尾货扎堆，街坊熟人多、零活也多，就是夜里灯火喧嚣不够清静。',
+    mods: { social: 15, work: 10, energy: -10 },
+  },
+  {
+    name: '皋兰路',
+    desc: '老院落与林荫道交错的安静街区，街角有旧书摊与小茶馆，屋里整洁、静下心看书学手艺最快，只是夜里略显冷清。',
+    mods: { clean: 10, know: 15, social: -10 },
+  },
+  {
+    name: '雁滩路',
+    desc: '河滩果园改出来的生活片区，菜摊果铺便宜实在，周末还有旧货集与夜唱摊子，吃喝消遣划算，就是离老城中心稍远。',
+    mods: { food: 15, fun: 10, work: -5 },
+  },
+];
+
 const TOWN_DEFAULTS = {
   id: 'lanzhou',
   name: '兰州',
@@ -444,6 +469,7 @@ const TOWN_DEFAULTS = {
     + '早上出门沿着河边走两步就能吃碗热面，晚上不管走多远，望见河谷里的灯就知道到家了。',
   /* 默认四条街，生活层按此落址并统计同城居民。 */
   streets: ['南滨河路', '张掖路', '皋兰路', '雁滩路'],
+  streetProfiles: DEFAULT_STREET_PROFILES,
   /*
    * 四条城规 —— 第一条对应底线（不吃同类），后三条各自对应一条机制，不是装饰：
    *   货不过夜              → stalls 3 天过期、qty 会坏
@@ -479,6 +505,58 @@ function pickTownStreet(streets, seed) {
   return list[(h >>> 0) % list.length];
 }
 
+function normStreetMods(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const k of STREET_MOD_KEYS) {
+    const n = Math.round(Number(raw[k]));
+    if (Number.isFinite(n) && n !== 0) {
+      out[k] = Math.max(-30, Math.min(30, n));
+    }
+  }
+  return out;
+}
+
+function normStreetProfiles(rawStreets, rawProfiles, extra) {
+  const parseList = (v) => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string' && v.trim()) {
+      try {
+        const parsed = JSON.parse(v);
+        if (Array.isArray(parsed)) return parsed;
+      } catch { /* ignore */ }
+    }
+    return [];
+  };
+  const primary = parseList(rawProfiles);
+  const src = primary.length ? primary : parseList(rawStreets);
+  const out = [];
+  const seen = new Set();
+  for (const item of src) {
+    if (typeof item === 'string') {
+      const name = safeText(item, 12, extra);
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      const def = DEFAULT_STREET_PROFILES.find((p) => p.name === name);
+      out.push(def
+        ? { name: def.name, desc: def.desc, mods: { ...def.mods } }
+        : { name, desc: '', mods: {} });
+    } else if (item && typeof item === 'object') {
+      const name = safeText(item.name, 12, extra);
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      const hasDesc = Object.prototype.hasOwnProperty.call(item, 'desc');
+      const hasMods = item.mods && typeof item.mods === 'object' && !Array.isArray(item.mods);
+      const def = DEFAULT_STREET_PROFILES.find((p) => p.name === name);
+      const desc = hasDesc ? safeText(item.desc, 120, extra) : (def ? def.desc : '');
+      const mods = hasMods ? normStreetMods(item.mods) : (def ? { ...def.mods } : {});
+      out.push({ name, desc, mods });
+    }
+    if (out.length >= TOWN_LIST_MAX) break;
+  }
+  return out;
+}
+
 /** 把库里那一行（或者没有）整理成一份能用的设定：缺的补默认，脏的整条丢掉。 */
 function normTown(row, env) {
   const extra = bannedExtra(env);
@@ -493,13 +571,17 @@ function normTown(row, env) {
   };
   const id = okCity(row?.id) ? clean(row.id, 40) : d.id;
   const name = safeText(row?.name, 24, extra) || d.name;
-  const streets = arr(row?.streets, 12, TOWN_LIST_MAX);
+  const parsedProfiles = normStreetProfiles(row?.streets, row?.streetProfiles, extra);
+  const streetProfiles = parsedProfiles.length
+    ? parsedProfiles
+    : DEFAULT_STREET_PROFILES.map((p) => ({ name: p.name, desc: p.desc, mods: { ...p.mods } }));
   const rules = arr(row?.rules, 60, TOWN_LIST_MAX);
   return {
     id,
     name,
     origin: safeText(row?.origin, 400, extra) || d.origin,
-    streets: streets.length ? streets : d.streets.slice(),
+    streets: streetProfiles.map((p) => p.name),
+    streetProfiles,
     rules: rules.length ? rules : d.rules.slice(),
     at: row?.at || '',
     /*
@@ -1263,6 +1345,7 @@ async function townInfoRoute(env) {
     name: town.name,
     origin: town.origin,
     streets: town.streets,
+    streetProfiles: town.streetProfiles,
     rules: town.rules,
     /*
      * 接口版本。将来加了字段，别的服务器按这个数字判断能不能用 ——
@@ -1346,6 +1429,75 @@ async function townJoinRoute(request, env, method) {
   }
 }
 
+const STALL_EFFECT_LIMITS = {
+  food: { max: 55, weight: 1 },
+  energy: { max: 55, weight: 1 },
+  clean: { max: 55, weight: 1 },
+  fun: { max: 55, weight: 1 },
+  social: { max: 55, weight: 1 },
+  knowledge: { max: 6, weight: 6 },
+  fitness: { max: 4, weight: 8 },
+};
+
+function stallEffectBudget(price) {
+  const p = Math.max(1, Math.min(999, Math.round(Number(price) || 1)));
+  return Math.max(40, Math.min(90, Math.round(35 + Math.sqrt(p) * 6)));
+}
+
+function normStallEffects(raw, price) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const picked = {};
+  let totalCost = 0;
+  for (const [k, rule] of Object.entries(STALL_EFFECT_LIMITS)) {
+    const v = Math.round(Number(raw[k] ?? 0));
+    if (!Number.isFinite(v) || v <= 0) continue;
+    const clamped = Math.min(rule.max, v);
+    picked[k] = clamped;
+    totalCost += clamped * rule.weight;
+  }
+  const keys = Object.keys(picked);
+  if (!keys.length) return null;
+  const budget = stallEffectBudget(price);
+  if (totalCost > budget) {
+    const ratio = budget / totalCost;
+    let remain = budget;
+    for (const k of keys) {
+      const w = STALL_EFFECT_LIMITS[k].weight;
+      const scaled = Math.min(STALL_EFFECT_LIMITS[k].max, Math.floor(picked[k] * ratio));
+      const maxAfford = Math.floor(remain / w);
+      const finalVal = Math.max(0, Math.min(scaled, maxAfford));
+      if (finalVal > 0) {
+        picked[k] = finalVal;
+        remain -= finalVal * w;
+      } else {
+        delete picked[k];
+      }
+    }
+  }
+  return Object.keys(picked).length ? picked : null;
+}
+
+function encodeStallNote(noteText, effects) {
+  if (!effects || !Object.keys(effects).length) return noteText || '';
+  return JSON.stringify({ t: noteText || '', e: effects });
+}
+
+function decodeStallNote(raw, price, extra) {
+  const s = String(raw || '');
+  if (s.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(s);
+      if (parsed && typeof parsed === 'object' && ('e' in parsed || 't' in parsed)) {
+        return {
+          note: safeDoing(parsed.t || '', extra),
+          effects: normStallEffects(parsed.e, price),
+        };
+      }
+    } catch { /* 按老纯文本 note 处理 */ }
+  }
+  return { note: safeDoing(s, extra), effects: null };
+}
+
 async function townStallsRoute(request, env, method, ctx) {
   const db = env?.DB;
   if (!db) return reply(500, { ok: false, error: 'server error' });
@@ -1368,6 +1520,8 @@ async function townStallsRoute(request, env, method, ctx) {
     if (!okUid(uid) || !item || !Number.isFinite(price) || price < 1 || price > 999 || !Number.isFinite(stock) || stock < 1 || stock > 99) {
       return reply(400, { ok: false, error: 'bad fields' });
     }
+    const effects = normStallEffects(body?.effects, price);
+    const storedNote = encodeStallNote(note, effects);
 
     try {
       const flag = await flagOf(db, uid);
@@ -1393,11 +1547,15 @@ async function townStallsRoute(request, env, method, ctx) {
       await db.prepare(
         `INSERT INTO stalls (id, uid, seller, kind, item, price, stock, fresh_veg, note, at, expires_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
-      ).bind(id, uid, seller, kind, item, price, stock, freshVeg, note, nowIso, expIso).run();
+      ).bind(id, uid, seller, kind, item, price, stock, freshVeg, storedNote, nowIso, expIso).run();
 
       await bumpRate(db, rKey, day);
       await invalidateStallsCache(ctx);
-      return reply(200, { ok: true, id, seller, kind, item, price, stock, freshVeg: !!freshVeg, note, at: nowIso, expiresAt: expIso });
+      return reply(200, {
+        ok: true, id, seller, kind, item, price, stock, freshVeg: !!freshVeg, note,
+        ...(effects ? { effects } : {}),
+        at: nowIso, expiresAt: expIso,
+      });
     } catch (e) {
       if (/no such table|no such column/i.test(String(e?.message || e))) {
         return reply(503, { ok: false, error: 'not migrated' });
@@ -1453,16 +1611,21 @@ async function townStallsRoute(request, env, method, ctx) {
     ]);
 
     const stalls = (stallsRes?.results ?? [])
-      .map((r) => ({
-        id: String(r.id),
-        seller: safePet(r.seller, extra).name || '街坊',
-        kind: r.kind === 'errand' ? 'errand' : 'goods',
-        item: safeDoing(r.item, extra) || String(r.item || '').slice(0, 24),
-        price: Math.max(1, Math.round(Number(r.price) || 0)),
-        stock: Math.max(0, Math.round(Number(r.stock) || 0)),
-        freshVeg: Boolean(r.fresh_veg),
-        note: safeDoing(r.note, extra),
-      }))
+      .map((r) => {
+        const price = Math.max(1, Math.round(Number(r.price) || 0));
+        const decoded = decodeStallNote(r.note, price, extra);
+        return {
+          id: String(r.id),
+          seller: safePet(r.seller, extra).name || '街坊',
+          kind: r.kind === 'errand' ? 'errand' : 'goods',
+          item: safeDoing(r.item, extra) || String(r.item || '').slice(0, 24),
+          price,
+          stock: Math.max(0, Math.round(Number(r.stock) || 0)),
+          freshVeg: Boolean(r.fresh_veg),
+          note: decoded.note,
+          ...(decoded.effects ? { effects: decoded.effects } : {}),
+        };
+      })
       .filter((x) => x.item && x.stock > 0);
 
     const bulletin = [];
@@ -1537,7 +1700,7 @@ async function townBuyRoute(request, env, method, ctx) {
     if (await rateOf(db, rKey) >= 60) return reply(429, { ok: false, error: 'too many' });
 
     const row = await db.prepare(
-      `SELECT id, uid, seller, kind, item, price, stock, fresh_veg, expires_at
+      `SELECT id, uid, seller, kind, item, price, stock, fresh_veg, note, expires_at
          FROM stalls WHERE id = ?1`,
     ).bind(stallId).first();
     if (!row) return reply(404, { ok: false, error: 'not found' });
@@ -1573,15 +1736,18 @@ async function townBuyRoute(request, env, method, ctx) {
       dealExp,
     ).run();
 
+    const price = Math.max(1, Math.round(Number(row.price) || 0));
+    const decoded = decodeStallNote(row.note, price, extra);
     await bumpRate(db, rKey, day);
     await invalidateStallsCache(ctx);
     return reply(200, {
       ok: true,
       id: dealId,
       item: String(row.item),
-      price: Math.max(1, Math.round(Number(row.price) || 0)),
+      price,
       seller: safePet(row.seller, extra).name || '街坊',
       freshVeg: Boolean(row.fresh_veg),
+      ...(decoded.effects ? { effects: decoded.effects } : {}),
       qty,
       stockLeft: Math.max(0, Number(row.stock) - qty),
     });
@@ -2510,7 +2676,8 @@ async function adminRoute(request, env, url, method) {
         .map((x) => safeText(x, max, extra))
         .filter(Boolean)
         .slice(0, n);
-      const streets = list(body?.streets, 12, TOWN_LIST_MAX);
+      const streetProfiles = normStreetProfiles(body?.streets, body?.streetProfiles, extra);
+      const streets = streetProfiles.map((p) => p.name);
       const rules = list(body?.rules, 60, TOWN_LIST_MAX);
       /*
        * 两条都不能空 —— **空街名等于她没地方住，空城规等于没有城规**。
@@ -2528,7 +2695,7 @@ async function adminRoute(request, env, url, method) {
            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
            ON CONFLICT(id) DO UPDATE SET
              name = ?2, origin = ?3, streets = ?4, rules = ?5, at = ?6`,
-        ).bind(id, name, origin, JSON.stringify(streets), JSON.stringify(rules), nowIso).run();
+        ).bind(id, name, origin, JSON.stringify(streetProfiles), JSON.stringify(rules), nowIso).run();
       } catch {
         /*
          * 表没建时的错要能看懂。默认那句 `D1_ERROR: no such table` 会让

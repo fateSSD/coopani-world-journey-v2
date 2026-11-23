@@ -95,7 +95,7 @@ import {
   decisionCrossedWhileAway, trainUnit, pick, seedOf, parseClock, parseSlotKind,
   slotClock, slotBrief, coverLine, whoOf, namesIn, impressionAsk, festivalCities,
   photoProtocolOf, shouldCropWatermark, gist, homeReasonText, weatherLine,
-  partWord, seededRandom, modeIdOf, roadText, matchSpot, todayPilgrimLines,
+  partWord, seededRandom, modeIdOf, seatHintOf, roadText, matchSpot, todayPilgrimLines,
   pilgrimNote, beatText, lifeBusyUntilFromView, lifeNeedsCareFromView, pledgeWaitDays,
   type LifeScheduleView,
 } from './helpers.ts';
@@ -611,12 +611,26 @@ export const purseMethods: Record<string, any> = {
   },
 
 
-  pickSeatFor(modeId: string, km: number, crossBorder: boolean): SeatGrade | undefined {
+  pickSeatFor(modeId: string, km: number, crossBorder: boolean, wantedWord = ''): SeatGrade | undefined {
     const mode = modeById(modeId);
     if (!mode) return undefined;
     const cheapest = this.fareOf(modeId, km, crossBorder);
     const left = this.purseLeft();
     const purse = left === null ? null : left / Math.max(1, cheapest);
+    const list = mode.grades?.(km) ?? [];
+    const hint = seatHintOf(wantedWord);
+    if (hint && list.length) {
+      const canAfford = (g: SeatGrade) => purse === null || g.mult <= Math.max(1, purse * 0.85);
+      if (hint === 'cruise-prefer') {
+        const pref = list.find((g) => g.id === 'theme-cruise' && canAfford(g))
+          ?? list.find((g) => g.id === 'ocean-balcony' && canAfford(g))
+          ?? list.find((g) => g.id === 'sightseeing-boat' && canAfford(g));
+        if (pref) return pref;
+      } else {
+        const exact = list.find((g) => g.id === hint && canAfford(g));
+        if (exact) return exact;
+      }
+    }
     return pickGrade(mode, km, purse);
   },
 
@@ -955,6 +969,9 @@ export const purseMethods: Record<string, any> = {
             fromName: leg?.from?.name ?? this.st.leg.fromId,
             toName: leg?.to?.name ?? this.st.leg.toId,
             modeId: this.st.leg.modeId,
+            ...(this.st.leg.seatId ? { seatId: this.st.leg.seatId } : {}),
+            ...(this.st.leg.seat ? { seat: this.st.leg.seat } : {}),
+            ...(typeof this.st.leg.seatMult === 'number' ? { seatMult: this.st.leg.seatMult } : {}),
             departedAt: this.st.leg.departedAt,
             arriveAt: this.st.leg.arriveAt,
           }
@@ -1152,8 +1169,12 @@ export const purseMethods: Record<string, any> = {
       // 直接用世界时间相减。原来是用「真实剩余 × 出发时的倍速」反算，
       // 用户中途改倍速就会算错 —— 而倍速恰恰是最常被改的那个旋钮。
       const remainWorld = Math.max(0, (Date.parse(leg.arriveAt) - now.getTime()) / 3_600_000);
+      const isThemeCruise = leg.seatId === 'theme-cruise' || leg.seat === '主题远洋游轮';
       return [
-        `在路上。${from?.name ?? leg.fromId} → ${to?.name ?? leg.toId}，${mode?.name ?? leg.modeId}。`,
+        `在路上。${from?.name ?? leg.fromId} → ${to?.name ?? leg.toId}，${mode?.name ?? leg.modeId}${leg.seat ? `（${leg.seat}）` : ''}。`,
+        isThemeCruise
+          ? '船上有顶层泳池与水滑道、海上大剧院、轮换主题餐厅和室内电玩街区（一价全包）。'
+          : '',
         `${leg.km} 公里，这一趟 ${humanHours(leg.durationWorldHours)}，已经走了 ${progress}%。`,
         `还剩约 ${humanHours(remainWorld)}的世界时间。`,
         leg.viaIds.length ? `路上经过：${leg.viaIds.map((id) => this.cityName(id)).join('、')}。` : '',
