@@ -17,11 +17,26 @@
  * 没填才用预设补。这样既能一键上手，也不挡住要微调的人。
  */
 
-/** 后端：云端走 OpenAI 兼容的 `/images/generations`，本地走 ComfyUI。 */
-export type ImageProtocol = 'openai' | 'comfyui';
+/**
+ * 后端协议。
+ *
+ * - `openai`：云端 OpenAI 兼容的 `POST {base}/images/generations`
+ * - `qwen`：云端千问 / 百炼的 `POST {base}/api/v1/services/aigc/multimodal-generation/generation`
+ * - `comfyui`：本地 ComfyUI 的 `/prompt`
+ *
+ * **`qwen` 不是用户直接选的一项。** 配置里的 `imageProtocol` 仍然只有
+ * 「云端 / 本地」两档（`openai` / `comfyui`），千问是「云端」下面的一个
+ * **服务商**（`imagePreset: 'qwen'`）；这里多一个协议值，是因为请求的
+ * 路径、请求体、返回三样都和 OpenAI 那条不一样，`shootPhoto` 得知道走哪支。
+ *
+ * 为什么不让用户在 `imageProtocol` 里选三项：那个下拉的语义是「图从哪来」
+ * （云端 / 本地），换一家云端服务商不该动这一层，否则用户在两个下拉之间
+ * 来回试的时候，「本地 + 千问」这种自相矛盾的组合会真的被保存下来。
+ */
+export type ImageProtocol = 'openai' | 'qwen' | 'comfyui';
 
 /** 云端服务商预设。`custom` = 自己填地址和模型。 */
-export type ImagePreset = 'doubao' | 'openai' | 'custom';
+export type ImagePreset = 'doubao' | 'openai' | 'qwen' | 'custom';
 
 export interface ImageBackend {
   readonly protocol: ImageProtocol;
@@ -76,11 +91,34 @@ const PRESETS: Readonly<Record<Exclude<ImagePreset, 'custom'>, Preset>> = {
     size: '1024x1024',
     minPixels: 0,
   },
+  /*
+   * 千问（2026-11-23，GitHub Discussion #586 的 lyb-ai 问的）。
+   *
+   * **地址这一栏的语义和别家不一样，要在面板上说清**：千问的接口是
+   * `{base}/api/v1/services/aigc/multimodal-generation/generation`，
+   * 而 `base` 只到域名。所以这里填的是**纯域名**，不是 `/v1`。
+   *
+   * - 百炼（按量计费）：`https://dashscope.aliyuncs.com`
+   * - Token Plan：`https://token-plan.maas.qianwenaiapi.com`
+   *
+   * 两家的 `model` 名字一样，换套餐只需要改地址这一栏。
+   *
+   * 尺寸：`宽*高`（星号），总像素 512×512 – 2048×2048。默认给 1024×1024 ——
+   * 手机竖拍的 3:4 / 16:9 让用户自己在「出图尺寸」里改成 `1152x864` 这种，
+   * 只要落在那个区间内就行，不必替他把比例定死。
+   */
+  qwen: {
+    label: '千问 Qwen-Image（百炼 / Token Plan）',
+    api: 'https://dashscope.aliyuncs.com',
+    model: 'qwen-image-3.0-pro',
+    size: '1024x1024',
+    minPixels: 0,
+  },
 };
 
 /** 给配置面板和日志用：预设的中文名。 */
 export function presetLabel(preset: string | undefined): string {
-  if (preset === 'doubao' || preset === 'openai') return PRESETS[preset].label;
+  if (preset === 'doubao' || preset === 'openai' || preset === 'qwen') return PRESETS[preset].label;
   return '自定义';
 }
 
@@ -98,7 +136,7 @@ export function presetDefaults(preset: string): {
   minPixels: number;
 } | null {
   const raw = (preset ?? '').trim();
-  if (raw !== 'doubao' && raw !== 'openai') return null;
+  if (raw !== 'doubao' && raw !== 'openai' && raw !== 'qwen') return null;
   const p = PRESETS[raw];
   return { api: p.api, model: p.model, size: p.size, minPixels: p.minPixels };
 }
@@ -162,7 +200,18 @@ export function resolveImageBackend(cfg: {
   }
 
   const presetName = (cfg.imagePreset ?? '').trim() as ImagePreset;
-  const preset = presetName === 'doubao' || presetName === 'openai' ? PRESETS[presetName] : null;
+  const preset = presetName === 'doubao' || presetName === 'openai' || presetName === 'qwen'
+    ? PRESETS[presetName]
+    : null;
+  /*
+   * 千问的那一支（2026-11-23）。
+   *
+   * 判据只有「预设」这一条，**不看地址后缀**：有人会把自定义地址填成
+   * `https://dashscope.aliyuncs.com/compatible-mode/v1`（百炼确实有 OpenAI
+   * 兼容模式），那种配置走的是 `/images/generations`，硬按千问的路径发反而是错的。
+   * 所以「走哪条协议」只由他选的那一档决定，不由地址长什么样去猜。
+   */
+  const isQwen = presetName === 'qwen';
 
   const api = (cfg.imageApi ?? '').trim() || preset?.api || '';
   const model = (cfg.imageModel ?? '').trim() || preset?.model || '';
@@ -180,7 +229,7 @@ export function resolveImageBackend(cfg: {
     : `云端 · ${who} —— 服务地址没填，拍不了`;
 
   return {
-    protocol: 'openai',
+    protocol: isQwen ? 'qwen' : 'openai',
     api,
     model,
     size: fixed.size,
@@ -197,5 +246,7 @@ export function resolveImageBackend(cfg: {
 export function presetHints(preset?: string): { readonly minimal: boolean; readonly lang: 'zh' | 'en' } {
   const key = (preset ?? '').trim().toLowerCase();
   if (key === 'doubao') return { minimal: true, lang: 'zh' };
+  /* Qwen-Image 是中文原生底模：写中文信息密度更高，英文反而丢细节。 */
+  if (key === 'qwen') return { minimal: false, lang: 'zh' };
   return { minimal: false, lang: 'en' };
 }

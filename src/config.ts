@@ -188,6 +188,10 @@ export interface JourneyConfigSection extends WorldSection {
    * 选一个就把「接口地址 / 模型 ID / 合规尺寸」三样填好，用户只需要贴密钥。
    * 只在本项协议是云端时有意义；手填的 `imageApi` / `imageModel` / `imageSize`
    * 仍然优先 —— 预设是兜底，不是覆盖。
+   *
+   * 取值：`doubao` / `qwen`（2026-11-23 加）/ `openai` / `custom`。
+   * **千问那一档同时决定协议**：选它就走 DashScope 的 `multimodal-generation`
+   * （路径、请求体、返回都和 OpenAI 那条不同，见 `photo.ts` 的 `shootPhoto`）。
    */
   imagePreset: string;
   /**
@@ -203,6 +207,9 @@ export interface JourneyConfigSection extends WorldSection {
    * 生图接口根地址。留空＝不拍。
    *
    * - OpenAI 兼容：填到 `/v1` 或 `/api/v3` 为止，如 `https://api.openai.com/v1`
+   * - **千问（百炼 / Token Plan）：只填域名**，如 `https://dashscope.aliyuncs.com`
+   *   或 `https://token-plan.maas.qianwenaiapi.com` —— 后面的
+   *   `/api/v1/services/aigc/multimodal-generation/generation` 由程序自己补
    * - ComfyUI：服务地址，如 `http://127.0.0.1:8188`
    */
   imageApi: string;
@@ -332,8 +339,9 @@ export interface JourneyConfigSection extends WorldSection {
   /** 生图密钥。只存本机配置，不进日记目录、不落盘到日志。 */
   imageKey: string;
   /**
-   * 生图模型 id。留空＝用所选预设自带的模型（豆包 Seedream / OpenAI gpt-image-1）；
-   * 预设也没选就还是空，请求会失败并在日志里说明。换服务商通常只需要改这一项。
+   * 生图模型 id。留空＝用所选预设自带的模型（豆包 Seedream / 千问 qwen-image-3.0-pro /
+   * OpenAI gpt-image-1）；预设也没选就还是空，请求会失败并在日志里说明。
+   * 换服务商通常只需要改这一项。
    */
   imageModel: string;
   /**

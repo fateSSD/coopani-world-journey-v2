@@ -177,8 +177,15 @@ export interface PhotoScene {
 }
 
 export interface PhotoRequest {
-  /** OpenAI 兼容的根地址，如 `https://api.openai.com/v1`。 */
+  /** 服务根地址。OpenAI 兼容填到 `/v1` 为止；千问填**纯域名**（不带 `/api/v1`）。 */
   readonly api: string;
+  /**
+   * 走哪条协议（2026-11-23）。留空 = `openai`，老调用处一个字都不用改。
+   *
+   * `qwen` 不是「OpenAI 兼容 + 换个地址」——路径、请求体、返回三样都不同，
+   * 所以必须显式传进来，不能靠地址去猜（见 `image-backend.ts` 的注释）。
+   */
+  readonly protocol?: string;
   readonly key: string;
   /** 模型 id。留空用 `gpt-image-1`。 */
   readonly model?: string;
@@ -2892,12 +2899,34 @@ function extractImageUsage(payload: unknown): PhotoBytes['usage'] | undefined {
   };
 }
 
+/**
+ * 千问（百炼 / Token Plan）的接口路径。**它的 `base` 只到域名**，不像 OpenAI
+ * 那一支填到 `/v1`。
+ */
+const QWEN_PATH = '/api/v1/services/aigc/multimodal-generation/generation';
+/** 千问没填模型时用它（官方同步图像生成的默认示例模型）。 */
+const QWEN_MODEL = 'qwen-image-3.0-pro';
+
 export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
   if (req.signal?.aborted) throw new Error('生图已取消');
   const base = req.api.trim().replace(/\/+$/, '');
   if (!base) throw new Error('生图接口没填');
 
-  const url = `${base}/images/generations`;
+  /*
+   * 千问那一支（2026-11-23）。
+   *
+   * 三处都不一样，所以不是「换个地址」能解决的：
+   *   路径   `/images/generations`  →  `/api/v1/services/aigc/multimodal-generation/generation`
+   *   请求体 `{model, prompt, size}` →  `{model, input:{messages:[…]}, parameters:{size:"1024*1024"}}`
+   *   返回   `data[0].b64_json/url`  →  `output.choices[0].message.content[0].image`
+   *
+   * 有人会把整条接口地址粘进「地址」那一栏 —— 认出来就直接用，免得再拼一层 404。
+   */
+  const isQwen = /^qwen/i.test(req.protocol ?? '');
+  const url = isQwen
+    ? (/multimodal-generation\/generation$/.test(base) ? base : `${base}${QWEN_PATH}`)
+    : `${base}/images/generations`;
+
   const body: Record<string, unknown> = {
     model: req.model?.trim() || PHOTO_MODEL,
     prompt: req.prompt,
@@ -2906,9 +2935,15 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
   /*
    * 参考图。只收 data URI —— 传路径或 URL 的服务端行为各不相同，
    * 而这里的图全来自本机文件，直传 base64 最不容易出岔子。
+   *
+   * **千问这条暂不发参考图。** 它的图生图/编辑是另一套 `content` 结构
+   * （图片和文字平级塞进 messages），`qwen-image-edit` 那一页文档现在 404，
+   * 字段名只能靠猜 —— 猜错的代价是每张图都 400，或者更糟：被静默忽略，
+   * 用户以为「图鉴配好了」而画面里换了个人。宁可先只做文生图，
+   * 上层会把「参考图没生效」如实写进日志。
    */
   const refs = (req.refs ?? []).filter((u) => typeof u === 'string' && u.startsWith('data:image/'));
-  let withRefs = refs.length > 0;
+  let withRefs = refs.length > 0 && !isQwen;
   if (withRefs) body.image = refs;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (req.key.trim()) headers.authorization = `Bearer ${req.key.trim()}`;
@@ -2945,7 +2980,20 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
    * 这一句是参数，不是描述。不认识这个字段的服务会 400，那就按阶梯去掉。
    */
   let withWatermark = true;
+  /** 千问的尺寸在 `parameters.size` 里，格式是 `宽*高`（星号）。被拒就不带。 */
+  let withQwenSize = true;
   const build = (): Record<string, unknown> => {
+    if (isQwen) {
+      const parameters: Record<string, unknown> = {};
+      if (withQwenSize) parameters.size = sizeValue.replace(/[×xX]/g, '*');
+      const payload: Record<string, unknown> = {
+        model: req.model?.trim() || QWEN_MODEL,
+        input: { messages: [{ role: 'user', content: [{ text: req.prompt }] }] },
+      };
+      /* 空对象也发出去会让一部分网关报参数错，没参数就整段不带。 */
+      if (Object.keys(parameters).length) payload.parameters = parameters;
+      return payload;
+    }
     const payload: Record<string, unknown> = { ...body };
     if (withN) payload.n = 1;
     if (!withFormat) delete payload.response_format;
@@ -2964,8 +3012,18 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
      */
     for (let i = 0; i < 3 && res.status === 400; i++) {
       const peek = (await res.clone().text()).slice(0, 400);
-      const before = `${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}|${withRefs}`;
-      if (/image_size/i.test(peek) && sizeField !== 'image_size') {
+      const before = `${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}|${withRefs}|${withQwenSize}`;
+      if (isQwen) {
+        /*
+         * 千问这条只有一个可降级项：尺寸。
+         *
+         * `parameters` 里的 `response_format` / `n` / `watermark` 都有默认值，
+         * 不发也不会 400；参考图本来就没发。所以没有阶梯可退 ——
+         * 尺寸被拒（总像素必须落在 512×512 – 2048×2048）就整段不带，
+         * 让模型按提示词自己选分辨率。**留着一个会被拒的尺寸反复重试没有意义。**
+         */
+        if (withQwenSize && /size|尺寸|分辨率|像素|resolution/i.test(peek)) withQwenSize = false;
+      } else if (/image_size/i.test(peek) && sizeField !== 'image_size') {
         // 硅基流动、阿里百炼那一支：只认 image_size，传 size 直接拒
         sizeField = 'image_size';
       } else if (sizeField && /must be one of/i.test(peek)) {
@@ -3002,7 +3060,7 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
         // 尺寸值本身它不收：什么尺寸都不带，让它用自己的默认值
         sizeField = null;
       }
-      if (`${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}|${withRefs}` === before) break;   // 认不出该改什么，别乱试
+      if (`${sizeField}|${withFormat}|${withWatermark}|${withN}|${sizeValue}|${withRefs}|${withQwenSize}` === before) break;   // 认不出该改什么，别乱试
       res = await send(build());
     }
   } catch (e) {
@@ -3025,9 +3083,24 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
      * 然后一个个试。既然是模型名的问题，就把**能用的名字列出来**，
      * 再按他填的那截做一次模糊匹配，直接指到该填哪一个。
      */
-    if (/model.*(not exist|not found|does not)/i.test(detail)) {
+    if (/model.*(not exist|not found|does not)/i.test(detail) && !isQwen) {
       const hint = await modelNameHint(base, req.key, req.model ?? '');
       if (hint) throw new Error(hint);
+    }
+    /*
+     * 千问 404 几乎只有一个原因：地址填多了或填少了。
+     *
+     * 它的接口是 `{域名}/api/v1/services/aigc/multimodal-generation/generation`，
+     * 而「地址」那一栏要填的是**域名**。有人会照别家的习惯填到 `/v1`，
+     * 也有人把整条接口地址贴进来 —— 后者已经被认出来直接用，
+     * 前者就会 404，而错误文本里只有一句 not found，看不出该填到哪儿。
+     */
+    if (isQwen && res.status === 404) {
+      throw new Error(
+        '服务返回 HTTP 404：千问的「服务地址」只填域名 —— '
+        + '百炼填 https://dashscope.aliyuncs.com，Token Plan 填 https://token-plan.maas.qianwenaiapi.com；'
+        + '后面那段 /api/v1/services/aigc/multimodal-generation/generation 由程序自己补，别写进地址栏。',
+      );
     }
     throw new Error(`服务返回 HTTP ${res.status}${detail ? `：${detail}` : ''}`);
   }
@@ -3061,6 +3134,23 @@ export async function shootPhoto(req: PhotoRequest): Promise<PhotoBytes> {
     }
     const dropped = refs.length > 0 && !withRefs ? { refsDropped: true as const } : {};
     return usage ? { bytes, mime, usage, ...dropped } : { bytes, mime, ...dropped };
+  }
+  /*
+   * Data URL（`data:image/png;base64,...`）。
+   *
+   * 千问在 `response_format: 'b64_json'` 时回的**不是** `b64_json` 字段，
+   * 而是把整条 Data URL 塞进 `image` 里。我们默认不要 b64_json（只对
+   * 3.0 系列有效，2.x 会 InvalidParameter），但账号或网关把默认值改掉时
+   * 撞上的就是这个形状 —— 认一下，别把已经生成好的图当失败扔掉。
+   */
+  if (typeof first.url === 'string' && /^data:image\//i.test(first.url)) {
+    const m = /^data:([^;,]+);base64,(.*)$/i.exec(first.url);
+    if (m) {
+      const bytes = new Uint8Array(Buffer.from(m[2], 'base64'));
+      const mime = sniffImage(bytes) ?? m[1].toLowerCase();
+      const droppedUri = refs.length > 0 && !withRefs ? { refsDropped: true as const } : {};
+      return usage ? { bytes, mime, usage, ...droppedUri } : { bytes, mime, ...droppedUri };
+    }
   }
   if (typeof first.url === 'string' && /^https?:\/\//.test(first.url)) {
     try {
@@ -3140,6 +3230,33 @@ export function firstImage(payload: unknown): { b64_json?: unknown; url?: unknow
   const o = payload as Record<string, unknown>;
   // 顶层直接给一个地址的服务也见过
   if (typeof o.url === 'string') return { url: o.url };
+  /*
+   * 千问（2026-11-23）：`output.choices[0].message.content[0].image`。
+   *
+   * **`output` 在这里是个对象，不是数组** —— 下面那圈只认数组，
+   * 所以它原来会一路穿过去、返回 undefined，表现是「返回里没有图」，
+   * 而图其实已经生成、额度已经扣了。这就是 Discussion #586 那位
+   * 用户看到的「返回格式不对：既没有 b64_json 也没有 url」。
+   *
+   * `content` 里可能不止一项（图像编辑时还会带文字），逐项找第一个带图的。
+   */
+  const out = o.output;
+  if (out && typeof out === 'object' && !Array.isArray(out)) {
+    const choices = (out as Record<string, unknown>).choices;
+    if (Array.isArray(choices)) {
+      for (const ch of choices) {
+        const content = (ch as { message?: { content?: unknown } } | null)?.message?.content;
+        if (!Array.isArray(content)) continue;
+        for (const part of content) {
+          if (!part || typeof part !== 'object') continue;
+          const p = part as Record<string, unknown>;
+          if (typeof p.image === 'string' && p.image) return { url: p.image };
+          if (typeof p.b64_json === 'string' && p.b64_json) return { b64_json: p.b64_json };
+          if (typeof p.url === 'string' && p.url) return { url: p.url };
+        }
+      }
+    }
+  }
   for (const key of ['data', 'images', 'output', 'outputs', 'result']) {
     const list = o[key];
     if (!Array.isArray(list) || !list.length) continue;

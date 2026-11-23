@@ -504,14 +504,16 @@ const SET = {
     cloudHint: '贴一把密钥就能用。豆包已把地址、模型、合规尺寸预设好，填个密钥就完事。',
     localHint: '要先开着 ComfyUI，并选一份「Save (API Format)」导出的 workflow。',
     preset: '服务商',
-    presets: { doubao: '豆包 Seedream', openai: 'OpenAI', custom: '自定义' },
+    presets: { doubao: '豆包 Seedream', qwen: '千问 Qwen-Image', openai: 'OpenAI', custom: '自定义' },
     presetHint: '下面三格留空就用这一档自带的值；手填的永远优先。',
     api: '服务地址',
     apiCloud: '填到 /v1 或 /api/v3 为止，别带后面的路径',
+    apiQwen: '千问只填域名：百炼 https://dashscope.aliyuncs.com，Token Plan https://token-plan.maas.qianwenaiapi.com；后面的 /api/v1/… 由程序自己补',
     apiLocal: '默认 http://127.0.0.1:8188',
     model: '模型名',
     size: '出图尺寸',
     sizeHint: '「宽x高」。留空＝服务商默认。豆包低于 2560×1440 会被自动放大。',
+    sizeHintQwen: '「宽x高」，总像素要在 512×512 – 2048×2048 之间。留空＝1024x1024。',
     key: '密钥',
     keySaved: '已存好',
     keyInEnv: '已存好 · 在 .env 里',
@@ -566,14 +568,16 @@ const SET = {
     cloudHint: 'One API key is enough. Doubao already has its URL, model and compliant size preset.',
     localHint: 'ComfyUI must be running, and you need a workflow exported with “Save (API Format)”.',
     preset: 'Provider',
-    presets: { doubao: 'Doubao Seedream', openai: 'OpenAI', custom: 'Custom' },
+    presets: { doubao: 'Doubao Seedream', qwen: 'Qwen-Image', openai: 'OpenAI', custom: 'Custom' },
     presetHint: 'Leave the three fields below empty to use this preset; anything you type wins.',
     api: 'Endpoint',
     apiCloud: 'Up to /v1 or /api/v3 — no path after that',
+    apiQwen: 'Qwen wants the bare host: https://dashscope.aliyuncs.com, or https://token-plan.maas.qianwenaiapi.com for Token Plan. The /api/v1/… path is added for you.',
     apiLocal: 'Default http://127.0.0.1:8188',
     model: 'Model',
     size: 'Size',
     sizeHint: '“WxH”. Empty = provider default.',
+    sizeHintQwen: '“WxH”, total pixels must be within 512×512 – 2048×2048. Empty = 1024x1024.',
     key: 'API key',
     keySaved: 'Saved',
     keyInEnv: 'Saved · in .env',
@@ -2248,7 +2252,7 @@ export default {
           const row = el('div', 'jr-set-row');
           row.append(el('span', 'jr-set-k', S.preset));
           const box = el('div', 'jr-set-chips');
-          for (const id of ['doubao', 'openai', 'custom']) {
+          for (const id of ['doubao', 'qwen', 'openai', 'custom']) {
             const chip = el('button', 'jr-set-chip', S.presets[id]);
             chip.type = 'button';
             if (draft.preset === id) chip.classList.add('on');
@@ -2320,8 +2324,13 @@ export default {
 
           if (cloud) {
             bodyBox.append(presetRow());
+            /*
+             * 千问的地址与尺寸规则和别家都不一样（地址只到域名、尺寸用星号
+             * 且限制总像素）—— 提示文字跟着当前这一档换，别让人拿豆包的规矩去填。
+             */
+            const qwenNow = draft.preset === 'qwen';
             bodyBox.append(field(
-              S.api, S.apiCloud, draft.api.openai,
+              S.api, qwenNow ? S.apiQwen : S.apiCloud, draft.api.openai,
               (v) => { draft.api.openai = v; }, (pv && pv.api) || '',
             ));
             bodyBox.append(field(
@@ -2329,7 +2338,7 @@ export default {
               (v) => { draft.model = v; }, (pv && pv.model) || '',
             ));
             bodyBox.append(field(
-              S.size, S.sizeHint, draft.size,
+              S.size, qwenNow ? S.sizeHintQwen : S.sizeHint, draft.size,
               (v) => { draft.size = v; }, (pv && pv.size) || '',
             ));
             bodyBox.append(keyRow());

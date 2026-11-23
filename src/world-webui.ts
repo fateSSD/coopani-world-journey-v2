@@ -431,6 +431,8 @@ export const webUiMethods: Record<string, any> = {
       presets: {
         doubao: presetDefaults('doubao'),
         openai: presetDefaults('openai'),
+        /* 千问（2026-11-23）：地址填纯域名，模型 qwen-image-3.0-pro。 */
+        qwen: presetDefaults('qwen'),
       },
     };
   },
@@ -511,8 +513,8 @@ export const webUiMethods: Record<string, any> = {
       throw new Error(`生图后端只能是 openai 或 comfyui，收到的是「${proto}」`);
     }
     const preset = clean.imagePreset;
-    if (typeof preset === 'string' && !['custom', 'doubao', 'openai'].includes(preset)) {
-      throw new Error(`云端服务商只能是 custom / doubao / openai，收到的是「${preset}」`);
+    if (typeof preset === 'string' && !['custom', 'doubao', 'openai', 'qwen'].includes(preset)) {
+      throw new Error(`云端服务商只能是 custom / doubao / openai / qwen，收到的是「${preset}」`);
     }
     const mark = clean.imageWatermark;
     if (typeof mark === 'string' && !['auto', 'off', 'crop'].includes(mark)) {

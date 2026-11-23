@@ -890,6 +890,8 @@ export const photoMethods: Record<string, any> = {
           })
         : await shootPhoto({
             api: backend.api,
+            /* 千问那条的路径/请求体/返回都不同，靠这个字段分流（2026-11-23）。 */
+            protocol: backend.protocol,
             key: this.imageKey(),
             model: backend.model,
             prompt,
@@ -900,8 +902,8 @@ export const photoMethods: Record<string, any> = {
           });
       if (refsOn && !canSendRefs) {
         this.log?.warn(
-          `配了 ${refPack.urls.length} 张参考图，但当前服务端（${backend.model || backend.api}）不认 image 字段，`
-          + '这一张按纯文生图发；要用参考图请换成火山方舟的 seedream 系模型。',
+          `配了 ${refPack.urls.length} 张参考图，但当前服务端（${backend.model || backend.api}）不吃这套参考图，`
+          + '这一张按纯文生图发；参考图目前只对火山方舟的 seedream 系开放。',
         );
       }
       if (shot.refsDropped) {
@@ -935,8 +937,7 @@ export const photoMethods: Record<string, any> = {
        *    不报错，按自己的默认值出图。请求对、图也对，**只是不是他要的那张**。
        *    量一下，不一致就写日志。
        */
-      const ark = this.arkBackend(backend);
-      const wantCrop = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol, ark);
+      const wantCrop = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol, this.noWatermarkBackend(backend));
       if (wantCrop && shot.mime !== 'image/png') {
         this.log?.info(
           `水印没裁：这张回来是 ${shot.mime}，裁剪只支持 PNG。`
@@ -1333,13 +1334,14 @@ export const photoMethods: Record<string, any> = {
               })
             : await shootPhoto({
                 api: posterBackend.api,
+                protocol: posterBackend.protocol,
                 key: this.imageKey(),
                 model: posterBackend.model,
                 prompt,
                 ...(this.cfg.imageTimeoutSec > 0 ? { timeoutMs: this.cfg.imageTimeoutSec * 1000 } : {}),
                 size: posterBackend.size,
               });
-          const bytes = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol, this.arkBackend(posterBackend))
+          const bytes = shouldCropWatermark(this.cfg.imageWatermark, this.cfg.imageProtocol, this.noWatermarkBackend(posterBackend))
             && shot.mime === 'image/png'
             ? cropBottom(shot.bytes, WATERMARK_CROP_RATIO)
             : shot.bytes;
@@ -1623,6 +1625,22 @@ export const photoMethods: Record<string, any> = {
    * 域名 / 模型名放行，其余一律不发图。
    */
   refsAllowedBackend(backend: { api?: string; model?: string }): boolean {
+    return this.arkBackend(backend);
+  },
+
+  /**
+   * 这个后端**本来就不会在图上盖水印** —— 那就别裁。
+   *
+   * 原来是 `arkBackend` 兼任这件事（方舟认 `watermark: false`）。2026-11-23
+   * 加千问时这条必须拆开：千问的 `parameters.watermark` **默认就是 false**
+   * （官方文档写明），所以它同样不用裁；但它**不吃** `image` 字段上的那套
+   * 参考图写法，`refsAllowedBackend` 不能跟着一起放行。
+   *
+   * 判据保持不变：**谁会盖水印，只由这个后端自己的参数说了算**，
+   * 不是「它是不是云端」。
+   */
+  noWatermarkBackend(backend: { api?: string; model?: string; protocol?: string }): boolean {
+    if (/^qwen/i.test(String(backend.protocol ?? ''))) return true;
     return this.arkBackend(backend);
   },
 
