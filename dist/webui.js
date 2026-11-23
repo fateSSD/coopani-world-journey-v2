@@ -2248,6 +2248,29 @@ export default {
           localBtn.classList.toggle('on', draft.protocol === 'comfyui');
         };
 
+        /**
+         * 「这个值是哪一档预设自带的常量」。
+         *
+         * 和 `image-backend.ts` 的 `isForeignPresetValue` 是同一条判据，必须两边一致：
+         * 那边决定**实际连哪儿**，这边决定**面板上显示什么**。只有一边判的话，
+         * 会出现「这一栏写着 ark，实际连的是 dashscope」这种假信息。
+         *
+         * 只认「和某个预设的常量一模一样」—— 自己填的中转地址永远认不出，永远保留。
+         */
+        const normEndpoint = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/\/+$/, '');
+        const foreignPreset = (value, mine) => {
+          const v = normEndpoint(value);
+          if (!v) return null;
+          if (mine && normEndpoint(mine) === v) return null;
+          const all = (data && data.presets) || {};
+          for (const key of Object.keys(all)) {
+            const p = all[key];
+            if (!p) continue;
+            if (normEndpoint(p.api) === v || normEndpoint(p.model) === v) return key;
+          }
+          return null;
+        };
+
         const presetRow = () => {
           const row = el('div', 'jr-set-row');
           row.append(el('span', 'jr-set-k', S.preset));
@@ -2257,7 +2280,23 @@ export default {
             chip.type = 'button';
             if (draft.preset === id) chip.classList.add('on');
             chip.addEventListener('click', () => {
+              if (draft.preset === id) return;   // 点自己不算换档
               draft.preset = id;
+              /*
+               * **换档＝换一套**（2026-11-23，Mr.Q 定的）。
+               *
+               * 上一家的地址和模型如果留着，从豆包切到千问时请求会打到方舟上，
+               * 拼出来是 `ark…/api/v1/services/aigc/…` —— 404，而面板每一栏都「有值」，
+               * 用户看不出问题在哪。这两个字段标的是**身份**（跟谁说话），换家就得换。
+               *
+               * 尺寸不在此列：它标的是偏好，不是身份，留着更省事（越界由最低像素和
+               * 400 阶梯兜着）。`custom` 也没有预设可回，清空等于让人从零填，所以不动。
+               */
+              const next = data && data.presets && data.presets[id];
+              if (next) {
+                draft.api.openai = '';
+                draft.model = '';
+              }
               drawBody();   // placeholder 要跟着预设换
             }, { signal: ctx.signal });
             box.append(chip);
@@ -2483,6 +2522,18 @@ export default {
           draft.api[looksLocal ? 'comfyui' : 'openai'] = data.api || '';
           draft.model = data.model || '';
           draft.size = data.size || '';
+          /*
+           * 别家预设的常量不许显示成「他填的值」（2026-11-23）。
+           *
+           * 那是上一次选别的服务商时预设写进配置的，后端已经按「别家的旧值」忽略掉
+           * （见 `image-backend.ts` 的 `isForeignPresetValue`）。这里不同步丢掉的话，
+           * 面板上那一栏会有字，而实际连的是另一家 —— 看得见的值和真实的连接不是一回事。
+           */
+          const snapDefault = (data.presets && data.presets[draft.preset]) || null;
+          if (snapDefault) {
+            if (foreignPreset(draft.api.openai, snapDefault.api)) draft.api.openai = '';
+            if (foreignPreset(draft.model, snapDefault.model)) draft.model = '';
+          }
           draft.workflow = data.workflow || '';
           draft.promptNode = data.promptNode || '';
           draft.negative = data.negative || '';

@@ -116,6 +116,50 @@ const PRESETS: Readonly<Record<Exclude<ImagePreset, 'custom'>, Preset>> = {
   },
 };
 
+/**
+ * 地址归一：去空白、转小写、去尾部斜杠。
+ *
+ * 只用于「这两个地址是不是同一个」这类比较，不用于发请求 —— 大小写和尾斜杠
+ * 在路径里是有意义的，`shootPhoto` 自己会处理。
+ */
+function normEndpoint(v: string | undefined): string {
+  return (v ?? '').trim().toLowerCase().replace(/\/+$/, '');
+}
+
+/** 预设自带的地址 / 模型名，用来认「这个值是常量，不是他手填的」。 */
+const PRESET_APIS: readonly string[] = Object.values(PRESETS).map((p) => normEndpoint(p.api));
+const PRESET_MODELS: readonly string[] = Object.values(PRESETS).map((p) => normEndpoint(p.model));
+
+/**
+ * 这个值是不是**别家预设**的常量。
+ *
+ * ## 为什么要有这一条（2026-11-23，Mr.Q 拍板）
+ *
+ * 「手填永远优先」这条规则本身是对的，但它把一件不该算「手填」的东西算成了手填：
+ * **上一次选别的服务商时，预设替他写进配置里的那个地址**。
+ *
+ * 后果很具体：从豆包切到千问，`imageApi` 还是 `ark.cn-beijing.volces.com/api/v3`，
+ * 而协议已经换成千问 —— 拼出来是 `ark…/api/v1/services/aigc/…`，404。
+ * 用户看到的是「拍不出来」，配置里每一栏却都「有值」。
+ *
+ * 判据收窄成一条：**只有和某个预设的常量一模一样，才算「别家的」。**
+ * 自己的中转地址（`https://my-proxy.example.com/v1`）永远认不出，永远保留 ——
+ * 那条是真手填，覆盖它才是真的接管用户配置。
+ */
+function isForeignPresetValue(value: string, mine: string | undefined, table: readonly string[]): boolean {
+  const v = normEndpoint(value);
+  if (!v) return false;
+  const m = normEndpoint(mine);
+  if (m && v === m) return false;          // 就是这一档自己的值，照用
+  return table.includes(v);
+}
+
+/** 从地址里取主机名，只给日志/自检用。取不出就原样返回。 */
+function hostOf(api: string): string {
+  const m = /^[a-z]+:\/\/([^/?#]+)/i.exec(api.trim());
+  return m ? m[1]!.toLowerCase() : api.trim();
+}
+
 /** 给配置面板和日志用：预设的中文名。 */
 export function presetLabel(preset: string | undefined): string {
   if (preset === 'doubao' || preset === 'openai' || preset === 'qwen') return PRESETS[preset].label;
@@ -213,8 +257,18 @@ export function resolveImageBackend(cfg: {
    */
   const isQwen = presetName === 'qwen';
 
-  const api = (cfg.imageApi ?? '').trim() || preset?.api || '';
-  const model = (cfg.imageModel ?? '').trim() || preset?.model || '';
+  /*
+   * 手填优先 —— 但**别家预设写进去的旧值不算手填**（2026-11-23）。
+   * 判据见 `isForeignPresetValue`：只认「和某个预设的常量一模一样」这一种，
+   * 自己的中转地址一律保留。
+   */
+  const typedApi = (cfg.imageApi ?? '').trim();
+  const typedModel = (cfg.imageModel ?? '').trim();
+  const staleApi = !!preset && isForeignPresetValue(typedApi, preset.api, PRESET_APIS);
+  const staleModel = !!preset && isForeignPresetValue(typedModel, preset.model, PRESET_MODELS);
+
+  const api = (staleApi ? '' : typedApi) || preset?.api || '';
+  const model = (staleModel ? '' : typedModel) || preset?.model || '';
   /*
    * `sizeOverride` 给「月报封面」那条路用：海报有自己的固定比例（1024x1536），
    * 不该被「出图尺寸」那一栏改掉，但仍要过最低像素这一关。
@@ -224,8 +278,15 @@ export function resolveImageBackend(cfg: {
   const fixed = wantSize && preset ? liftToMinPixels(wantSize, preset.minPixels) : { size: wantSize, lifted: false };
 
   const who = preset ? preset.label : '自定义云端服务';
+  /*
+   * 旧值被忽略这件事要说出来。它不报错、不弹窗，只是「连的地方和你以为的不一样」——
+   * 不说的话，用户在自检里看到 `https://dashscope…` 会以为配置被改了。
+   */
+  const staleNote = staleApi || staleModel
+    ? ` · 配置里还留着别家的${staleApi ? `地址（${hostOf(typedApi)}）` : '模型名'}，已按「${who}」自己的走`
+    : '';
   const note = api
-    ? `云端 · ${who}（${api}${model ? `，模型 ${model}` : '，模型没填'}）`
+    ? `云端 · ${who}（${api}${model ? `，模型 ${model}` : '，模型没填'}）${staleNote}`
     : `云端 · ${who} —— 服务地址没填，拍不了`;
 
   return {

@@ -187,3 +187,56 @@ test('defaults 里的键都能在 schema 里找到 —— 拼错了没人会发�
     .filter((k) => !NOT_A_FIELD.has(k) && !PANEL_OWNED.has(k) && !declared.has(k));
   assert.deepEqual(orphans, [], `这些默认值在 schema 里没有对应项：${orphans.join('、')}`);
 });
+
+/* ---------------- 换服务商：别家的旧地址不算「手填」（2026-11-23） ---------------- */
+
+test('从豆包切到千问：配置里留着的方舟地址不许再压过这一档', () => {
+  /*
+   * 2026-11-23，Mr.Q 拍板。真实路径：用户原本配豆包（`imageApi` 被预设写成了
+   * `ark.cn-beijing.volces.com/api/v3`），后来在面板里点「千问」——
+   * 「手填永远优先」把那个旧地址当成了他填的，于是拼出来是
+   * `ark…/api/v1/services/aigc/multimodal-generation/generation`：404。
+   * 用户看到「拍不出来」，而每一栏都「有值」。
+   */
+  const b = resolveImageBackend({
+    imageProtocol: 'openai',
+    imagePreset: 'qwen',
+    imageApi: 'https://ark.cn-beijing.volces.com/api/v3',
+    imageModel: 'doubao-seedream-5-0-260128',
+  });
+  assert.equal(b.api, 'https://dashscope.aliyuncs.com', '还带着方舟地址 —— 会打到方舟上 404');
+  assert.equal(b.model, 'qwen-image-3.0-pro', '模型名还是豆包的，千问会回 model not exist');
+  assert.match(b.note, /别家/, `忽略了旧值却不吭声：${b.note}`);
+});
+
+test('切到哪一档都认得出「这是别家的」—— 反过来也一样', () => {
+  // 千问的域名留给豆包：同样不许压过
+  const b = resolveImageBackend({
+    imageProtocol: 'openai', imagePreset: 'doubao', imageApi: 'https://dashscope.aliyuncs.com',
+  });
+  assert.equal(b.api, 'https://ark.cn-beijing.volces.com/api/v3');
+  // 大小写、结尾斜杠不同也仍然是同一个地址
+  const c = resolveImageBackend({
+    imageProtocol: 'openai', imagePreset: 'qwen', imageApi: 'HTTPS://ARK.CN-BEIJING.VOLCES.COM/API/V3/',
+  });
+  assert.equal(c.api, 'https://dashscope.aliyuncs.com', '归一化没做对，换个大小写就漏了');
+});
+
+test('自己填的中转地址照旧优先 —— 判据只认「预设常量」，不认「不像预设」', () => {
+  const b = resolveImageBackend({
+    imageProtocol: 'openai',
+    imagePreset: 'qwen',
+    imageApi: 'https://my-relay.example.com/qwen',
+    imageModel: 'qwen-image-3.0-lite',
+  });
+  assert.equal(b.api, 'https://my-relay.example.com/qwen');
+  assert.equal(b.model, 'qwen-image-3.0-lite');
+  assert.equal(b.note.includes('别家'), false, '自己的地址被误判成别家的了');
+});
+
+test('自定义档不做这个判断 —— 没有预设可回，旧值就是他的值', () => {
+  const b = resolveImageBackend({
+    imageProtocol: 'openai', imagePreset: 'custom', imageApi: 'https://ark.cn-beijing.volces.com/api/v3',
+  });
+  assert.equal(b.api, 'https://ark.cn-beijing.volces.com/api/v3');
+});

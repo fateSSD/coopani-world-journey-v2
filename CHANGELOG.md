@@ -1,5 +1,18 @@
 # 更新日志
 
+## 2.7.0 — 2026-11-23（生图新增千问 / 百炼服务商 + 换服务商时清掉别家的旧地址）
+
+- **生图多了「千问 Qwen-Image（百炼 / Token Plan）」这一档**（GitHub Discussion #586，lyb-ai 问的）：
+  - 原来千问那条接口接不上，不是「地址填错了」那种，是**路径、请求体、返回三处都不一样**，且三处都静默失败：路径拼成 `…/generation/images/generations` 回 404；请求体按 OpenAI 发过去回 400；返回的图在 `output.choices[0].message.content[0].image` 里，取不到就报「返回里没有图」—— 图已生成、额度已扣，用户只看到「拍不出来」。
+  - `src/image-backend.ts`：`ImageProtocol` 增加 `qwen`、`ImagePreset` 增加 `qwen`；预设默认 `https://dashscope.aliyuncs.com` + `qwen-image-3.0-pro` + `1024x1024`。**走哪条协议只看预设，不看地址后缀** —— 百炼的 `compatible-mode/v1` 是 OpenAI 兼容那条，按地址猜会猜错。`imageProtocol` 仍然只有「云端 / 本地」两档，千问是云端下面的服务商（否则「本地 + 千问」这种自相矛盾的组合会被真的保存下来）。
+  - `src/photo.ts`：`PhotoRequest.protocol`；路径、请求体（`{model, input:{messages:[{role, content:[{text}]}]}, parameters:{size:"1024*1024"}}`，尺寸用**星号**不是 x）、返回解析按协议分流。地址栏贴了整条接口地址也认，不重复拼；404 直接写明「千问的地址只填域名」。`firstImage()` 增加 `output.choices[0].message.content[0].image` 这一层（`output` 在这里是**对象**不是数组，原来会一路穿过去返回空）。
+  - `src/world-photo.ts`：两处 `shootPhoto` 传协议；新增 `noWatermarkBackend()`（千问 `parameters.watermark` 默认 false，与方舟同理不裁底边）。**千问暂不发参考图** —— 它的图生图是另一套 `content` 结构，字段名没验证过，猜错要么 400 要么被静默忽略（用户以为图鉴生效了），所以先只做文生图，日志里如实标 `refsDropped`。
+  - 界面：生图设置的「服务商」多一个「千问 Qwen-Image」，选中后地址提示换成「只填域名」、尺寸提示换成「总像素 512×512–2048×2048」（中英双语）。
+- **换服务商时，别家的旧地址不再压过这一档**：`imageApi` 是两条路共用的一个键，从豆包切到千问时它还留着 `ark.cn-beijing.volces.com/api/v3`，而「手填永远优先」把它当成了用户填的值 —— 拼出来打到方舟上 404，面板每一栏却都「有值」。
+  - `src/image-backend.ts`：新增 `isForeignPresetValue()`，判据收窄成一条 —— **只有和某个预设的常量一模一样，才算「别家的」**。自己的中转地址（`https://my-relay.example.com/v1`）永远认不出、永远保留；`custom` 档没有预设可回，完全不做这个判断。被忽略时 `note` 里会写明「配置里还留着别家的地址（ark…），已按「千问 Qwen-Image」自己的走」。
+  - `dist/webui.js`：点服务商 = **换一套** —— 切到另一档时清空地址与模型两栏（尺寸标的是偏好不是身份，保留），让预设的默认值当场生效；读回配置时，别家预设的常量也不显示成「他填的值」。
+- **测试**：新增 `test/photo-qwen.test.mjs` 11 条（路径 / 请求体 / 返回两层解析 / 水印 / 参考图不带）；`test/image-backend.test.mjs` 增加 4 条换档断言。两处都做了反向验证：协议不切 → 2 红；去掉 `output.choices` 解析 → 7 红；去掉别家旧值判定 → 2 红。
+
 ## 2.6.2 — 2026-11-23（离线误判节流阈值 + 查伴失败冷却重试不冻结日程 + 上报原因分流 + `sight-cf` 按 uid 均匀分街）
 
 - **离线判定滤除 5 分钟落盘节流噪声 & 查伴失败重试（zzy1053 第二封反馈）**：
