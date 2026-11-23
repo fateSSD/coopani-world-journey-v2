@@ -2754,13 +2754,13 @@ export default {
         const stmt = exclude
           ? db.prepare(
             `SELECT pet, doing, MAX(at) AS lat FROM presence
-             WHERE city = ?1 AND slot = ?2 AND at >= ?3 AND uid <> ?4
+             WHERE city = ?1 AND slot = ?2 AND at >= ?3 AND uid <> '' AND uid <> ?4
              GROUP BY uid
              ORDER BY lat DESC LIMIT ${limit}`,
           ).bind(city, slot, since, exclude)
           : db.prepare(
             `SELECT pet, doing, MAX(at) AS lat FROM presence
-             WHERE city = ?1 AND slot = ?2 AND at >= ?3
+             WHERE city = ?1 AND slot = ?2 AND at >= ?3 AND uid <> ''
              GROUP BY uid
              ORDER BY lat DESC LIMIT ${limit}`,
           ).bind(city, slot, since);

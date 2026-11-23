@@ -1537,7 +1537,7 @@ export const purseMethods: Record<string, any> = {
         const want = new Set(namesIn(p).map((x) => x.trim()));
         const seenInPlan = (this.plan?.neighbors ?? []).some((n: { pet: string }) => want.has(n.pet.trim()));
         if (p.meetSeenAt || seenInPlan) {
-          return `跟${this.whoOfPledge(p)}约在${meetName}见 —— 已经在这儿等到了，准备一起去${name}，在那儿待 ${p.days} 天。`;
+          return `跟${this.whoOfPledge(p)}约在${meetName}见 —— 最近在这儿看见过对方落脚，准备一起去${name}，在那儿待 ${p.days} 天。`;
         }
         const waited = pledgeWaitDays(now, p);
         return `跟${this.whoOfPledge(p)}约在${meetName}见，你已经到了`
@@ -1550,7 +1550,7 @@ export const purseMethods: Record<string, any> = {
            * 往同一座城走，接约那边没有任何约束；不写这一句，她会把「没露面」
            * 当成对方失约，而实际是这机制本来就不保证。
            */
-          + (this.lastMeetOk === false ? '，刚才没连上碰面服务器，暂时不知道对方到了没有。' : '，人还没露面。')
+          + (this.lastMeetOk === false ? '，刚才没连上碰面服务器，暂时不知道对方到了没有。' : '，暂时还没见着人。')
           + `这趟碰不碰得上不一定 —— 等见到了再一起去${name}，在那儿待 ${p.days} 天。`;
       }
       return `答应了${this.whoOfPledge(p)}在${meetName}碰头，再一起去${name}待 ${p.days} 天 —— 正在往${meetName}赶。`;

@@ -430,7 +430,7 @@ test('约满那天要单独说一句「散了」，不能只在出发句里带�
 
 /* ---------------- 2026-11-23 zzy1053：零点见过人、早八点却已下线 & 文案自打脸 ---------------- */
 
-test('mateLine 不满一天说「你已经到了，对方还没露面」；看见对方就不再自相矛盾', async () => {
+test('mateLine 不满一天说「你已经到了，暂时还没见着人」；看见对方就不再自相矛盾', async () => {
   const now = new Date('2026-11-23T00:05:00Z');
   const { world, restore } = await boot({ phase: 'staying', hereId: 'shenyang' }, now.toISOString());
   try {
@@ -447,13 +447,13 @@ test('mateLine 不满一天说「你已经到了，对方还没露面」；看�
     };
     const unseen = world.mateLine(p, 'shenyang', 0, now);
     assert.doesNotMatch(unseen, /你人还没露面/, `出现语病：${unseen}`);
-    assert.match(unseen, /你已经到了，对方还没露面/, `不满一天文案不对：${unseen}`);
+    assert.match(unseen, /你已经到了，暂时还没见着人/, `不满一天文案不对：${unseen}`);
 
     // 排表已经刷出同城名单里有「潮信」
     world.plan = { neighbors: [{ pet: '潮信', doing: '逛中街' }] };
     const seenLine = world.mateLine(p, 'shenyang', 0, now);
-    assert.doesNotMatch(seenLine, /还没露面/, `同城名单都有对方了还在说没露面：${seenLine}`);
-    assert.match(seenLine, /等到了潮信/, `未体现已经等到同伴：${seenLine}`);
+    assert.doesNotMatch(seenLine, /还没见着人|还没露面/, `同城名单都有对方了还在说没见着：${seenLine}`);
+    assert.match(seenLine, /等到了潮信的消息（最近在这座城落过脚）/, `未体现已经等到同伴：${seenLine}`);
   } finally { restore(); }
 });
 
@@ -485,7 +485,7 @@ test('00:00 排表看见同伴并记下 meetSeenAt：早上 8 点对方关机离
       if (u.includes('/sight/status')) {
         return { ok: true, status: 200, json: async () => ({ ok: true, pool: 5, invites: [], taken: 0 }) };
       }
-      if (u.includes('/sight?')) {
+      if (u.includes('/sight?') && !u.includes('window=')) {
         return { ok: true, status: 200, json: async () => ({ ok: true, list: [{ pet: '潮信', doing: '逛中街' }], pool: 5, here: 2 }) };
       }
       if (u.includes('/sight/invite')) {
@@ -497,8 +497,8 @@ test('00:00 排表看见同伴并记下 meetSeenAt：早上 8 点对方关机离
     assert.ok(world.st.pledge?.meetSeenAt, '00:00 排表看到同伴后应立刻写入 meetSeenAt');
     const dayEv = events.find((e) => e.type === 'journey.day');
     assert.ok(dayEv, '跨天应推 journey.day');
-    assert.doesNotMatch(String(dayEv.text), /还没露面/, `同一段话里不许既说没露面又说潮信也在这儿：\n${dayEv.text}`);
-    assert.match(String(dayEv.text), /等到了潮信/, `日记应说明已经等到潮信：\n${dayEv.text}`);
+    assert.doesNotMatch(String(dayEv.text), /还没见着人|还没露面/, `同一段话里不许既说没见着又说潮信也在这儿：\n${dayEv.text}`);
+    assert.match(String(dayEv.text), /等到了潮信的消息（最近在这座城落过脚）/, `日记应说明已经等到潮信：\n${dayEv.text}`);
   } finally { restore(); }
 
   // 早上 08:05（UTC 11-23 00:05）重启再开且服务端返回空名单（对方客户端关机），照样带着走
@@ -570,4 +570,93 @@ test('白天探针刷出同伴立刻重开决策发车；matesHere 传 24h 窗�
     }
     assert.ok(infos.some((m) => m.includes('路人甲') && m.includes('潮信')), `未记录实际查到的同城名单：${infos.join('|')}`);
   } finally { restoreLog(); }
+});
+
+test('00:00 2h 排表看不见时文案温和不自打脸；08:05 matesHere 24h 命中即写 meetSeenAt 并出发', async () => {
+  const only24hFetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/sight/status')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, pool: 5, invites: [], taken: 0 }) };
+    }
+    if (u.includes('/sight?') && u.includes('window=86400000')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [{ pet: '潮信', doing: '逛中街' }], pool: 5, here: 2 }) };
+    }
+    if (u.includes('/sight?')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [], pool: 5, here: 0 }) };
+    }
+    if (u.includes('/sight/invite')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+
+  const midnight = '2026-11-22T16:05:00Z'; // 北京时间 11-23 00:05
+  const morning = '2026-11-23T00:05:00Z';  // 北京时间 11-23 08:05
+  const initTrip = {
+    phase: 'staying',
+    hereId: 'shenyang',
+    tripStartedAt: '2026-11-20T00:00:00Z',
+    stayStartedAt: '2026-11-21T16:00:00Z',
+    stayDateKey: '2026-11-22',
+    pledge: {
+      cityId: 'changchun',
+      days: 2,
+      withPet: '潮信',
+      withPets: ['潮信'],
+      inviteId: 'abcdef0123456789',
+      acceptedAt: '2026-11-21T00:00:00Z',
+      arrivedAt: null,
+      meetCityId: 'shenyang',
+      meetArrivedAt: '2026-11-21T16:00:00Z',
+    },
+  };
+
+  // 1) 00:05 跨天：rebuildPlan 2h 窗口返回空，meetSeenAt 保持空，文案温和不断言没露面
+  const { world: w0, events: ev0, dir, restore: r0 } = await boot(initTrip, midnight);
+  try {
+    w0.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    globalThis.fetch = only24hFetch;
+    await w0.tick();
+    assert.equal(w0.st.pledge?.meetSeenAt, undefined, '2h 名单为空时不应提前写 meetSeenAt');
+    const dayEv = ev0.find((e) => e.type === 'journey.day');
+    assert.ok(dayEv, '跨天应推 journey.day');
+    assert.doesNotMatch(String(dayEv.text), /还没露面/, `00:00 不应再说对方还没露面：\n${dayEv.text}`);
+    assert.match(String(dayEv.text), /暂时还没见着人/, `00:00 应温和提示暂时还没见着人：\n${dayEv.text}`);
+    assert.match(w0.pledgeText(new Date(midnight)), /暂时还没见着人/);
+  } finally { r0(); }
+
+  // 2) 08:05 matesHere 24h 命中（哪怕只调 matesHere 还没发车）也写 meetSeenAt 并同步改变文案与持久化
+  const { world: w1, restore: r1 } = await boot({}, morning, dir);
+  try {
+    w1.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    globalThis.fetch = only24hFetch;
+    const res = await w1.matesHere(w1.st.pledge, cityById('shenyang'), new Date(morning));
+    assert.deepEqual(res.names, ['潮信']);
+    assert.ok(w1.st.pledge?.meetSeenAt, 'matesHere 24h 命中后应立即写入 meetSeenAt');
+    assert.match(w1.mateLine(w1.st.pledge, 'shenyang', 1, new Date(morning)), /最近在这座城落过脚/);
+    assert.match(w1.pledgeText(new Date(morning)), /最近在这儿看见过对方落脚/);
+  } finally { r1(); }
+
+  // 确认持久化生效
+  const { world: w1Reload, restore: r1Reload } = await boot({}, morning, dir);
+  try {
+    assert.ok(w1Reload.st.pledge?.meetSeenAt, 'matesHere 写入的 meetSeenAt 应已落盘');
+  } finally { r1Reload(); }
+
+  // 3) 早八点 tick（无预先 meetSeenAt，全靠 matesHere 24h 窗口）正常携同伴出发去长春
+  const { world: w2, events: ev2, restore: r2 } = await boot({
+    ...initTrip,
+    stayDateKey: '2026-11-23',
+    decidedOn: null,
+  }, morning);
+  try {
+    w2.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    globalThis.fetch = only24hFetch;
+    await w2.tick();
+    assert.ok(w2.st.pledge?.meetSeenAt, '早八点 tick 命中 24h 名单后应写入 meetSeenAt');
+    assert.equal(w2.st.phase, 'traveling', '早八点 24h 窗口命中潮信后应立刻出发');
+    assert.equal(w2.st.leg?.toId, 'changchun');
+    const depEv = ev2.find((e) => e.type === 'journey.depart');
+    assert.ok(depEv && String(depEv.text).includes('潮信'), `出发事件应带同伴潮信：${depEv?.text}`);
+  } finally { r2(); }
 });

@@ -369,12 +369,12 @@ export const socialMethods: Record<string, any> = {
       const want = new Set(namesIn(p).map((x) => x.trim()));
       const seenInPlan = (this.plan?.neighbors ?? []).some((n: { pet: string }) => want.has(n.pet.trim()));
       if (p.meetSeenAt || seenInPlan) {
-        return `在这儿等到了${this.whoOfPledge(p)}，准备一起去${this.cityName(p.cityId)}，在那儿待 ${p.days} 天。`;
+        return `在这儿等到了${this.whoOfPledge(p)}的消息（最近在这座城落过脚），准备一起去${this.cityName(p.cityId)}，在那儿待 ${p.days} 天。`;
       }
       const met = now ? pledgeWaitDays(now, p) : Math.max(0, stayDays);
       return `在这儿不是玩：跟${this.whoOfPledge(p)}约在${this.cityName(p.meetCityId)}碰头，`
-        + `${met > 0 ? `你已经等了 ${met} 天，` : '你已经到了，'}对方还没露面。`
-        + `等见了面再一起去${this.cityName(p.cityId)}，在那儿待 ${p.days} 天。`
+        + `${met > 0 ? `你已经等了 ${met} 天，` : '你已经到了，'}暂时还没见着人。`
+        + `等见着了再一起去${this.cityName(p.cityId)}，在那儿待 ${p.days} 天。`
         + '等着的时候也可以在城里转转，但别走远 —— 人家随时会到。';
     }
     if (!p.arrivedAt || p.cityId !== hereId) return '';
@@ -1524,7 +1524,12 @@ export const socialMethods: Record<string, any> = {
     const ok = boards.some((b) => b?.ok);
     this.lastMeetOk = ok;
     const matched = names.filter((n) => have.has(n));
-    if (!matched.length && ok) {
+    if (matched.length) {
+      if (this.st.pledge && this.st.pledge.inviteId === p.inviteId && !this.st.pledge.meetSeenAt) {
+        this.st = { ...this.st, pledge: { ...this.st.pledge, meetSeenAt: now.toISOString() } };
+        this.persist();
+      }
+    } else if (ok) {
       const sample = [...have].slice(0, 8).join('、');
       this.log?.info(
         have.size > 0
