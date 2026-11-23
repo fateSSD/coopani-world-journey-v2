@@ -30,7 +30,7 @@ const { StateStore, initialState } = await import('../src/state.ts');
 
 const NOW = '2026-11-05T02:00:00Z'; // 北京时间 10:00 —— 当地决定点（8 点）已经过了
 
-async function boot(trip) {
+async function boot(trip, nowIso = NOW, speed = 1) {
   const dir = mkdtempSync(join(tmpdir(), 'offline-decide-'));
   new StateStore(dir).save({ ...initialState('lanzhou'), ...trip });
   const events = [];
@@ -44,10 +44,10 @@ async function boot(trip) {
   const origRandom = Math.random;
   Math.random = () => 0.99;
   const world = new JourneyWorld({
-    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', speed: 1 },
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', speed },
     dataDir: dir,
     botName: '大肥鱼',
-    now: () => new Date(NOW),
+    now: () => new Date(nowIso),
   });
   await world.start({
     log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
@@ -142,6 +142,37 @@ test('当天已经在场判过了（今天已排过表、也判过）：不重�
   try {
     for (let i = 0; i < 2; i++) await t.world.tick();
     assert.equal(departs(t.events).length, 0, '一天判了两次');
+  } finally { t.done(); }
+});
+
+/* ---------------- ②b 落盘节流的噪声不算「他离开了」 ---------------- */
+
+test('Core 一直在跑（lastSeenAt 只是 5 分钟节流内），24 倍速下不许说「今天不补判」', async () => {
+  /*
+   * 2026-11-23，zzy1053 的日志：
+   *   「离线 1 分钟，跨过了当地 8 点的发车决策点 —— 今天不补判」
+   *   「离线 3 分钟，跨过了当地 8 点的发车决策点 —— 今天不补判」
+   *
+   * 他那会儿人一直在电脑前。`awayMs` 量的是 `现在 − lastSeenAt`，而 `lastSeenAt`
+   * 有 5 分钟的落盘节流 —— 也就是说**正常巡检时它本来就是 0–5 分钟**。24 倍速下
+   * 3 分钟就是 72 分钟世界时间，于是「这 72 分钟里跨没跨过 8 点」经常为真。
+   *
+   * 这条钉的是阈值：3 分钟的差值只够说明节流，不够说明他离开过。
+   */
+  const t = await boot(stayingTooLong({
+    // 世界时刻 = 当地 08:35，而「上次见过他」只是 3 分钟前
+    lastSeenAt: '2026-11-05T00:32:00Z',
+  }), '2026-11-05T00:35:00Z', 24);
+  try {
+    for (let i = 0; i < 2; i++) await t.world.tick();
+    /*
+     * 没被锁死 → 第二拍照常判 → 打算明天走（`journey.departing`）。
+     * 锁死了这一拍就什么都不会说，人会原地不动一整天。
+     */
+    assert.equal(
+      t.events.filter((e) => String(e.type) === 'journey.departing').length, 1,
+      '把 3 分钟的节流噪声当成了「他离开过」—— 正常巡检被误伤，她整天不动',
+    );
   } finally { t.done(); }
 });
 

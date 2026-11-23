@@ -79,7 +79,9 @@ test('没配地址就一个请求都不发', async () => {
   globalThis.fetch = async (...a) => { calls.push(a); throw new Error('不该被调到'); };
   try {
     const opt = { url: '', uid: 'u1', pet: '大肥鱼' };
-    assert.equal(await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面'), false);
+    const r = await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面');
+    assert.equal(r.ok, false);
+    assert.match(r.why, /没填碰面服务器地址/, '失败要说清是哪一层，不能只有一句「没回 200」');
     assert.deepEqual(await findNeighbors(opt, 'xian', 'evening'), { list: [], pool: 0, here: 0, ok: false });
     assert.equal(calls.length, 0, `没配地址还发了 ${calls.length} 个请求`);
   } finally { globalThis.fetch = orig; }
@@ -90,7 +92,9 @@ test('服务器挂了不抛错，当没碰见', async () => {
   globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
   try {
     const opt = { url: 'https://example.test', uid: 'u1', pet: '大肥鱼' };
-    assert.equal(await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面'), false);
+    const r = await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面');
+    assert.equal(r.ok, false);
+    assert.match(r.why, /请求没发出去/, '断网要说成「请求没发出去」，和服务端回了 500 分清');
     assert.deepEqual(await findNeighbors(opt, 'xian', 'evening'), { list: [], pool: 0, here: 0, ok: false },
       '连不上就该给空列表，不能抛 —— ok: false 表示「不知道」，不是「没人」');
   } finally { globalThis.fetch = orig; }
@@ -689,5 +693,27 @@ test('名片：服务器挂了就是空板，不抛', async () => {
     const got = await fetchProfiles(CARD_OPT);
     assert.equal(got.mine, null);
     assert.deepEqual(got.others, []);
+  } finally { globalThis.fetch = orig; }
+});
+
+test('上报失败要说清是哪一层：服务端回了 500 和请求没发出去不是一件事', async () => {
+  /*
+   * 2026-11-23。这两天的日志里全是一句「碰面服务器没回 200」，而它底下压着
+   * 两种完全不同的失败：服务器自己炸了（去查 Cloudflare 面板），和本机根本没连上
+   * （查 DNS / 证书 / 网络）。用户拿着同一句话分不出来，我们也分不出来。
+   */
+  const orig = globalThis.fetch;
+  const opt = { url: 'https://example.test', uid: 'u1', pet: '大肥鱼' };
+  try {
+    globalThis.fetch = async () => ({ ok: false, status: 503, statusText: 'Service Unavailable' });
+    const r = await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面');
+    assert.equal(r.ok, false);
+    assert.match(r.why, /503/, `服务端回了状态码就得写出来：${r.why}`);
+    assert.match(r.why, /服务器回了/, '这是对面的事，措辞要指向「它回了」而不是「没连上」');
+
+    // 成功时不该留下噪声
+    globalThis.fetch = async () => ({ ok: true, status: 200, statusText: 'OK' });
+    const ok = await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面');
+    assert.deepEqual(ok, { ok: true, why: '' });
   } finally { globalThis.fetch = orig; }
 });

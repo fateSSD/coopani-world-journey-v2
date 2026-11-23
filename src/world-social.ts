@@ -167,7 +167,8 @@ export const socialMethods: Record<string, any> = {
     if (!c || this.st.phase !== 'staying') return;
     const m = localMoment(this.worldNow(), c.tz);
     const doing = this.plan?.beats.find((b) => b.kind === 'activity')?.what ?? '';
-    const ok = await reportPresence(meet, c.id, m.dateKey, slotOf(m.hour), doing);
+    const r = await reportPresence(meet, c.id, m.dateKey, slotOf(m.hour), doing);
+    const ok = r.ok;
     if (ok) {
       /*
        * 恢复要留一句 info。上一版失败只写 warn、成功什么都不写，
@@ -193,13 +194,14 @@ export const socialMethods: Record<string, any> = {
     }
 
     this.reportFails += 1;
+    this.reportWhy = r.why;
     /*
      * 不刷屏：第一次必报，之后每 10 次报一条。
      * 服务端挂一整天的话，日志里应该是十行左右，不是两千行。
      */
     if (this.reportFails === 1 || this.reportFails % 10 === 0) {
       this.log?.warn(
-        `位置没报上去（碰面服务器没回 200，已连续 ${this.reportFails} 次）`
+        `位置没报上去（${this.reportWhy}；已连续 ${this.reportFails} 次）`
         + '—— 面板上会一直是旧数据，正在自动重试',
       );
     }

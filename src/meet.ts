@@ -334,17 +334,33 @@ const netFail = (e: unknown): string => `没连上碰面服务器 —— ${expla
  * 同一 uid、同城、同日、同时段只留一条（服务端 upsert），所以她一天里
  * 在城里换几个地方，最后留下的是最后一次 —— 那正是「这会儿她在哪」。
  *
- * **失败返回 false，不抛。** 服务器挂了不该影响她旅行。
+ * **失败不抛，返回原因。** 服务器挂了不该影响她旅行。
+ *
+ * ## 为什么不是 boolean（2026-11-23）
+ *
+ * 原来只回 true/false，调用方那条 warn 只能写死一句「碰面服务器没回 200」。
+ * 而这一句把两种完全不同的失败混成了一种：服务器真的回了 500（它自己的事），
+ * 和请求根本没到（DNS、证书、断网、超时 —— 他的事）。zzy1053 那两天的日志
+ * 里全是这句，他自己看不出该去 Cloudflare 面板还是该查本机网络。
+ *
+ * `why` 只在失败时非空，写的就是**能确认的那件事**。
  */
+export interface ReportResult {
+  readonly ok: boolean;
+  /** 失败原因（一句人话）。成功时为空串。 */
+  readonly why: string;
+}
+
 export async function reportPresence(
   opt: MeetOptions,
   cityId: string,
   dateKey: string,
   slot: Slot,
   doing: string,
-): Promise<boolean> {
+): Promise<ReportResult> {
   const url = clean(opt.url);
-  if (!url || !clean(opt.uid) || !clean(opt.pet)) return false;
+  if (!url) return { ok: false, why: '没填碰面服务器地址' };
+  if (!clean(opt.uid) || !clean(opt.pet)) return { ok: false, why: '缺 uid 或宠物名，这一条没法发' };
   try {
     const res = await fetch(`${endpointOf(url)}`, {
       method: 'POST',
@@ -359,9 +375,15 @@ export async function reportPresence(
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    return res.ok;
-  } catch {
-    return false;
+    if (res.ok) return { ok: true, why: '' };
+    /*
+     * 服务端明确回了一个非 2xx。这是**对面的事**，但状态码必须带出来 ——
+     * 500 和 429 是两个完全不同的故事（自己炸了 / 被限流）。
+     */
+    const tail = res.statusText ? ` ${res.statusText}` : '';
+    return { ok: false, why: `服务器回了 ${res.status}${tail}` };
+  } catch (e) {
+    return { ok: false, why: `请求没发出去 —— ${explainNet(e)}` };
   }
 }
 

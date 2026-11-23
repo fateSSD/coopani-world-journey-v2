@@ -91,6 +91,7 @@ import {
   PLEDGE_TRAVEL_WINDOW_MS, MEET_WAIT_WINDOW_MS, ASK_TTL_MS, ASK_COOLDOWN_MS,
   ENV_PROMPT_FILE, PKG_VERSION, TICK_MAX_MS, TICK_WORLD_BUDGET_MS, TICK_MIN_MS,
   HEARTBEAT_MS, SEEN_SAVE_MS, REPORT_RETRY_MS, STAY_DAYS_MIN, STAY_DAYS_MAX,
+  AWAY_CROSS_MIN_MS, MEET_RETRY_MAX, MEET_RETRY_GAP_MS,
   DECIDE_HOUR, STAY_ONE_MORE, GO_HOME_CHANCE, HOME_RADIUS_KM, NOW_TAIL,
   FARE_PER_KM, TRAIN_FAST, TRAIN_SLOW, MEALS_PER_DAY, TIGHT_THRESHOLD,
   PURSE_TIGHT, PURSE_LOW, PURSE_EMPTY, LOW_KM, WORK_DAYS, WORK_PAY_RATE,
@@ -215,6 +216,14 @@ export class JourneyWorld implements World {
 
   /** 连续上报失败次数。成功一次立刻归零。 */
   private reportFails = 0;
+  /**
+   * 最近一次上报失败的**具体原因**（2026-11-23）。
+   *
+   * 原来日志里只有一句「碰面服务器没回 200」，而这句话把「服务器回了 500」
+   * 和「请求根本没发出去」混成一件事 —— 前者去查对面，后者查本机。
+   * `reportPresence` 现在把原因带回来，存在这儿供那行 warn 用。
+   */
+  private reportWhy = '';
   /** 最近一次查碰面服务器是否连上：null = 未配或未查，true = 连上，false = 断连。 */
   public lastMeetOk: boolean | null = null;
 
@@ -299,6 +308,23 @@ export class JourneyWorld implements World {
    * 所以只在 `tick()` 里算一次、存在这儿，由「新的一天」那个分支去读。
    */
   private awayCrossedDecide = false;
+
+  /**
+   * 那次「跨过决定点」的离线时长（真实毫秒）。
+   *
+   * `awayMs` 在 `awayNote` 那一段就被清零了，而真正写日志的位置在更后面的
+   * `stayTick` 「新的一天」分支 —— 到时候再读 `awayMs` 只剩 0，于是日志里
+   * 会写出「离线 0 分钟」。算标记的同一行把这个数抄下来。
+   */
+  private awayCrossedMs = 0;
+
+  /**
+   * 碰面名单没查成之后的重试额度（2026-11-23）。
+   *
+   * `day` 换日即重置；`at` 之前不再进决策分支（否则巡检一拍一次，
+   * 四个时段 × 每 3 秒 = 请求风暴）；`left` 用完就认命，当天不再给机会。
+   */
+  private meetRetry: { day: string; left: number; at: number } = { day: '', left: 0, at: 0 };
 
   /** 上一次把 `lastSeenAt` 落进磁盘的真实毫秒。只用于节流，本身不落盘。 */
   private lastSeenSavedMs = 0;
@@ -1014,6 +1040,7 @@ export class JourneyWorld implements World {
       const worldAwayMs = this.awayMs * prevSpeed;
       // 每拍重算，别让上一拍的结论漏到这一拍（见 `awayCrossedDecide` 的声明）。
       this.awayCrossedDecide = false;
+      this.awayCrossedMs = 0;
       this.markSeen(realNowMs);
       const now = this.worldNow();
       /*
@@ -1068,7 +1095,7 @@ export class JourneyWorld implements World {
        * 他关一晚电脑，她的世界就停一晚，那她已经过去的十三个小时成了假的。
        * 世界时间连续是这套东西的地基，问题从来不在时间会走，在于走的时候没人替她做决定。
        */
-      if (this.st.phase === 'staying' && this.awayMs > 0) {
+      if (this.st.phase === 'staying' && this.awayMs >= AWAY_CROSS_MIN_MS) {
         const here = this.cityOrNull(this.st.hereId);
         const today = here ? localMoment(now, here.tz) : null;
         if (here && today && this.st.decidedOn !== today.dateKey) {
@@ -1077,14 +1104,16 @@ export class JourneyWorld implements World {
             /*
              * 真正的落地在 `stayTick` 的「新的一天」分支 —— 那里决定 `decidedOn`
              * 是重置成 `null`（照常给一次机会）还是直接记成今天（今天不判）。
-             * 这里只算、只说。为什么不能在这儿写：那一行会把值覆盖掉，
-             * 而 `awayMs` 到下面 `awayNote` 就被清零了，等不到 `stayTick` 再来读。
+             * 这里只算、不落状态：那一行会把值覆盖掉，而 `awayMs` 到下面
+             * `awayNote` 就被清零了，等不到 `stayTick` 再来读。
+             *
+             * **日志也挪过去了**（2026-11-23）。原来在这儿就直接说「今天不补判」，
+             * 而这一拍之后 `stayTick` 未必真的走到那个分支（还在路上、恰好又在睡、
+             * 有急约 `urgentPledge`）—— 说了却没发生，日志就成了伪证。
+             * 现在这句只在真正把今天锁死的那一行旁边打。
              */
             this.awayCrossedDecide = true;
-            this.log?.info(
-              `离线 ${Math.round(this.awayMs / 60_000)} 分钟，跨过了当地 ${DECIDE_HOUR} 点的发车决策点`
-              + ` —— 今天不补判，留在${here.name}。`,
-            );
+            this.awayCrossedMs = this.awayMs;
           }
         }
       }
@@ -2157,17 +2186,27 @@ export class JourneyWorld implements World {
         if (p.arrivedAt && here.id === p.cityId && this.pledgeDone(now, p)) return true;
         return false;
       })();
+      /*
+       * **今天这一天已经不在了，别补判。**（判据见 `tick()` 里的 `awayCrossedDecide`）
+       *
+       * 例外照旧：打工期间、以及有急约在身，宁可当天就动身也不把今天锁死。
+       * 日志只在**真的锁死**这一支打 —— 原来它在 `tick()` 里无条件打，
+       * 而这一拍之后未必走到这儿，于是「今天不补判」说过又说没做。
+       */
+      const lockToday = this.awayCrossedDecide && !this.st.work && !urgentPledge;
       this.st = {
         ...this.st,
         stayDateKey: moment.dateKey,
         lastBeatKey: null,
-        /*
-         * 新的一天重新给一次决策机会 —— **除非这一天是在他关机的时候过去的**。
-         * 那种情况这个决定点已经不在了，补判等于「开机即发车」，
-         * 而她那会儿正在说「我还没待够」。判据见 `tick()` 里的 `awayCrossedDecide`。
-         */
-        decidedOn: (this.awayCrossedDecide && !this.st.work && !urgentPledge) ? moment.dateKey : null,
+        decidedOn: lockToday ? moment.dateKey : null,
       };
+      if (lockToday) {
+        const mins = Math.max(1, Math.round(this.awayCrossedMs / 60_000));
+        this.log?.info(
+          `离线 ${mins} 分钟，跨过了当地 ${DECIDE_HOUR} 点的发车决策点`
+          + ` —— 今天不补判，留在${here.name}。`,
+        );
+      }
       await this.rebuildPlan(now, 'full', 0, here);
       this.persist();
       if (carBack) {
@@ -2226,6 +2265,12 @@ export class JourneyWorld implements World {
     const lifeSch = this.readLifeSchedule?.() ?? null;
     const busyForDepart = this.asleepUntil() > decideNowMs || lifeBusyUntilFromView(lifeSch, decideNowMs) > decideNowMs;
     const canDecideHour = this.st.work ? true : moment.decimal < 21;
+    /*
+     * 上一拍名单**没查成**，今天这一趟判定已经还给下一次了（2026-11-23）。
+     * 冷却没到之前整段决策跳过 —— 巡检最快 3 秒一轮，四个时段一次就是四个请求，
+     * 不拦就是拿断连中的服务器当压测对象。换日自动重置。
+     */
+    if (this.meetRetry.day === moment.dateKey && this.meetRetry.at > decideNowMs) return;
     if (moment.decimal >= DECIDE_HOUR && canDecideHour && this.st.decidedOn !== moment.dateKey && !busyForDepart) {
 
       this.st = { ...this.st, decidedOn: moment.dateKey };
@@ -2323,7 +2368,34 @@ export class JourneyWorld implements World {
              * 现在至少日志里留一句，用户按时间对得上。
              */
             if (!mates.ok) {
-              this.log?.warn(`在${here.name}没查成碰面名单（碰面服务器连不上），今天先不动。`);
+              /*
+               * **没查成不等于今天判过了**（2026-11-23）。
+               *
+               * `decidedOn` 在上面已经写成今天，而它的语义是「这天已经判过了」——
+               * 可这一次压根没判成，只是一次网络抖动。原来这一支就那么放着，
+               * 于是一天的机会被一次失败吃掉，对方看到的是「她明明在这座城里，
+               * 就是不来见」（zzy1053 11-22、11-23 连续两天都是这样）。
+               *
+               * 现在把今天还回去，30 分钟后重试，最多两次。次数是硬上限：
+               * 服务器真挂了一天，也不该在这里无限循环。
+               */
+              const retry = this.meetRetry.day === moment.dateKey
+                ? this.meetRetry
+                : { day: moment.dateKey, left: MEET_RETRY_MAX, at: 0 };
+              if (retry.left > 0) {
+                retry.left -= 1;
+                retry.at = decideNowMs + MEET_RETRY_GAP_MS;
+                this.meetRetry = retry;
+                this.st = { ...this.st, decidedOn: null };
+                this.persist();
+                this.log?.warn(
+                  `在${here.name}没查成碰面名单（碰面服务器连不上）—— 今天这次判定先不算，`
+                  + `${Math.round(MEET_RETRY_GAP_MS / 60_000)} 分钟后重试（还剩 ${retry.left} 次）。`,
+                );
+              } else {
+                this.meetRetry = retry;
+                this.log?.warn(`在${here.name}没查成碰面名单（碰面服务器连不上），今天先不动。`);
+              }
             }
             return;   // 人还没露面（或者没查成），今天不动
           }

@@ -660,3 +660,69 @@ test('00:00 2h 排表看不见时文案温和不自打脸；08:05 matesHere 24h 
     assert.ok(depEv && String(depEv.text).includes('潮信'), `出发事件应带同伴潮信：${depEv?.text}`);
   } finally { r2(); }
 });
+
+test('碰面名单全查不成：把今天这次判定还回去、缓一下再试，不当成「人没露面」', async () => {
+  /*
+   * 2026-11-23，zzy1053 连续两天：早上八点没见着人，而他自己翻日志发现
+   * 那两天服务端一直在失败。根因之一是 `decidedOn` 在查名单**之前**就写成今天了
+   * （「这天已经判过了」），于是一次网络抖动吃掉整天的机会 —— 第二天才有下一次。
+   *
+   * 这条钉三件事：失败不占名额、冷却期内不刷请求、冷却到了重试能照常走。
+   */
+  const morning = '2026-11-23T00:05:00Z'; // 当地 08:05
+  const trip = {
+    phase: 'staying',
+    hereId: 'shenyang',
+    tripStartedAt: '2026-11-20T00:00:00Z',
+    stayStartedAt: '2026-11-21T16:00:00Z',
+    stayDateKey: '2026-11-23',
+    decidedOn: null,
+    pledge: {
+      cityId: 'changchun',
+      days: 2,
+      withPet: '潮信',
+      withPets: ['潮信'],
+      inviteId: 'abcdef0123456789',
+      acceptedAt: '2026-11-21T00:00:00Z',
+      arrivedAt: null,
+      meetCityId: 'shenyang',
+      meetArrivedAt: '2026-11-21T16:00:00Z',
+    },
+  };
+  const goodFetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/sight/status')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, pool: 5, invites: [], taken: 0 }) };
+    }
+    if (u.includes('/sight?')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, list: [{ pet: '潮信', doing: '逛中街' }], pool: 5, here: 2 }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+
+  const { world: w, events, restore } = await boot(trip, morning);
+  try {
+    w.cfg.meetUrl = 'https://x.app.tcloudbase.com';
+    globalThis.fetch = async () => { throw new Error('ECONNREFUSED'); };
+
+    await w.tick();
+    assert.equal(
+      w.st.decidedOn, null,
+      '名单没查成却把今天记成「已判」—— 一次抖动就废掉一整天，她要等到明天早上',
+    );
+    assert.equal(w.st.phase, 'staying');
+    assert.equal(events.filter((e) => e.type === 'journey.depart').length, 0, '没查成不该发车');
+
+    // 冷却期内连走两拍：不许每拍都打四组请求
+    await w.tick();
+    await w.tick();
+    assert.equal(w.st.decidedOn, null, '冷却没到就重判了 —— 断连的服务器会被打成压测对象');
+
+    // 把冷却拨回 = 「30 分钟到了」。这次服务器好了，名单里有潮信。
+    w.meetRetry.at = 0;
+    globalThis.fetch = goodFetch;
+    await w.tick();
+    assert.equal(w.st.phase, 'traveling', '重试成功却没动身 —— 修复等于没做');
+    assert.equal(w.st.leg?.toId, 'changchun');
+  } finally { restore(); }
+});
