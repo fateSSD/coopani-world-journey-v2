@@ -1,5 +1,19 @@
 # 更新日志
 
+## 2.7.1 — 2026-11-23（千问图生图参考图 + 全官方域名防串 + `custom` 路径自动识别 + 尺寸比例优先重试）
+
+- **千问原生多图参考支持**（`src/photo.ts`、`src/world-photo.ts`、`src/config.ts`）：
+  - `qwen-image-3.0-pro` 在同一 `/api/v1/services/aigc/multimodal-generation/generation` 接口的 `input.messages[0].content` 中原生支持 1–3 张 `{"image": dataUri}`（排在 `{ text }` 之前）。`shootPhoto()` 放开千问携带最多 3 张参考图，`refsAllowedBackend()` 同步放行 `qwen` 协议。
+  - 若配了早期纯文生图模型导致服务端 400 拒收 `image`，`shootPhoto()` 会自动摘除参考图重发并置 `refsDropped: true`。
+- **千问全官方域名防串**（`src/image-backend.ts`、`dist/webui.js`）：
+  - 补全 `QWEN_OFFICIAL_APIS`（含 `dashscope.aliyuncs.com`、`token-plan.maas.qianwenaiapi.com`、`dashscope-intl.aliyuncs.com`、`token-plan.ap-southeast-1.maas.aliyuncs.com`），前后端 `isForeignPresetValue()` / `foreignPreset()` 均支持当前预设白名单数组：千问自用保留，切回豆包等别家预设时正确拦截。
+- **`custom` 档粘入千问完整路径自动识别**（`src/image-backend.ts`）：
+  - 仅当 `imagePreset === 'custom'` 且地址后缀匹配 `/services/aigc/multimodal-generation/generation` 时自动切到 `qwen` 协议；`/compatible-mode/v1` 依然保持 `openai`。
+- **千问 400 尺寸报错优先按比例保构图 & 自检语义补全**（`src/photo.ts`、`src/world-photo.ts`）：
+  - `nearestSize()` 兼容无冒号的 `must be one of [...]`；千问报 `must be one of` 时优先挑相近宽高比枚举重试，挑不到或泛泛报尺寸错再整段删掉 `parameters.size`。
+  - `photoConfigProblem()` 从 `backend.protocol === 'openai'` 改为 `backend.protocol !== 'comfyui'`。
+- **测试**：`test/photo-qwen.test.mjs`、`test/photo-refs.test.mjs`、`test/image-backend.test.mjs` 补齐上述回归用例；全量 **1271/1271**、冒烟与端到端 **78/78** 全过。
+
 ## 2.7.0 — 2026-11-23（生图新增千问 / 百炼服务商 + 换服务商时清掉别家的旧地址）
 
 - **生图多了「千问 Qwen-Image（百炼 / Token Plan）」这一档**（GitHub Discussion #586，lyb-ai 问的）：
