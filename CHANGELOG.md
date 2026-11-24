@@ -1,5 +1,13 @@
 # 更新日志
 
+## 2.9.1 — 2026-11-25（面板加 QQ 群；宿主门槛按内核改到 0.2.22）
+
+> 只是入口与门槛，**不含功能改动**：2.9.0 的行为一个字没变。
+
+- **「说两句」反馈栏多一行「QQ 群：284525159」**（`dist/webui.js`）：跟在邮箱下面，点一下就复制群号。报 bug 写信、问一句进群，两条路都能走。
+- **市场简介写上群号**；宿主门槛从 `0.2.17+` 改为 `0.2.22+` —— 0.2.22 是内核 `cortico v0.2.17` 最后一次变动的那一版，0.2.23 只改应用层，内核没动。
+- **测试**：`test/*.test.mjs` **1307/1307**、`clock-sync` / `home-e2e` / `home-reason` / `photo-e2e` / `ui-smoke` **118/118**；`ui-smoke` 补了一条「反馈栏必须带明文群号」的断言。
+
 ## 2.9.0 — 2026-11-24（慢旅行二期 + 拍照内核掌镜架构 A+B + `sight-cf` 零迁移升级 + 六项审查修复）
 
 - **慢旅行二期（全景观光专列 / 房车自驾 / 内河游轮）与驾照联机门控**（`src/geo/modes.ts`、`src/plan/journey.ts`、`src/plan/lodging.ts`、`src/plan/leisure.ts`、`src/plan/dayplan.ts`、`src/helpers.ts`、`src/world-plan.ts`、`src/world-purse.ts`）：

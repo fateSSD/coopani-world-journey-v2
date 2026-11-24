@@ -433,6 +433,8 @@ test('前端产物：反馈按钮复制的是整封信，外链只能是 https',
 
     // 地址必须明文露出来：连 mailto 都不放行，用户手里总得有能复制的字符串
     assert.match(root.text, /hi@example\.com/, '地址没露出来，按钮之外就没辙了');
+    // 群号跟邮箱并列，同样得是明文 —— 群里问一句比写一封 issue 快
+    assert.match(root.text, /284525159/, '反馈栏没带 QQ 群号');
   } finally { restore(); }
 });
 

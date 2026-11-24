@@ -224,6 +224,8 @@ const TEXT = {
     fbCopied: '地址已复制',
     fbWhy: '按钮会把整封信复制下来 —— 收件人、主题、正文都在，粘到邮件里发出去就行。',
     fbWhere: '想加的地点写成「城市 + 地方名 + 一句为什么」就够了。',
+    fbGroupLead: 'QQ 群：',
+    fbGroupTip: '复制群号',
   },
   en: {
     eyebrow: 'Right now',
@@ -414,6 +416,8 @@ const TEXT = {
     fbCopied: 'Address copied',
     fbWhy: 'The button copies a whole letter - recipient, subject, body - ready to paste into any mail app.',
     fbWhere: 'A place just needs city + name + one line on why.',
+    fbGroupLead: 'QQ group: ',
+    fbGroupTip: 'Copy number',
   },
 };
 
@@ -707,8 +711,36 @@ function lampsHelp(T) {
   return box;
 }
 
+/** QQ 群号：面板底部常驻，点一下复制。 */
+const QQ_GROUP = '284525159';
+
+/**
+ * 只带群号的一行。
+ *
+ * 放在反馈栏最下面，而不是塞进「报 bug」那排按钮里 —— 群不是另一个 issue 入口，
+ * 是「问了有人答」的地方，跟邮箱并列才对。
+ */
+function qqGroupRow(T, ctx) {
+  const row = el('div', 'jr-fb-addr');
+  row.append(el('span', 'jr-fb-mail', `${T.fbGroupLead}${QQ_GROUP}`));
+  const copy = el('button', 'jr-linkbtn', T.fbGroupTip);
+  copy.type = 'button';
+  copy.addEventListener('click', () => {
+    copyText(QQ_GROUP).then(() => {
+      copy.textContent = T.fbCopied;
+      setTimeout(() => { copy.textContent = T.fbGroupTip; }, 2000);
+    });
+  }, { signal: ctx.signal });
+  row.append(copy);
+  return row;
+}
+
 function feedbackSection(T, s, ctx) {
   const mail = String(s.feedbackEmail || '').trim();
+  /*
+   * 没配邮箱整块不出现（老契约，`test/ui-smoke.mjs` 盯着这一条）。
+   * 群号跟着一起藏 —— 这一栏是「有事找作者」，用户把它关了就是不想看。
+   */
   if (!mail) return null;
 
   /** 一封信：收件人 + 主题 + 正文，粘到邮件里三段都在。 */
@@ -765,6 +797,7 @@ function feedbackSection(T, s, ctx) {
   open.rel = 'noreferrer';
   addr.append(open);
   box.append(addr);
+  box.append(qqGroupRow(T, ctx));
   return box;
 }
 
