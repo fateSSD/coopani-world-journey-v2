@@ -1430,47 +1430,72 @@ async function townJoinRoute(request, env, method) {
 }
 
 const STALL_EFFECT_LIMITS = {
-  food: { max: 55, weight: 1 },
-  energy: { max: 55, weight: 1 },
-  clean: { max: 55, weight: 1 },
-  fun: { max: 55, weight: 1 },
-  social: { max: 55, weight: 1 },
-  knowledge: { max: 6, weight: 6 },
-  fitness: { max: 4, weight: 8 },
+  food: { max: 80, weight: 1, step: 1 },
+  energy: { max: 80, weight: 1, step: 1 },
+  clean: { max: 80, weight: 1, step: 1 },
+  fun: { max: 80, weight: 1, step: 1 },
+  social: { max: 80, weight: 1, step: 1 },
+  knowledge: { max: 10, weight: 20, step: 0.1 },
+  fitness: { max: 5, weight: 40, step: 0.05 },
 };
 
 function stallEffectBudget(price) {
   const p = Math.max(1, Math.min(999, Math.round(Number(price) || 1)));
-  return Math.max(40, Math.min(90, Math.round(35 + Math.sqrt(p) * 6)));
+  if (p <= 150) return p * 2;
+  return Math.min(450, 300 + Math.round(Math.sqrt(p - 150) * 10));
+}
+
+function quantizeEffect(val, step, mode = 'round') {
+  if (!Number.isFinite(val) || val <= 0) return 0;
+  const units = mode === 'floor'
+    ? Math.floor((val + 1e-9) / step)
+    : Math.round(val / step);
+  return Math.round(units * step * 100) / 100;
 }
 
 function normStallEffects(raw, price) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const picked = {};
+  const origCost = {};
   let totalCost = 0;
   for (const [k, rule] of Object.entries(STALL_EFFECT_LIMITS)) {
-    const v = Math.round(Number(raw[k] ?? 0));
-    if (!Number.isFinite(v) || v <= 0) continue;
+    const v = quantizeEffect(Number(raw[k] ?? 0), rule.step, 'round');
+    if (v <= 0) continue;
     const clamped = Math.min(rule.max, v);
     picked[k] = clamped;
-    totalCost += clamped * rule.weight;
+    const c = clamped * rule.weight;
+    origCost[k] = c;
+    totalCost += c;
   }
   const keys = Object.keys(picked);
   if (!keys.length) return null;
   const budget = stallEffectBudget(price);
-  if (totalCost > budget) {
+  if (totalCost > budget + 1e-6) {
     const ratio = budget / totalCost;
     let remain = budget;
     for (const k of keys) {
-      const w = STALL_EFFECT_LIMITS[k].weight;
-      const scaled = Math.min(STALL_EFFECT_LIMITS[k].max, Math.floor(picked[k] * ratio));
-      const maxAfford = Math.floor(remain / w);
+      const rule = STALL_EFFECT_LIMITS[k];
+      const scaled = Math.min(rule.max, quantizeEffect(picked[k] * ratio, rule.step, 'floor'));
+      const maxAfford = quantizeEffect((remain + 1e-9) / rule.weight, rule.step, 'floor');
       const finalVal = Math.max(0, Math.min(scaled, maxAfford));
       if (finalVal > 0) {
         picked[k] = finalVal;
-        remain -= finalVal * w;
+        remain = Math.max(0, Math.round((remain - finalVal * rule.weight) * 100) / 100);
       } else {
         delete picked[k];
+      }
+    }
+    if (!Object.keys(picked).length && remain > 0) {
+      const byPriority = [...keys].sort((a, b) => origCost[b] - origCost[a]);
+      for (const k of byPriority) {
+        const rule = STALL_EFFECT_LIMITS[k];
+        if (remain + 1e-9 >= rule.step * rule.weight) {
+          const finalVal = Math.min(rule.max, quantizeEffect((remain + 1e-9) / rule.weight, rule.step, 'floor'));
+          if (finalVal > 0) {
+            picked[k] = finalVal;
+            break;
+          }
+        }
       }
     }
   }

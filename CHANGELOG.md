@@ -1,5 +1,12 @@
 # 更新日志
 
+## 2.8.1 — 2026-11-24（`sight-cf` 鱼市街按价线性兑换预算与小数步进支持）
+
+- **`sight-cf` 鱼市街摊位属性预算与步进升级**（`cloud/sight-cf/src/worker.js`）：
+  - `stallEffectBudget(price)` 改为 `1–150 元` 按 `price * 2` 线性增长（`> 150 元` 渐进至 `450`）；
+  - `STALL_EFFECT_LIMITS` 调整为五维 `1:1`（上限 `80`）、`knowledge` 见识 `0.1` 占 `2` 预算（上限 `10`）、`fitness` 体质 `0.05` 占 `2` 预算（上限 `5`）；`normStallEffects()` 新增 `quantizeEffect()` 步进量化与超预算保底防归零逻辑。
+- **测试**：`test/sight-cf-market.test.mjs` 补充 `1 元` 精确 `+2 精力 / +0.05 体质 / +0.1 见识`、`50 元` 组合小数及超预算防归零回归断言，`sight-cf-*.test.mjs` + `pets-page.test.mjs` **54/54** 全过。
+
 ## 2.8.0 — 2026-11-23（轮船 5 档舱位与主题游轮 + `sight-cf` 街道档案管理与鱼市街自定义 `effects`）
 
 - **轮船扩展 5 档舱位与跨扩展主题游轮联动**（`src/geo/modes.ts`、`src/plan/journey.ts`、`src/plan/timetable.ts`、`src/bridge.ts`、`src/ui.ts`、`src/world.ts`、`src/world-purse.ts`、`src/world-webui.ts`、`src/helpers.ts`、`src/describe.ts`、`describe.json`、`dist/webui.js`）：

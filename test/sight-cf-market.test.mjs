@@ -407,7 +407,7 @@ test('POST /town/stalls 支持自定义 effects 并按定价预算折算，GET/b
   await req('/town/join', { method: 'POST', db, body: { uid: UID_A, pet: '甲鱼', street: '南滨河路' } });
   await req('/town/join', { method: 'POST', db, body: { uid: UID_B, pet: '乙鱼', street: '正宁路' } });
 
-  // 定价 25 -> 预算 round(35 + sqrt(25)*6) = 65；35 + 16 + 2*6 = 63 <= 65
+  // 定价 50 -> 预算 50 * 2 = 100；50 + 20 + 0.5*20 + 0.5*40 = 100 <= 100
   const r1 = await req('/town/stalls', {
     method: 'POST',
     db,
@@ -415,27 +415,46 @@ test('POST /town/stalls 支持自定义 effects 并按定价预算折算，GET/b
       uid: UID_A,
       pet: '甲鱼',
       item: '秘制牛肉面',
-      price: 25,
+      price: 50,
       stock: 2,
       note: '刚出锅还热着',
-      effects: { food: 35, fun: 16, knowledge: 2 },
+      effects: { food: 50, energy: 20, knowledge: 0.5, fitness: 0.5 },
     },
   });
   assert.equal(r1.status, 200);
   assert.equal(r1.json.ok, true);
-  assert.deepEqual(r1.json.effects, { food: 35, fun: 16, knowledge: 2 });
+  assert.deepEqual(r1.json.effects, { food: 50, energy: 20, knowledge: 0.5, fitness: 0.5 });
 
-  // 定价 1 -> 预算 max(40, round(35 + 6)) = 41；超预算请求自动按比例截断折算
-  const r2 = await req('/town/stalls', {
+  // 定价 1 -> 预算 1 * 2 = 2；精准支持 +2 精力 / +0.05 体质 / +0.1 见识
+  const r1e = await req('/town/stalls', {
     method: 'POST',
     db,
+    body: { uid: UID_A, pet: '甲鱼', item: '薄荷糖', price: 1, stock: 1, effects: { energy: 2 } },
+  });
+  assert.equal(r1e.status, 200);
+  assert.deepEqual(r1e.json.effects, { energy: 2 });
+
+  const r1f = await req('/town/stalls', {
+    method: 'POST',
+    db,
+    body: { uid: UID_A, pet: '甲鱼', item: '小哑铃', price: 1, stock: 1, effects: { fitness: 0.05 } },
+  });
+  assert.equal(r1f.status, 200);
+  assert.deepEqual(r1f.json.effects, { fitness: 0.05 });
+
+  // 超预算请求按比例截断折算并保底不归零（另配新 DB 免撞每人 3 摊上限）
+  const db2 = makeDB();
+  await req('/town/join', { method: 'POST', db: db2, body: { uid: UID_A, pet: '甲鱼', street: '南滨河路' } });
+  const r2 = await req('/town/stalls', {
+    method: 'POST',
+    db: db2,
     body: {
       uid: UID_A,
       pet: '甲鱼',
       item: '大杂烩',
       price: 1,
       stock: 1,
-      effects: { food: 55, fun: 55, knowledge: 6, fitness: 4 },
+      effects: { food: 80, fun: 80, knowledge: 10, fitness: 5 },
     },
   });
   assert.equal(r2.status, 200);
@@ -443,8 +462,16 @@ test('POST /town/stalls 支持自定义 effects 并按定价预算折算，GET/b
   const fx2 = r2.json.effects;
   assert.ok(fx2 && typeof fx2 === 'object');
   const weighted2 = (fx2.food || 0) + (fx2.energy || 0) + (fx2.clean || 0) + (fx2.fun || 0) + (fx2.social || 0)
-    + (fx2.knowledge || 0) * 6 + (fx2.fitness || 0) * 8;
-  assert.ok(weighted2 > 0 && weighted2 <= 41, `折算后总加权点数应 <= 41，实际 ${weighted2}`);
+    + (fx2.knowledge || 0) * 20 + (fx2.fitness || 0) * 40;
+  assert.ok(weighted2 > 0 && weighted2 <= 2.001, `1 元折算后总加权点数应在 2 预算内且不归零，实际 ${weighted2}`);
+
+  const rK1 = await req('/town/stalls', {
+    method: 'POST',
+    db: db2,
+    body: { uid: UID_A, pet: '甲鱼', item: '豆腐脑小报', price: 1, stock: 1, effects: { knowledge: 0.1 } },
+  });
+  assert.equal(rK1.status, 200);
+  assert.deepEqual(rK1.json.effects, { knowledge: 0.1 });
 
   // 插入一条老格式纯文本 note 的摊位以验证向后兼容
   const now = new Date().toISOString();
@@ -457,11 +484,11 @@ test('POST /town/stalls 支持自定义 effects 并按定价预算折算，GET/b
   const listRes = await req('/town/stalls', { db });
   assert.equal(listRes.status, 200);
   const s1 = listRes.json.stalls.find((s) => s.id === r1.json.id);
-  const s2 = listRes.json.stalls.find((s) => s.id === r2.json.id);
+  const s1f = listRes.json.stalls.find((s) => s.id === r1f.json.id);
   const sOld = listRes.json.stalls.find((s) => s.id === 'legacy-1');
   assert.equal(s1.note, '刚出锅还热着');
-  assert.deepEqual(s1.effects, { food: 35, fun: 16, knowledge: 2 });
-  assert.deepEqual(s2.effects, fx2);
+  assert.deepEqual(s1.effects, { food: 50, energy: 20, knowledge: 0.5, fitness: 0.5 });
+  assert.deepEqual(s1f.effects, { fitness: 0.05 });
   assert.equal(sOld.note, '纯文本老吆喝');
   assert.equal(sOld.effects ?? null, null);
 
@@ -472,5 +499,5 @@ test('POST /town/stalls 支持自定义 effects 并按定价预算折算，GET/b
   });
   assert.equal(buyRes.status, 200);
   assert.equal(buyRes.json.ok, true);
-  assert.deepEqual(buyRes.json.effects, { food: 35, fun: 16, knowledge: 2 });
+  assert.deepEqual(buyRes.json.effects, { food: 50, energy: 20, knowledge: 0.5, fitness: 0.5 });
 });
