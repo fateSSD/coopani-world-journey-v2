@@ -278,6 +278,16 @@ export class JourneyWorld implements World {
   /** 出发地认不出来时那句话。启动时算一次，面板上显示出来。 */
   private homeProblem: string | null = null;
 
+  /**
+   * 状态读上来了没有。
+   *
+   * `resolveHome()` 在 `start()` 里**先于** `store.load()` 被调一次（要拿出发地当默认值），
+   * 那一刻 `this.st` 还是 `initialState('lanzhou')` 那个空壳 —— 里面那个 `homeId`
+   * 表示「还没定」，不是「家就在兰州」。所以「拿 st.homeId 当钉住的家」这件事
+   * 只能在状态真读上来之后做。
+   */
+  private stateLoaded = false;
+
   /** 上一次看到的歌名。用来判断「换歌了」—— 同一个歌名不重复处理。 */
   private lastSongTitle: string | null = null;
 
@@ -686,7 +696,7 @@ export class JourneyWorld implements World {
     // 密钥搬家（#659 第二条）。要 log 就绪，所以放在这一句之后。
     this.adoptKeys();
 
-    const home = this.resolveHome();
+    let home = this.resolveHome();
     /*
      * 出发地认不出来，要**说出来**。
      *
@@ -703,6 +713,24 @@ export class JourneyWorld implements World {
     this.st = loaded.state;
     if (loaded.problem) host.log.warn(loaded.problem);
     this.bootedAt = this.realNow().getTime();
+
+    /*
+     * **读完状态再认一次家**（2026-11-24）。
+     *
+     * 上面那一次是「拿什么当默认值」，此时状态还没读 —— 没填出发地的话，
+     * 它可能刚从日记里推断出一座城。而状态里那个 `homeId` 才是上一轮定下的家。
+     * 不在这儿重认一次，下面那段「出发地变了 = 搬家」就会拿日记推断值去覆盖
+     * 已定下的家：她每写一篇新城的日记，家就搬一次，回访时那座城就成了「老家」。
+     */
+    this.stateLoaded = true;
+    const settled = this.resolveHome();
+    this.homeProblem = settled.problem;
+    if (settled.city.id !== home.city.id) {
+      host.log.info(
+        `出发地按已经定下的${settled.city.name}算（日记里最近待过的是${home.city.name}，那只是她走到的地方）。`,
+      );
+    }
+    home = settled;
 
     /*
      * 出发地被改了 = 搬家。
@@ -760,6 +788,35 @@ export class JourneyWorld implements World {
       host.log.info('接上了另一台机器上的旅行记忆：去过的地方、想去的地方、花的那笔账，都合进来了。');
     }
     this.st = merged.state;
+
+    /*
+     * ## 日记写过的地方，也算「去过」（2026-11-24 读者报告）
+     *
+     * 读者原话：「决定下一站的时候不看日记，反复去同一个地方旅游硬说自己没去过，
+     * 直到我提醒她看日记才会重新规划新地点。」
+     *
+     * 查下来是真的：`pickDestination` 的 `visited` 只读 `st.everVisited`，
+     * 从没读过日记；而日记才是「她真去哪儿写过什么」的那份记录。
+     * 两份一旦分叉（重装、换机器、状态文件被重置过），她就会回访老地方 ——
+     * 而且因为那段历史不在她手上的任何一格，她还会说成「没来过」。
+     *
+     * 补一次并集就够：只增不减，只在启动时算，不进每回合的渲染路径。
+     * 不静默：加了几座就说一句。
+     */
+    const fromDiary = this.diary.recentCities(60);
+    const known = new Set(this.st.everVisited);
+    const added = fromDiary.filter((id) => !known.has(id) && cityById(id));
+    if (added.length) {
+      /*
+       * `recentCities` 是**新的在前**，而 `everVisited` 是追加顺序（旧的在前）——
+       * 这里得倒过来再并，否则「最近去过的几座」会指到最老的那几座。
+       */
+      this.st = { ...this.st, everVisited: [...this.st.everVisited, ...[...added].reverse()] };
+      host.log.info(
+        `日记里写过 ${added.length} 座状态里没有的城（${added.map((id) => this.cityName(id)).join('、')}），`
+        + '已经补进「去过」的名单 —— 挑下一站时不会再当成没去过。',
+      );
+    }
 
     // **启动时强制写一遍。**
     //
@@ -891,12 +948,45 @@ export class JourneyWorld implements World {
       const fallback = cityByName('兰州') ?? CITIES[0];
       return { city: fallback, problem: `出发地「${raw}」不在内置城市表里，先按${fallback.name}算。` };
     }
-    // 没配：用日记里最近出现过的城市；再不行用兰州（历史数据 + 常见起点）。
+    /*
+     * ## 没填出发地：**家只推断一次，之后就钉住**（2026-11-24 读者报告）
+     *
+     * 原来每次启动都拿「日记里最近出现过的城市」当出发地。于是家跟着日记一路漂：
+     * 她到汉中写了日记，家就变成汉中；第二天再回到天水，家又是天水 ——
+     * 而 `{{journey.home}}` 是她的**身体基准**（「跟家里一个味道」那些句子全由它算），
+     * 提示词里又写着「家那边的体感」。两下一叠，她会把当天那座城说成「我在这儿长大」。
+     *
+     * 用户看到的是「谎报出生地」，而且和「反复回同一座城」连着 ——
+     * 每隔几天她的故乡就换一座。
+     *
+     * 所以：日记兜底只用来**定第一次**，定完写进 `st.homeId`（下面 `start()` 里做），
+     * 之后一律认那个值。用户改配置随时能覆盖。
+     */
+    if (this.stateLoaded) {
+      const pinned = cityById(this.st.homeId);
+      if (pinned) {
+        return {
+          city: pinned,
+          problem: `还没设「从哪儿出发」，一直按${pinned.name}算 —— 这个值定下来就不随旅行变了。`
+            + '想换在设置里填一个城市名。',
+        };
+      }
+    }
     const recent = this.diary.recentCities(1)[0];
     const fromDiary = recent ? cityById(recent) : null;
-    if (fromDiary) return { city: fromDiary, problem: null };
+    if (fromDiary) {
+      return {
+        city: fromDiary,
+        problem: `还没设「从哪儿出发」，先按日记里最近待过的${fromDiary.name}算 —— 之后就按它不变了。`
+          + '想换在设置里填一个城市名。',
+      };
+    }
     const c = cityByName('兰州') ?? CITIES[0];
-    return { city: c, problem: `还没设「从哪儿出发」，先按${c.name}算。在设置里填一个城市名就改过来了。` };
+    return {
+      city: c,
+      problem: `还没设「从哪儿出发」，先按${c.name}算 —— 之后就按它不变了。`
+        + '在设置里填一个城市名就改过来了。',
+    };
   }
 
 
@@ -3758,6 +3848,14 @@ export class JourneyWorld implements World {
       };
     }
 
+    /*
+     * **这地方她以前到过没有**（2026-11-24 读者报告：「反复去同一个地方硬说自己没去过」）。
+     *
+     * 出发之后 `everVisited` 才会更新，所以要在动身之前问。
+     * 回执里点一句，省得她把回访说成头一回 —— 那是她随口编，不是世界给的事实。
+     */
+    const beenThere = this.st.everVisited.includes(dest.id);
+
     if (this.st.phase === 'home') {
       await this.depart(now, true, { to: dest, mode: mode ?? undefined, modeWord: wanted });
     } else {
@@ -3787,6 +3885,7 @@ export class JourneyWorld implements World {
     return {
       text: `出发了：${from.name} → ${dest.name}，${real?.name ?? leg.modeId}，${leg.km} 公里，`
         + `${humanHours(leg.durationWorldHours)}。`
+        + (beenThere ? `\n（${dest.name}她以前到过 —— 这是「又来」，不是头一回。）` : '')
         + (wanted && leg.modeId !== modeIdOf(wanted) ? '（他要的那种走法用不了，已换成这种，记得说一声。）' : '')
         + '这件事该跟他说一句 —— 说清去哪、怎么去、大概多久。',
     };

@@ -1215,7 +1215,13 @@ export const purseMethods: Record<string, any> = {
        * 早就被截断的那条 `journey.home`，写出来一律是「这一趟结束了」。
        */
       const why = homeReasonText(this.st.homeReason);
-      const been = this.st.everVisited.length ? `走到现在一共到过 ${this.st.everVisited.length} 个地方。` : '';
+      /*
+       * 在家也要报「去过哪些地方」，而且要给名字。
+       *
+       * 原来只报一个数（「走到现在一共到过 12 个地方」）—— 数字回答不了
+       * 「下一趟别再去重复的地方」这个问题（2026-11-24 读者报告）。
+       */
+      const been = this.visitedLine();
       /*
        * **在家这一支要自己报天气和钱**（2026-11-17）。
        *
@@ -1421,6 +1427,11 @@ export const purseMethods: Record<string, any> = {
       this.pledgeText(now),
       this.songHint(now),
       this.st.wishes.length ? `想去还没去的：${this.st.wishes.map((id) => this.cityName(id)).join('、')}。` : '',
+      /*
+       * 去过哪儿。**必须和「想去哪儿」一样每回合都在** —— 这一条是读者报上来的
+       * 「反复回同一座城、还说没去过」的正面修法：她要挑下一站，就得先知道自己到过哪。
+       */
+      this.visitedLine(),
     ].filter(Boolean).join('\n') + `\n${NOW_TAIL}`;
   },
 
@@ -1657,6 +1668,31 @@ export const purseMethods: Record<string, any> = {
     }
     const list = this.st.wishes.map((id) => this.cityName(id)).join('、') || '空';
     return { text: `${had ? '本来就在' : '记下了'}：${c.name}${why ? `（${why}）` : ''}。想去的地方：${list}。` };
+  },
+
+
+  /**
+   * 去过哪些地方 —— 一回合一行（2026-11-24 读者报告）。
+   *
+   * 读者原话：「决定下一站的时候不看日记，反复去同一个地方旅游硬说自己没去过。」
+   * 根子不在语气，在**事实没在她手上**：`everVisited` 只写进了 state 和面板，
+   * 从没进过 `{{journey.now}}`。她要说得出口，只能自己去翻日记 ——
+   * 而挑下一站的时候没人提醒她翻。
+   *
+   * 只给名字和总数，不给年份和摘要：这一行的用处是「别把到过的地方说成头一回」，
+   * 不是让她背履历。要细节她会去调 `journey_diary_read`。
+   */
+  visitedLine(): string {
+    const here = this.st.hereId;
+    const been = this.st.everVisited.filter((id) => id !== here);
+    if (!been.length) return '';
+    const recent = been.slice(-8).reverse();
+    const names = recent.map((id) => this.cityName(id)).join('、');
+    const tail = been.length > recent.length
+      ? `只列最近 ${recent.length} 座，一共 ${been.length} 个地方`
+      : `一共 ${been.length} 个地方`;
+    return `去过的地方（近的在前）：${names}。${tail} —— 这些地方都到过了，`
+      + '再说起是「又来」，不是「第一次」。';
   },
 
 

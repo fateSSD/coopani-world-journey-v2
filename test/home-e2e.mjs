@@ -10,7 +10,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -95,6 +95,68 @@ test('还没改过出发地的时候，什么都不该发生', () => {
   world.start(fakeHost());
   assert.equal(world.st.hereId, 'lanzhou');
   assert.equal(world.st.spent, 120, '没改配置却把账清了');
+});
+
+/* ---------------- 没填出发地：家只推断一次（2026-11-24 读者报告） ---------------- */
+
+/** 往 `dataDir/diary` 手写一篇月文件 —— 和 `DiaryStore.write()` 落的一模一样。 */
+function writeDiary(dir, dateKey, cityId, cityName) {
+  const d = join(dir, 'diary');
+  mkdirSync(d, { recursive: true });
+  writeFileSync(join(d, `${dateKey.slice(0, 7)}.md`), [
+    '---', `date: ${dateKey}`, `city: ${cityName}`, `cityId: ${cityId}`, '---', '',
+    `到了${cityName}，随便走走。`, '',
+  ].join('\n'), 'utf8');
+}
+
+test('没填出发地：家定下来之后不再跟着日记跑（2026-11-24）', () => {
+  /*
+   * 读者原话：「如果没设置从哪里出发，经常出现 coo 谎报出生地……
+   * 从天水出发后回到天水会说在这里长大，旅游至汉中，从汉中出发玩了一圈
+   * 重复回到汉中，又会说自己是汉中长大的。」
+   *
+   * 根因不是措辞：没填出发地时 `resolveHome()` 每次启动都拿**日记里最近那座城**
+   * 当出发地，于是家跟着日记一路漂，回到哪座城哪座城就成了「老家」。
+   */
+  const dir = seed({
+    phase: 'staying',
+    hereId: 'hanzhong',
+    homeId: 'lanzhou',
+    tripStartedAt: '2026-11-01T00:00:00Z',
+    stayStartedAt: '2026-11-18T00:00:00Z',
+    stayDateKey: '2026-11-20',
+  });
+  // 日记里最近写的是汉中 —— 老逻辑读到它，就把家改成汉中。
+  writeDiary(dir, '2026-11-20', 'hanzhong', '汉中');
+  const world = makeWorld(dir, { homeCity: '' });
+  world.start(fakeHost());
+  assert.equal(world.st.homeId, 'lanzhou', '家被日记带跑了 —— 她又要在汉中「长大」了');
+  assert.equal(world.st.hereId, 'hanzhong', '人在汉中，却被瞬移了');
+  assert.match(String(world.uiSnapshot().homeProblem ?? ''), /不随旅行变/,
+    '没填出发地要照实说一句，而且要说清这个值定下来就不动了');
+});
+
+test('日记里写过、状态里没有的城，启动时补进「去过」（2026-11-24）', () => {
+  /*
+   * 「决定下一站的时候不看日记，反复去同一个地方旅游硬说自己没去过。」
+   *
+   * 挑目的地只看 `st.everVisited`，而日记才是「她真去哪儿写过什么」。
+   * 两份分叉时（重装、换机、状态文件重置过），她会回访老地方，还说成头一回。
+   */
+  const dir = seed({
+    phase: 'staying',
+    hereId: 'hanzhong',
+    homeId: 'lanzhou',
+    everVisited: ['xian'],
+    tripStartedAt: '2026-11-01T00:00:00Z',
+    stayStartedAt: '2026-11-18T00:00:00Z',
+    stayDateKey: '2026-11-20',
+  });
+  writeDiary(dir, '2026-11-20', 'hanzhong', '汉中');
+  const world = makeWorld(dir, { homeCity: '兰州' });
+  world.start(fakeHost());
+  assert.ok(world.st.everVisited.includes('hanzhong'), '日记里写过的汉中没进「去过」');
+  assert.ok(world.st.everVisited.includes('xian'), '原有的去过名单被覆盖了');
 });
 
 test('刚加载不出发：加载两分钟内不动身', async () => {

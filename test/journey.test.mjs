@@ -1344,6 +1344,16 @@ test('身份按出发地渲染，不写死某座城市', () => {
   assert.match(p, /\{\{journey\.home\}\}/, '身份段没用出发地变量');
   assert.match(p, /\{\{journey\.homeFeel\}\}/, '家那边的体感没有变量可用，只能硬写');
   assert.equal(p.includes('兰州'), false, '提示词里还写死了某个城市');
+  /*
+   * 2026-11-24 读者报告：「没设置从哪里出发，经常出现 coo 谎报出生地……
+   * 回到汉中又会说自己是汉中长大的。」
+   *
+   * 代码那边修的是「家不再随日记漂」，提示词这边必须同时把话说明白：
+   * 出发地只用来对照体感，**不是她的来历**。少这一句，模型照样会从
+   * 「身体基准在天水」推出一句「我在天水长大」。
+   */
+  assert.match(p, /不是你的出生地或老家/, '提示词没把「出发地 ≠ 出生地」说出来');
+  assert.match(p, /别拿它编来历/, '没说清「别拿出发地编来历」这个具体动作');
 });
 
 test('体感：在家的时候不能说「跟家里比」', () => {
@@ -3225,4 +3235,39 @@ test('约定里的「跟谁」：一个、两个、三个各说各的说法，�
   assert.equal(whoOf({ withPet: '小满', withPets: [] }), '小满');
   // 缺名字的兜底
   assert.equal(whoOf({ withPet: '' }), '一只鱼');
+});
+
+/* ---------------- 没有理由的回访要压下去（2026-11-24 读者报告） ---------------- */
+
+test('回访老地方：没有由头的要压过方向系数', () => {
+  /*
+   * 读者原话：「决定下一站的时候不看日记，反复去同一个地方旅游硬说自己没去过。」
+   *
+   * 根因是权重表里少了一条：`visited` 只有「没去过 ×3」，**去过的不减**。
+   * 于是方向系数能把它抬回去 —— 顺着走的旧城 1.6，侧后方的新城 0.5×3=1.5，
+   * 「顺着走」比「没去过」还值钱，同一座城被反复挑中。
+   *
+   * 判据不是「回访不能发生」（半年在外面回访是正常的），
+   * 而是**没理由的回访要让过没去过的地方**，有理由的（节日 / 没逛完）不受影响。
+   */
+  const from = cityById('xian');
+  const home = cityById('lanzhou');
+  const base = ['chengdu', 'chongqing', 'xian', 'zhengzhou', 'lanzhou'];
+  const hits = (visited, extra = {}, n = 4000) => {
+    let hit = 0;
+    for (let i = 0; i < n; i++) {
+      let s = i * 7919 + 7;
+      const rnd = () => { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; };
+      const p = pickDestination({ from, home, visited, lastKm: 500, rnd, ...extra });
+      if (p && p.city.id === 'wuhan') hit++;
+    }
+    return hit;
+  };
+  const been = hits([...base, 'wuhan']);      // 去过、没理由
+  const fresh = hits(base);                    // 没去过
+  const fest = hits([...base, 'wuhan'], { festivalIds: ['wuhan'] });
+  const unfin = hits([...base, 'wuhan'], { unfinishedIds: ['wuhan'] });
+  assert.ok(been * 3 < fresh, `没理由的回访没被压下去：去过 ${been} vs 没去过 ${fresh}`);
+  assert.ok(fest > unfin, `节日该比「没逛完」更值钱：节 ${fest} vs 没逛完 ${unfin}`);
+  assert.ok(unfin > been, `「没逛完」这一条理由被回访降权一起压没了：${unfin} vs ${been}`);
 });

@@ -360,3 +360,31 @@ test('出门到上限了：不开新的一趟 —— 去了也只是一夜，第
     assert.equal(events.filter((e) => e.type === 'journey.depart').length, 0);
   } finally { restore(); }
 });
+
+/* ---------------- 去过的地方要说「又来」（2026-11-24 读者报告） ---------------- */
+
+test('回访老地方：回执要点一句「以前到过」，别让她说成头一回', async () => {
+  /*
+   * 读者原话：「反复去同一个地方旅游硬说自己没去过。」
+   *
+   * 世界这边一直知道她去过（`everVisited`），但只写在 state 和面板上 ——
+   * 回执里不提，她就照着自己的印象编一句「第一次来」。
+   * 工具的规矩是「只陈述系统能确认的事实」，那么这条事实就该在回执里。
+   */
+  const { world, restore } = await boot(staying('lanzhou', { everVisited: ['xian'] }), NOW);
+  try {
+    const out = await goTo(world)({ city: '西安' });
+    assert.ok(!out.isError, `没走成：${out.text}`);
+    assert.match(String(out.text), /以前到过/, `回执没提她去过：${out.text}`);
+    assert.match(String(out.text), /又来/, '没点出这是回访');
+  } finally { restore(); }
+});
+
+test('没去过的地方不许硬凑这句', async () => {
+  const { world, restore } = await boot(staying('lanzhou'), NOW);
+  try {
+    const out = await goTo(world)({ city: '西安' });
+    assert.ok(!out.isError, `没走成：${out.text}`);
+    assert.doesNotMatch(String(out.text), /以前到过/, `没去过却说去过：${out.text}`);
+  } finally { restore(); }
+});

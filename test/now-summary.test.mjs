@@ -141,3 +141,40 @@ test('在家拍照联动读取 life-public.json 活动场景与 visualPrompt', (
   const doing = w.photoDoingNow({ id: 'lanzhou', tz: 'Asia/Shanghai' }, 13);
   assert.match(doing, /街角咖啡馆/, 'photoDoingNow 在家时返回 life visualPrompt');
 });
+
+/* ---------------- 去过哪些地方（2026-11-24 读者报告） ---------------- */
+
+test('去过的地方要报名字，不能只报个数', () => {
+  /*
+   * 读者原话：「决定下一站的时候不看日记，反复去同一个地方旅游硬说自己没去过，
+   * 直到我提醒她看日记才会重新规划新地点。」
+   *
+   * 原来 `{{journey.now}}` 里只有「走到现在一共到过 N 个地方」那句数（而且还只在家时出现），
+   * 挑下一站的时候她手上根本没有「我去过哪儿」。这一行补的就是这个事实。
+   */
+  const w = staying(null);
+  w.st = { ...w.st, everVisited: ['xian', 'tianshui', 'chengdu'], hereId: 'chengdu' };
+  const s = w.nowSummary();
+  assert.match(s, /去过的地方/, `没有「去过」这一行：${s.slice(0, 400)}`);
+  assert.match(s, /天水/, '「去过」里没有天水');
+  assert.match(s, /西安/, '「去过」里没有西安');
+  /* 现在这座城不算「去过」—— 她就在这儿，说成「到过」是废话。 */
+  const line = s.split('\n').find((x) => x.includes('去过的地方')) ?? '';
+  assert.equal(line.includes('成都'), false, `把当前城市也算进「去过」了：${line}`);
+  assert.match(line, /一共 2 个地方/, `总数不对：${line}`);
+});
+
+test('哪儿都没去过就不提这一行 —— 别硬凑一句空话', () => {
+  const w = staying(null);
+  w.st = { ...w.st, everVisited: [], hereId: 'chengdu' };
+  assert.doesNotMatch(w.nowSummary(), /去过的地方/, '第一次出门就说「去过」');
+});
+
+test('在家那一支同样要给名字', () => {
+  const w = staying(null);
+  w.st = { ...w.st, phase: 'home', hereId: 'lanzhou', everVisited: ['xian', 'tianshui'] };
+  w.plan = null;
+  const s = w.nowSummary();
+  assert.match(s, /去过的地方/, `在家只报数不报名：${s.slice(0, 300)}`);
+  assert.match(s, /天水/);
+});
