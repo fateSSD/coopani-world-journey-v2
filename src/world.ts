@@ -288,6 +288,12 @@ export class JourneyWorld implements World {
    */
   private stateLoaded = false;
 
+  /** 上一次观测到的 withUser 开关，用来在运行中热切换时即时通知当前会话覆盖旧系统前缀。 */
+  private lastWithUser: boolean | null = null;
+
+  /** 上一次观测到的扣她钱包开关（moneyEnabled && payFromLife），关掉时清掉待结算正数条子。 */
+  private lastPayFromLife: boolean | null = null;
+
   /** 上一次看到的歌名。用来判断「换歌了」—— 同一个歌名不重复处理。 */
   private lastSongTitle: string | null = null;
 
@@ -713,6 +719,8 @@ export class JourneyWorld implements World {
     this.st = loaded.state;
     if (loaded.problem) host.log.warn(loaded.problem);
     this.bootedAt = this.realNow().getTime();
+    this.lastWithUser = Boolean(this.cfg.withUser);
+    this.lastPayFromLife = Boolean(this.cfg.moneyEnabled && this.cfg.payFromLife !== false);
 
     /*
      * **读完状态再认一次家**（2026-11-24）。
@@ -1154,6 +1162,32 @@ export class JourneyWorld implements World {
       if (health.problem && health.problem !== this.diary.current.problem) this.log?.warn(health.problem);
       // 记忆跟着日记的目录走：热改了同步盘，两边一起换，别只换一半。
       this.travelMemory.configure(health.dir);
+      const withUserNow = Boolean(this.cfg.withUser);
+      if (this.lastWithUser === null) {
+        this.lastWithUser = withUserNow;
+      } else if (withUserNow !== this.lastWithUser) {
+        this.lastWithUser = withUserNow;
+        if (this.st.phase !== 'home') {
+          await this.push(
+            'journey.beat',
+            `with-user-${realNowMs.toString(36)}`,
+            withUserNow
+              ? '同行状态更新：从现在起，他跟你一块走这一趟（叙事同行，这一趟是「我们」一起走，不再是一个人走）。'
+              : '同行状态更新：接下来改回你一个人继续走（那个人隔着屏幕看你，不在身边）。',
+            'debounce',
+          );
+        }
+      }
+      const payNow = Boolean(this.cfg.moneyEnabled && this.cfg.payFromLife !== false);
+      if (this.lastPayFromLife === null) {
+        this.lastPayFromLife = payNow;
+      } else if (payNow !== this.lastPayFromLife) {
+        this.lastPayFromLife = payNow;
+        if (!payNow) {
+          const n = this.purgePendingSpendTickets();
+          if (n > 0) this.log?.info(`已关闭扣她钱包，清理掉 ${n} 张尚未结算的旅途扣款条子。`);
+        }
+      }
 
       // 换歌时立刻反应，而不是等到出发那一刻。
       //
@@ -1476,7 +1510,7 @@ export class JourneyWorld implements World {
       // 约定里点过走法就照它 —— 那是他自己说的「买机票吧」，不该被掷骰子盖掉。
       // 他这次又点了名（`opts.to`）但没再说方式时，`pledged` 是 null，要靠 `pledgeFor` 找回来。
       ?? this.pledgedMode(pledged ?? this.pledgeFor(to), from, to, km)
-      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.cfg.hasLicense, this.effectiveLifeEnergy());
+      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.effectiveHasLicense(), this.effectiveLifeEnergy());
     if (!mode) {
       /*
        * **「没有可用交通方式」和「买不起」是两件事，原来都说成前一句。**
@@ -1494,7 +1528,7 @@ export class JourneyWorld implements World {
       return;
     }
 
-    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey), opts.modeWord ?? '');
+    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey), opts.modeWord ?? '', { from, to });
     const leg = this.buyTicket(buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade }));
     // 记下这一趟是从哪个家出发的 —— 用户途中改家时，面板要靠它说清「人没跟家一起搬」。
     this.st = { ...this.st, tripHomeId: home.id };
@@ -1506,15 +1540,23 @@ export class JourneyWorld implements World {
      * 之后每天排日程时（`planDay` 的 `car`）就开车去景点，油钱按公里。
      *
      * 从家出发开的是自己的车（不花钱）；在外面出发要租 —— 日租 200，
-     * 按三天算一笔，还车时不该退的那部分就当折旧。
+     * 按三天算一笔（房车自驾按五天），还车时不该退的那部分就当折旧。
      */
-    if (mode.id === 'car' && !this.st.car) {
-      const fromHome = from.id === home.id;
-      const fuel: 'oil' | 'ev' = Math.random() < 0.4 ? 'ev' : 'oil';
-      if (!fromHome && this.cfg.moneyEnabled) {
-        this.addSpent(600);
+    if (mode.id === 'car') {
+      const isCamper = grade?.id === 'campervan';
+      if (!this.st.car) {
+        const fromHome = from.id === home.id;
+        const fuel: 'oil' | 'ev' = Math.random() < 0.4 ? 'ev' : 'oil';
+        if (!fromHome && this.cfg.moneyEnabled) {
+          this.addSpent(600);
+        }
+        this.st = {
+          ...this.st,
+          car: { fuel, days: fromHome ? 0 : (isCamper ? 5 : 3), km: 0, ...(isCamper ? { camper: true } : {}) },
+        };
+      } else if (isCamper && !this.st.car.camper) {
+        this.st = { ...this.st, car: { ...this.st.car, camper: true } };
       }
-      this.st = { ...this.st, car: { fuel, days: fromHome ? 0 : 3, km: 0 } };
     }
     const tripVisited = this.st.tripVisited.includes(to.id)
       ? this.st.tripVisited
@@ -1579,6 +1621,7 @@ export class JourneyWorld implements World {
         && this.st.pledge.meetArrivedAt
           ? `\n${travelWith(this.whoOfPledge(this.st.pledge), mode.name, seedOf(`${leg.id}|go`), this.warmthOf(this.st.pledge))}`
           : '')
+      + (this.cfg.withUser ? '\n这一趟是他跟你一块出发（叙事同行，聊天和日记里自然说「我们」）。' : '')
       + songLine(this.currentSong()),
       'flush',
     );
@@ -1912,8 +1955,18 @@ export class JourneyWorld implements World {
     const song = idx === 1 ? songLine(this.currentSong()) : '';
     // 剩余时间按**真实进度**算，不再用 idx 反推（短途用 idx=1 反推会差一截）。
     const text = roadText(mode.id, idx, leg, from, to, hour, p) + song;
+    const FEATURE_PHOTO_SEATS = new Set([
+      'theme-cruise', 'ocean-balcony', 'river-cruise', 'scenic-train', 'campervan',
+    ]);
+    const photoMode = FEATURE_PHOTO_SEATS.has(leg.seatId ?? '')
+      ? (leg.seat || mode.name)
+      : mode.name;
+    const toMoment = localMoment(now, to.tz);
+    const roadOffer = idx === 1 && typeof this.autoPhotoOfferLine === 'function'
+      ? this.autoPhotoOfferLine(to, Math.round(toMoment.decimal * 60) / 60, toMoment.dateKey, '', null, true, photoMode)
+      : '';
     const legId = leg.id;
-    await this.push('journey.road', `road-${key}`, text, 'debounce', undefined, {
+    await this.push('journey.road', `road-${key}`, text + roadOffer, 'debounce', undefined, {
       tags: ['snapshot'],
       deferredRender: () => {
         const curLeg = this.st.leg;
@@ -1922,26 +1975,34 @@ export class JourneyWorld implements World {
         const curP = progressOf(curLeg, curNow);
         const curHour = localHour(curNow, from.tz);
         const curSong = idx === 1 ? songLine(this.currentSong()) : '';
-        return roadText(mode.id, idx, curLeg, from, to, curHour, curP) + curSong;
+        const base = roadText(mode.id, idx, curLeg, from, to, curHour, curP) + curSong;
+        if (idx !== 1 || typeof this.autoPhotoOfferLine !== 'function') return base;
+        const curToMoment = localMoment(curNow, to.tz);
+        return base + this.autoPhotoOfferLine(
+          to,
+          Math.round(curToMoment.decimal * 60) / 60,
+          curToMoment.dateKey,
+          '',
+          null,
+          true,
+          photoMode,
+        );
       },
     });
 
     /*
      * 路上也拍一张。
      *
-     * 2026-11-03 一位读者来信：「生成的图片一直都是几个出发的城市中的图片，
-     * 不会显示火车、乡间的照片」—— 因为拍照只挂在「出去逛」那个节点上。
-     *
-     * 只在中段拍（`idx === 1`）：一次行程最多一张，不然长途会连拍好几张。
-     * 不 await —— 生图要十几秒，等它会把后面该推的节点全推迟。
+     * 只在中段（`idx === 1`）：一次行程最多一张。有 cognition 或后台直出模式时直接生图，
+     * 否则机会已附带进上面那条 journey.road 事件里由主会话亲自掌镜。
      */
     if (idx === 1) {
-      const photoMode = (leg.seatId === 'theme-cruise' || leg.seatId === 'ocean-balcony')
-        ? (leg.seat || mode.name)
-        : mode.name;
-      void this.maybePhoto(
-        to, hour, localMoment(now, to.tz).dateKey, '', null, false, true, photoMode,
-      );
+      const hrArg = Math.round(toMoment.decimal * 60) / 60;
+      if (typeof this.triggerAutoPhoto === 'function') {
+        this.triggerAutoPhoto(to, hrArg, toMoment.dateKey, '', null, true, photoMode);
+      } else {
+        void this.maybePhoto(to, hrArg, toMoment.dateKey, '', null, false, true, photoMode);
+      }
     }
   }
 
@@ -1986,12 +2047,21 @@ export class JourneyWorld implements World {
       } else if (leg.modeId === 'train' && g === 'deluxe-sleeper') {
         vitalsDelta = { energy: 6, clean: 10 };
         moodlet = { text: '高级软卧独立间睡了个安稳觉，下车神清气爽', kind: 'good', hours: 4 };
+      } else if (leg.modeId === 'train' && (g === 'scenic-train' || leg.seat === '全景观光专列')) {
+        vitalsDelta = { energy: 8, clean: 10, fun: 20, social: 6 };
+        moodlet = { text: '在全景观光专列的软卧包厢和观景窗边慢悠悠看了一路风景，下车依然神清气爽', kind: 'good', hours: 5 };
+      } else if (leg.modeId === 'car' && (g === 'campervan' || leg.seat === '房车自驾')) {
+        vitalsDelta = { energy: 5, fun: 16 };
+        moodlet = { text: '开着房车一路走走停停，在星空下睡了一宿，比赶夜路自在多了', kind: 'good', hours: 4 };
       } else if (leg.modeId === 'plane' && g === 'economy') {
         vitalsDelta = { energy: -10 };
         moodlet = { text: '红眼经济舱没怎么睡好，有点困倦', kind: 'bad', hours: 4 };
       } else if (leg.modeId === 'plane' && g === 'business-class') {
         vitalsDelta = { energy: 4 };
         moodlet = { text: '公务舱平躺睡了一觉，下飞机精神不错', kind: 'good', hours: 4 };
+      } else if (leg.modeId === 'ship' && (g === 'river-cruise' || /内河|河轮/.test(leg.seat ?? ''))) {
+        vitalsDelta = { energy: 6, clean: 10, fun: 18, social: 6 };
+        moodlet = { text: '坐内河游轮吹着江风看两岸山影与灯火，一路又稳又惬意', kind: 'good', hours: 4 };
       } else if (leg.modeId === 'ship' && (g === 'theme-cruise' || leg.seat === '主题远洋游轮')) {
         vitalsDelta = { energy: 10, clean: 15, fun: 25, social: 12 };
         moodlet = { text: '在主题远洋游轮上泡泳池看演出又吃大餐，像在海上过了个假', kind: 'good', hours: 5 };
@@ -2051,6 +2121,7 @@ export class JourneyWorld implements World {
       phase: 'staying',
       hereId: to.id,
       leg: null,
+      ...(leg.modeId !== 'car' && this.st.car?.camper ? { car: null } : {}),
       stayStartedAt: now.toISOString(),
       stayDateKey: moment.dateKey,
       lastBeatKey: null,
@@ -2180,6 +2251,7 @@ export class JourneyWorld implements World {
                   : `人还没露面。先在这儿等着，等到了一起去${this.cityName(atMeet.cityId)}。`);
             })()
           : '')
+      + (this.cfg.withUser ? '\n这一趟是他跟你一块走的（聊天和日记里自然说「我们」）。' : '')
       + `\n今晚住：${this.plan ? lodgingLabel(this.plan.lodging) : '还没定'}。`
       /*
        * 一起住店：同一家店，但不是同一间房。
@@ -2344,6 +2416,7 @@ export class JourneyWorld implements World {
         + `${moment.decimal < 0.2 ? '，刚过零点' : `，${fmtHour(moment.decimal)}`}。`
         // 一起过的那几天：每天提一次，别指望她记得一周前那条到达通知。
         + (mate ? `\n${mate}` : '')
+        + (this.cfg.withUser ? '\n今天也是他跟你一块走（叙事同行，聊天和日记里自然说「我们」）。' : '')
         // 这一带还有谁。没有就是空串，不占地方。
         + (neighborLine(this.plan?.neighbors ?? []) ?? '')
         + (inviteLine(this.plan?.invites ?? []) ?? '')
@@ -3099,7 +3172,7 @@ export class JourneyWorld implements World {
     // 他点名了怎么去就用那个；约定里点过也照它；都没说才照旧掷骰子。
     const mode = opts.mode
       ?? this.pledgedMode(target ? null : (pledge ?? this.pledgeFor(to)), from, to, km)
-      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.cfg.hasLicense, this.effectiveLifeEnergy());
+      ?? pickMode(from, to, km, Math.random, this.isTight(), this.noFly(), this.affordMode(km, 0.5, from.country !== to.country, { from, to }), !this.effectiveHasLicense(), this.effectiveLifeEnergy());
     if (!mode) {
       /*
        * 买不起票 ≠ 没有路。但如果这一趟是**为了赴约**，那就不能一直卡在原地：
@@ -3129,13 +3202,26 @@ export class JourneyWorld implements World {
       }
       return;
     }
-    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey), opts.modeWord ?? '');
+    const grade = this.pickSeatFor(mode.id, km, this.legCrossBorder({ fromId: from.id, toId: to.id } as Journey), opts.modeWord ?? '', { from, to });
     const leg = this.buyTicket(buildJourney({ from, to, mode, km, at: now, speed: this.speedNow(), grade }));
+
+    let nextCar = this.st.car;
+    if (mode.id === 'car') {
+      const isCamper = grade?.id === 'campervan';
+      if (!nextCar) {
+        const fuel: 'oil' | 'ev' = Math.random() < 0.4 ? 'ev' : 'oil';
+        if (this.cfg.moneyEnabled) this.addSpent(600);
+        nextCar = { fuel, days: isCamper ? 5 : 3, km: 0, ...(isCamper ? { camper: true } : {}) };
+      } else if (isCamper && !nextCar.camper) {
+        nextCar = { ...nextCar, camper: true };
+      }
+    }
 
     this.st = {
       ...this.st,
       phase: 'traveling',
       leg,
+      car: nextCar,
       tripVisited: this.st.tripVisited.includes(to.id) ? this.st.tripVisited : [...this.st.tripVisited, to.id],
       lastBeatKey: null,
       roadMarks: [],
@@ -3158,7 +3244,7 @@ export class JourneyWorld implements World {
       // 回程和普通换城市的语气不一样：一个是「想再走走」，一个是「往回走了」。
       // 赴约又是第三种：这一趟不是为了玩，是为了**去碰那个人**。
       // 待满之后走，是第四种：约定走完了，不是「待腻了」。
-      target
+      (target
         ? `${from.name}当地 ${fmtHour(localMoment(now, from.tz).decimal)}，往${home.name}的方向走。`
           + `下一站${to.name}，${mode.name}，${leg.km} 公里，${humanHours(leg.durationWorldHours)}。`
           + `\n离家还有 ${Math.round(distanceKm(to, home))} 公里。`
@@ -3192,7 +3278,8 @@ export class JourneyWorld implements World {
                   + `${humanHours(leg.durationWorldHours)}。`
                   + `\n到了在那儿待 ${pledge.days} 天。`)
             : `${from.name}当地 ${fmtHour(localMoment(now, from.tz).decimal)}，在这儿待够了，动身。`
-              + `去${to.name}，${mode.name}，${leg.km} 公里，${humanHours(leg.durationWorldHours)}。`,
+              + `去${to.name}，${mode.name}，${leg.km} 公里，${humanHours(leg.durationWorldHours)}。`)
+      + (this.cfg.withUser ? '\n这一趟是他跟你一块出发（叙事同行，聊天和日记里自然说「我们」）。' : ''),
       'flush',
     );
   }
@@ -3396,10 +3483,10 @@ export class JourneyWorld implements World {
         tags: [...decl[6].tags],
         interruptible: true,
         handler: async (args, ctx) => {
-          const a = (args ?? {}) as { view?: string; subject?: string; focus?: string; describe?: string };
+          const a = (args ?? {}) as { view?: string; subject?: string; focus?: string; describe?: string; prompt?: string };
           const subject = (a.subject ?? (a.view === 'sky' ? 'sky' : 'ground')) as PhotoSubject;
           const view = (a.view === 'sky' || subject === 'sky' ? 'sky' : 'ground') as 'ground' | 'sky';
-          return this.takePhotoForUser(view, subject, a.focus ?? '', a.describe ?? '', ctx?.signal);
+          return this.takePhotoForUser(view, subject, a.focus ?? '', a.describe ?? '', ctx?.signal, a.prompt ?? '');
         },
       },
       {
@@ -3815,6 +3902,12 @@ export class JourneyWorld implements World {
         };
       }
       mode = usable.find((m) => m.id === id) ?? null;
+      if (mode?.id === 'car' && !this.effectiveHasLicense()) {
+        return {
+          text: `还没考下驾照，没法${/房车|旅居车/i.test(wanted) ? '开房车' : '自驾'}——先在生活那边考下驾照（或在设置里开启有驾照），或者换别的交通方式。`,
+          isError: true,
+        };
+      }
       if (!mode) {
         /*
          * 点名的那个不可用 —— **必须说清为什么**，而不是换成另一种。
@@ -3939,6 +4032,12 @@ export class JourneyWorld implements World {
     }
     const usable = usableModesFor(from, dest, leg.km);
     const mode = usable.find((m) => m.id === id);
+    if (mode?.id === 'car' && !this.effectiveHasLicense()) {
+      return {
+        text: `还没考下驾照，改签不了${/房车|旅居车/i.test(wanted) ? '房车' : '自驾'}——先考下驾照再开，这一程换别的走法。`,
+        isError: true,
+      };
+    }
     if (!mode) {
       const why = modeById(id);
       const reason = why?.maxKm && leg.km > why.maxKm
@@ -3971,7 +4070,7 @@ export class JourneyWorld implements World {
     }
 
     const refund = this.refundFare(leg);
-    const grade = this.pickSeatFor(mode.id, leg.km, this.legCrossBorder({ fromId: from.id, toId: dest.id } as Journey), wanted);
+    const grade = this.pickSeatFor(mode.id, leg.km, this.legCrossBorder({ fromId: from.id, toId: dest.id } as Journey), wanted, { from, to: dest });
     const fresh = this.buyTicket(buildJourney({
       from, to: dest, mode, km: leg.km, at: now, speed: this.speedNow(), grade,
     }));
@@ -4013,6 +4112,12 @@ export class JourneyWorld implements World {
     if (!id) return { text: `「${modeWord}」不是她认得的交通方式。`, isError: true };
     const usable = usableModesFor(from, dest, km);
     const mode = usable.find((m) => m.id === id);
+    if (mode?.id === 'car' && !this.effectiveHasLicense()) {
+      return {
+        text: `还没考下驾照，去${dest.name}定不了${/房车|旅居车/i.test(modeWord) ? '房车' : '自驾'}——先考下驾照再定，或者换别的走法。`,
+        isError: true,
+      };
+    }
     if (!mode) {
       const why = modeById(id);
       return {

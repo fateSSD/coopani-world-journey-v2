@@ -37,7 +37,7 @@ import { HotelDirectory } from './geo/hotels.ts';
 import { EateryDirectory } from './geo/eatery.ts';
 import {
   pickDestination, pickMode, canTravel, usableModesFor, buildJourney, progressOf, remainingRealHours, citiesOf,
-  beatMarks, beatKey, sentProgress, beatGapText, BEAT_GAP_DEFAULT, pickGrade,
+  beatMarks, beatKey, sentProgress, beatGapText, BEAT_GAP_DEFAULT, pickGrade, gradesFor, isInlandRiverRoute,
   type Journey,
 } from './plan/journey.ts';
 import {
@@ -248,6 +248,7 @@ export const purseMethods: Record<string, any> = {
       moodlet?: { text: string; kind: 'good' | 'bad'; hours: number };
     },
   ): void {
+    if (amount > 0 && (!this.cfg.moneyEnabled || this.cfg.payFromLife === false)) return;
     try {
       if (!existsSync(join(this.opts.dataDir, 'life-state.json'))) return;
       /*
@@ -350,6 +351,26 @@ export const purseMethods: Record<string, any> = {
   },
 
 
+  /** 热关 `payFromLife` 或 `moneyEnabled` 时清理尚未结算的正数扣款条子，保留 `amount === 0` 状态反馈。 */
+  purgePendingSpendTickets(): number {
+    const dir = join(this.opts.dataDir, 'life-spend');
+    let names: string[] = [];
+    try { names = readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { return 0; }
+    let removed = 0;
+    for (const name of names) {
+      const full = join(dir, name);
+      try {
+        const raw = JSON.parse(readFileSync(full, 'utf8')) as { amount?: unknown };
+        if (Number(raw?.amount) > 0) {
+          unlinkSync(full);
+          removed += 1;
+        }
+      } catch { /* 坏文件不动，留给既有清理逻辑 */ }
+    }
+    return removed;
+  },
+
+
   /** 现在手头紧不紧。记账关着或没设预算，永远不紧。 */
   /**
    * 钱袋子的档位。
@@ -381,7 +402,7 @@ export const purseMethods: Record<string, any> = {
    */
   purseLeft(): number | null {
     if (!this.cfg.moneyEnabled) return null;
-    const life = this.lifeAllowance();
+    const life = this.cfg.payFromLife !== false ? this.lifeAllowance() : null;
     if (life !== null) return life;
     if (this.cfg.budget <= 0) return null;
     return this.cfg.budget - (this.st.spent - this.st.earned);
@@ -389,7 +410,7 @@ export const purseMethods: Record<string, any> = {
 
   purseStage(): 'ok' | 'tight' | 'low' | 'empty' {
     if (!this.cfg.moneyEnabled) return 'ok';
-    const life = this.lifeAllowance();
+    const life = this.cfg.payFromLife !== false ? this.lifeAllowance() : null;
     if (life !== null) {
       /*
        * 生活层给的是实时余额：**只按绝对地板降档**，没有「预算的百分之几」可算。
@@ -610,28 +631,63 @@ export const purseMethods: Record<string, any> = {
     return Boolean(v && v.fitness >= 60);
   },
 
+  /** 读取生活层「驾照」持证情况：优先认 life-public.json.certs；旧版无 certs 字段时回退只读 life-state.json。 */
+  readLifeHasLicense(): boolean {
+    try {
+      const pub = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8')) as { certs?: unknown };
+      if (Array.isArray(pub?.certs)) return pub.certs.includes('驾照');
+    } catch { /* 无公开广播或读盘失败时尝试状态档 */ }
+    for (const file of ['life-state.json', 'life-state.json.bak']) {
+      try {
+        const st = JSON.parse(readFileSync(join(this.opts.dataDir, file), 'utf8')) as { job?: { certs?: unknown } };
+        if (Array.isArray(st?.job?.certs)) return st.job.certs.includes('驾照');
+      } catch { /* 继续尝试备份档 */ }
+    }
+    return false;
+  },
 
-  pickSeatFor(modeId: string, km: number, crossBorder: boolean, wantedWord = ''): SeatGrade | undefined {
+  /** 综合设置开关与生活层考取的驾照状态判断是否可自驾/开房车。 */
+  effectiveHasLicense(): boolean {
+    return Boolean(this.cfg.hasLicense || this.readLifeHasLicense());
+  },
+
+
+  pickSeatFor(
+    modeId: string,
+    km: number,
+    crossBorder: boolean,
+    wantedWord = '',
+    pair?: { from: City; to: City },
+  ): SeatGrade | undefined {
     const mode = modeById(modeId);
     if (!mode) return undefined;
     const cheapest = this.fareOf(modeId, km, crossBorder);
     const left = this.purseLeft();
     const purse = left === null ? null : left / Math.max(1, cheapest);
-    const list = mode.grades?.(km) ?? [];
+    const list = gradesFor(mode, km, pair);
     const hint = seatHintOf(wantedWord);
+    const inland = Boolean(pair && modeId === 'ship' && isInlandRiverRoute(pair.from, pair.to));
     if (hint && list.length) {
       const canAfford = (g: SeatGrade) => purse === null || g.mult <= Math.max(1, purse * 0.85);
       if (hint === 'cruise-prefer') {
-        const pref = list.find((g) => g.id === 'theme-cruise' && canAfford(g))
+        const order = inland
+          ? ['river-cruise', 'inside-cabin']
+          : ['theme-cruise', 'ocean-balcony', 'sightseeing-boat', 'river-cruise'];
+        for (const gid of order) {
+          const hit = list.find((g) => g.id === gid && canAfford(g));
+          if (hit) return hit;
+        }
+      } else if (hint === 'river-cruise') {
+        const hit = list.find((g) => g.id === 'river-cruise' && canAfford(g))
           ?? list.find((g) => g.id === 'ocean-balcony' && canAfford(g))
           ?? list.find((g) => g.id === 'sightseeing-boat' && canAfford(g));
-        if (pref) return pref;
+        if (hit) return hit;
       } else {
         const exact = list.find((g) => g.id === hint && canAfford(g));
         if (exact) return exact;
       }
     }
-    return pickGrade(mode, km, purse);
+    return pickGrade(mode, km, purse, Math.random, pair);
   },
 
 
@@ -802,6 +858,13 @@ export const purseMethods: Record<string, any> = {
     if (!this.cfg.moneyEnabled) return '';
     const { spent, earned } = this.st;
     const tail = earned > 0 ? `，打工挣了 ${earned} 块` : '';
+    if (this.cfg.payFromLife === false) {
+      if (this.cfg.budget <= 0) return `这一趟由他出钱（不扣你的钱包），目前记了 ${spent} 块${tail}。`;
+      const left = this.cfg.budget - (spent - earned);
+      if (left <= 0) return `这一趟由他出钱（不扣你的钱包），已花 ${spent} 块${tail}，预算 ${this.cfg.budget} 已经花超了。`;
+      if (left < TIGHT_THRESHOLD) return `这一趟由他出钱（不扣你的钱包），已花 ${spent} 块${tail}，预算 ${this.cfg.budget}，只剩 ${left} 块，得省着来。`;
+      return `这一趟由他出钱（不扣你的钱包），已花 ${spent} 块${tail}，预算 ${this.cfg.budget}，还剩 ${left} 块。`;
+    }
     const life = this.lifeAllowance();
     if (life !== null) {
       /* 生活层是实时余额，没有「预算」这个数可报 —— 说还能动用多少，别说预算多少。 */
@@ -1143,6 +1206,18 @@ export const purseMethods: Record<string, any> = {
    */
   purseTravelLine(): string {
     if (!this.cfg.moneyEnabled) return '';
+    if (this.cfg.payFromLife === false) {
+      if (this.cfg.budget <= 0) {
+        return this.st.spent > 0
+          ? `这一趟由他出钱（不扣你的钱包），目前记了 ${this.st.spent} 块花销。`
+          : '这一趟由他出钱，不扣你的钱包。';
+      }
+      const left = this.cfg.budget - (this.st.spent - this.st.earned);
+      const spentPart = this.st.spent > 0 ? `目前记了 ${this.st.spent} 块，` : '';
+      if (left <= 0) return `这一趟由他出钱（不扣你的钱包），${spentPart}预算 ${this.cfg.budget} 已用完。`;
+      if (left < PURSE_TIGHT.floor) return `这一趟由他出钱（不扣你的钱包），${spentPart}预算还剩 ${left} 块，得省着来。`;
+      return `这一趟由他出钱（不扣你的钱包），${spentPart}预算还剩 ${left} 块。`;
+    }
     const left = this.purseLeft();
     if (left === null) return '';
     const spentPart = this.st.spent > 0 ? `这一趟花了 ${this.st.spent} 块，` : '';
@@ -1153,6 +1228,13 @@ export const purseMethods: Record<string, any> = {
       return `${spentPart}能动用 ${left} 块，走不远也住不好；想去的地方太远，就先攒。`;
     }
     return `${spentPart}能动用 ${left} 块。`;
+  },
+
+
+  withUserLine(): string {
+    return this.cfg.withUser
+      ? '同行状态：这一趟你和他一起走（叙事同行，聊天和日记里自然说「我们」，把坐车、吃住和逛景点当成两个人一起经历的事；只是你不知道他现实那头此刻在忙什么）。'
+      : '';
   },
 
 
@@ -1170,11 +1252,21 @@ export const purseMethods: Record<string, any> = {
       // 用户中途改倍速就会算错 —— 而倍速恰恰是最常被改的那个旋钮。
       const remainWorld = Math.max(0, (Date.parse(leg.arriveAt) - now.getTime()) / 3_600_000);
       const isThemeCruise = leg.seatId === 'theme-cruise' || leg.seat === '主题远洋游轮';
+      const isScenicTrain = leg.seatId === 'scenic-train' || leg.seat === '全景观光专列';
+      const isCampervan = leg.seatId === 'campervan' || leg.seat === '房车自驾';
+      const isRiverCruise = leg.seatId === 'river-cruise' || /内河|河轮/.test(leg.seat ?? '');
+      const seatFeatureNote = isThemeCruise
+        ? '船上有顶层泳池与水滑道、海上大剧院、轮换主题餐厅和室内电玩街区（一价全包）。'
+        : isScenicTrain
+          ? '专列配有全景弧形观景窗、观景餐车、餐吧和独立软卧包厢。'
+          : isCampervan
+            ? '这辆房车自带便携灶台和星空卧铺，沿途营地能自己做饭、过夜。'
+            : isRiverCruise
+              ? '内河游轮沿江缓行，甲板与茶廊可看两岸山影与江岸灯火。'
+              : '';
       return [
         `在路上。${from?.name ?? leg.fromId} → ${to?.name ?? leg.toId}，${mode?.name ?? leg.modeId}${leg.seat ? `（${leg.seat}）` : ''}。`,
-        isThemeCruise
-          ? '船上有顶层泳池与水滑道、海上大剧院、轮换主题餐厅和室内电玩街区（一价全包）。'
-          : '',
+        seatFeatureNote,
         `${leg.km} 公里，这一趟 ${humanHours(leg.durationWorldHours)}，已经走了 ${progress}%。`,
         `还剩约 ${humanHours(remainWorld)}的世界时间。`,
         leg.viaIds.length ? `路上经过：${leg.viaIds.map((id) => this.cityName(id)).join('、')}。` : '',
@@ -1187,6 +1279,7 @@ export const purseMethods: Record<string, any> = {
         this.meetUsable() && this.lastMeetOk === false
         ? '碰面服务器这会儿没连上，暂时不知道这一带还有谁。'
         : '',
+      typeof this.withUserLine === 'function' ? this.withUserLine() : '',
       this.pledgeText(now),
         /*
          * **赶路那天也要报日记欠账。**
@@ -1198,6 +1291,7 @@ export const purseMethods: Record<string, any> = {
          * 时区按**目的地**算：晚上落脚的、写日记的那一天，是到了那儿之后的一天。
          */
         this.diaryLine(now, to ?? here),
+        this.currentNowPhotoTag(),
       ].filter(Boolean).join('\n') + `\n${NOW_TAIL}`;
     }
 
@@ -1235,6 +1329,7 @@ export const purseMethods: Record<string, any> = {
         `${here.name}。${rest}`,
         why,
         been,
+        typeof this.withUserLine === 'function' ? this.withUserLine() : '',
         `家里这样：${bodyFeeling(here, here)}`,
         weatherLine(homeW),
         this.purseTravelLine(),
@@ -1244,6 +1339,7 @@ export const purseMethods: Record<string, any> = {
          * 这一趟的一部分。
          */
         this.diaryLine(now, here),
+        this.currentNowPhotoTag(),
       ].filter(Boolean).join('\n') + `\n${NOW_TAIL}`;
     }
 
@@ -1362,8 +1458,10 @@ export const purseMethods: Record<string, any> = {
        * 判据是 `st.car` 而不是当天的通勤方式：车是跟着人走的，不是某一段的交通。
        */
       this.st.car
-        ? `这一趟开着车（${this.st.car.fuel === 'ev' ? '电车' : '油车'}），`
-          + '城里出门也是开车，不是靠腿。'
+        ? this.st.car.camper
+          ? `这一趟开着房车（${this.st.car.fuel === 'ev' ? '电车' : '油车'}），城里出门自己开，车上带灶台和卧铺，晚上可驻营地过夜省房费。`
+          : `这一趟开着车（${this.st.car.fuel === 'ev' ? '电车' : '油车'}），`
+            + '城里出门也是开车，不是靠腿。'
         : '',
       /*
        * **今天在城里怎么挪**（2026-11-07）。
@@ -1424,6 +1522,7 @@ export const purseMethods: Record<string, any> = {
        * 它决定了接下来几天去哪、待多久，而她不会主动去查 —— 只写在事件里的话，
        * 那件事在第三天就只剩一句被截断的上下文。
        */
+      typeof this.withUserLine === 'function' ? this.withUserLine() : '',
       this.pledgeText(now),
       this.songHint(now),
       this.st.wishes.length ? `想去还没去的：${this.st.wishes.map((id) => this.cityName(id)).join('、')}。` : '',
@@ -1432,6 +1531,7 @@ export const purseMethods: Record<string, any> = {
        * 「反复回同一座城、还说没去过」的正面修法：她要挑下一站，就得先知道自己到过哪。
        */
       this.visitedLine(),
+      this.currentNowPhotoTag(),
     ].filter(Boolean).join('\n') + `\n${NOW_TAIL}`;
   },
 
@@ -1762,7 +1862,7 @@ export const purseMethods: Record<string, any> = {
        * 这一条每回合都进上下文，是所有叙述的地基。
        */
       'journey.withUser': this.cfg.withUser
-        ? '同行（叙事上说「我们」）'
+        ? '他正和你一起走这一趟（叙事同行）：聊天、行程感受和日记里自然用「我们」，把坐车、吃饭、住店、逛景点当成两个人一起经历的事；只是你仍不知道他现实里屏幕那头此刻在忙什么。'
         /*
          * **改第二人称**（2026-11-18，zzy1053 报的）。
          *

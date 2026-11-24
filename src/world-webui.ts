@@ -131,7 +131,11 @@ export const webUiMethods: Record<string, any> = {
       badges.push({ label: '去过', value: `${st.everVisited.length} 个地方`, tone: 'plain' });
     }
     if (this.cfg.moneyEnabled && st.spent > 0) {
-      badges.push({ label: '花销', value: `${st.spent} 元`, tone: 'plain' });
+      badges.push({
+        label: this.cfg.payFromLife === false ? '你请客' : '花销',
+        value: `${st.spent} 元`,
+        tone: 'plain',
+      });
     }
     return badges;
   },
@@ -846,7 +850,7 @@ export const webUiMethods: Record<string, any> = {
          */
         const res = await this.maybePhoto(
           scene.city, scene.hour, scene.dateKey, scene.spot,
-          this.plan?.weather ?? null,
+          this.weatherForCity(scene.city.id, scene.dateKey),
           // 他点的是「补一张」，那就换一张，不判重。
           true,
           scene.onRoad,
@@ -865,9 +869,10 @@ export const webUiMethods: Record<string, any> = {
         const proto = shootBackend.protocol;
         const hasKey = Boolean(this.imageKey());
         const modelShown = shootBackend.model || '（用默认）';
+        const shownHour = Math.floor(scene.hour);
         const line = proto === 'comfyui'
-          ? `ComfyUI ${this.safeApi(api)}，提示词节点 ${(this.cfg.imagePromptNode ?? '').trim() || '自动'}，当地 ${scene.hour} 点`
-          : `接口 ${this.safeApi(api)}，模型 ${modelShown}，密钥${hasKey ? '已填' : '没填'}，当地 ${scene.hour} 点`;
+          ? `ComfyUI ${this.safeApi(api)}，提示词节点 ${(this.cfg.imagePromptNode ?? '').trim() || '自动'}，当地 ${shownHour} 点`
+          : `接口 ${this.safeApi(api)}，模型 ${modelShown}，密钥${hasKey ? '已填' : '没填'}，当地 ${shownHour} 点`;
         return {
           ok: res.ok,
           reason: res.reason ?? null,
@@ -876,7 +881,7 @@ export const webUiMethods: Record<string, any> = {
             api: this.safeApi(api),
             model: modelShown,
             hasKey,
-            localHour: scene.hour,
+            localHour: shownHour,
             line,
           },
         };
@@ -950,9 +955,9 @@ export const webUiMethods: Record<string, any> = {
           ?? this.cityOrNull(this.st.tripHomeId);
         if (!city) throw new Error('现在不知道她在哪，等她落地说。');
         const onRoad = old.cityId === 'road';
-        const hour = Math.round(localMoment(this.worldNow(), city.tz).decimal);
+        const hour = Math.round(localMoment(this.worldNow(), city.tz).decimal * 60) / 60;
         const res = await this.maybePhoto(
-          city, hour, old.dateKey, old.spot, this.plan?.weather ?? null,
+          city, hour, old.dateKey, old.spot, this.weatherForCity(city.id, old.dateKey),
           // 不判重：他要的就是「这一张再来一次」。
           true, onRoad, '', 'ground', 'ground', '', '',
           { prompt, replaceHandle: handle, title: old.title, ...(old.refs?.length ? { refs: [...old.refs] } : {}) },
@@ -1063,6 +1068,7 @@ export const webUiMethods: Record<string, any> = {
         spent: this.st.spent,
         budget: this.cfg.budget,
         moneyOn: this.cfg.moneyEnabled,
+        payFromLife: this.cfg.payFromLife !== false,
       },
       /** 出发地认不出来时的一句话。用户看不到日志，得放在界面上。 */
       homeProblem: this.homeProblem,

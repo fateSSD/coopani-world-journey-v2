@@ -155,6 +155,8 @@ export interface PhotoScene {
   readonly onRoad?: boolean;
   /** 路上坐的是什么（火车 / 长途汽车 / 自驾）。只有在路上时才有意义。 */
   readonly mode?: string;
+  /** 正在前往的目的城市名（onRoad 前半程时区分出发地与目的地）。 */
+  readonly destCity?: string;
   /**
    * **极简模式：只写「城市 + 景点 + 光」，其余一个字都不加**（2026-11-11）。
    *
@@ -1011,7 +1013,10 @@ function streetPrompt(scene: PhotoScene): string {
     ? '光是灰白的，路灯刚亮但还照不出影子'
     : !ssun.daylit
       ? nightLook
-      : lightLine({ phase: ssun.phase, overcast: ssun.overcast, precip: ssun.precip, indoor: false });
+      : lightLine({
+        phase: ssun.phase, overcast: ssun.overcast, precip: ssun.precip, indoor: false,
+        morning: ((scene.hour % 24) + 24) % 24 < 12,
+      });
   /*
    * **景点名要进标题句（2026-11-11）。**
    *
@@ -1400,9 +1405,15 @@ function detailPrompt(scene: PhotoScene): string {
  * 那种矛盾不是措辞问题，是同一件事被三个地方各说了一遍。
  */
 
-/** 一年中的第几天（用每月 15 号做代表日，误差不超过一周，对光的分档无影响）。 */
-function dayOfYear(month: number): number {
-  return 30.4 * ((((Math.trunc(month) - 1) % 12) + 12) % 12) + 15;
+/** 月初累计天数（平年），用于结合 month/day 计算准确年内日序。 */
+const MONTH_START_DOY = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334] as const;
+
+/** 一年中的第几天（未传或非法 day 回退每月 15 号）。 */
+function dayOfYear(month: number, day?: number): number {
+  const mIdx = (((Math.trunc(month) - 1) % 12) + 12) % 12;
+  const dRaw = typeof day === 'number' && Number.isFinite(day) ? Math.trunc(day) : 15;
+  const d = dRaw >= 1 && dRaw <= 31 ? dRaw : 15;
+  return MONTH_START_DOY[mIdx]! + d;
 }
 
 /**
@@ -1412,8 +1423,10 @@ function dayOfYear(month: number): number {
  * 均时差（±16 分钟）忽略 —— 它影响的是「日出早两分钟还是晚两分钟」，
  * 换不到任何一个光档。
  */
-function solarHourOf(hour: number, lon: number, tz: string, month: number): number {
-  const off = tzOffsetHours(tz, new Date(Date.UTC(2026, Math.max(0, month - 1), 15, 12)));
+function solarHourOf(hour: number, lon: number, tz: string, month: number, day?: number): number {
+  const dRaw = typeof day === 'number' && Number.isFinite(day) ? Math.trunc(day) : 15;
+  const d = dRaw >= 1 && dRaw <= 31 ? dRaw : 15;
+  const off = tzOffsetHours(tz, new Date(Date.UTC(2026, Math.max(0, month - 1), d, 12)));
   if (!Number.isFinite(off)) return hour;
   const standardMeridian = off * 15;
   return hour + (lon - standardMeridian) / 15;
@@ -1431,10 +1444,11 @@ export function sunAltitude(
   hour: number,
   lon?: number,
   tz?: string,
+  day?: number,
 ): number {
   if (!Number.isFinite(lat)) return 0;
-  const sh = lon !== undefined && tz ? solarHourOf(hour, lon, tz, month) : hour;
-  const decl = 23.44 * Math.sin((2 * Math.PI / 365) * (dayOfYear(month) - 81));
+  const sh = lon !== undefined && tz ? solarHourOf(hour, lon, tz, month, day) : hour;
+  const decl = 23.44 * Math.sin((2 * Math.PI / 365) * (dayOfYear(month, day) - 81));
   const H = 15 * (sh - 12);
   const rad = Math.PI / 180;
   const sinAlt = Math.sin(lat * rad) * Math.sin(decl * rad)
@@ -1461,10 +1475,10 @@ export type SunPhase =
 
 export function sunPhase(alt: number): SunPhase {
   if (alt >= 50) return 'noon';
-  /* 30° 以上影子还短；15–30° 才是「斜光」——兰州六月十八点太阳在 26°，
-     那时候的影子已经斜了，不该算正白天的平光。 */
+  /* 30° 以上影子还短；10–30° 是白昼斜照（含北方深秋下午大白天），
+     10° 以下才进入日落前约四十分钟的低角度暖光与长影。 */
   if (alt >= 30) return 'day';
-  if (alt >= 15) return 'slant';
+  if (alt >= 10) return 'slant';
   if (alt >= 2) return 'low';
   if (alt >= -1) return 'golden';
   if (alt >= -6) return 'afterglow';
@@ -1512,6 +1526,8 @@ export interface LightInput {
    * 拍整座城（无 `spot`）、在家、景点判为 `urban` → 城里。
    */
   readonly urban?: boolean;
+  /** 当地上半天（0–12 点）：用于区分破晓余晖与日落余晖。 */
+  readonly morning?: boolean;
 }
 
 /**
@@ -1545,13 +1561,15 @@ export function lightLine(input: LightInput): string {
   }
 
   switch (phase) {
-    case 'noon': return '顶光，影子几乎落在脚下';
-    case 'day': return '日光偏亮，影子短而清楚';
-    case 'slant': return '光斜着打过来，立面上分出明暗';
+    case 'noon': return '大白天充足顶光，影子几乎落在脚下';
+    case 'day': return '大白天充足日光，影子短而清楚';
+    case 'slant': return '白天充足日光斜照，立面上明暗分明';
     case 'low': return '光从很低的角度打过来，影子拖得很长';
     /* 颜色只在天那一句说（`skyLine`）。这儿再说一遍橙红，等于给晚霞加倍。 */
     case 'golden': return '太阳贴着地平线，物体边缘发亮';
-    case 'afterglow': return '太阳刚落，地面已经暗下来，影子没有了';
+    case 'afterglow': return input.morning
+      ? '天快亮了，太阳还没出来，地面微暗没有影子'
+      : '太阳刚落，地面已经暗下来，影子没有了';
     case 'blue': return '物体只剩下轮廓，窗灯刚亮';
     case 'twilight': return '几乎全黑，只看得清近处物体的轮廓';
     /*
@@ -1616,9 +1634,9 @@ export function skyLine(
       : '天是一整片灰白的云，低低压着';
   }
   switch (phase) {
-    case 'noon': return '天是饱和的蓝，顶上一两朵积云';
-    case 'day': return '天是浅蓝的，云很少';
-    case 'slant': return '天往浅里退，西边有一层薄云';
+    case 'noon': return '晴朗饱和的蓝天，顶上一两朵积云';
+    case 'day': return '晴朗通透的蓝天，云很少';
+    case 'slant': return '白天晴朗干净的蓝天，高处几丝薄云';
     case 'low': return '天还是蓝的，只有贴近地平线那一带泛暖';
     case 'golden': return '天从橙红过渡到深蓝';
     default: return '地平线一层橙，往上迅速转深蓝';
@@ -1661,8 +1679,8 @@ export function weatherLine(precip: string, phase: SunPhase): string {
  *
  * `lon` / `tz` 可选：`world.ts` 那条路径只拿得到纬度，不传就退回钟点近似。
  */
-export function daylitAt(lat: number, month: number, hour: number, lon?: number, tz?: string): boolean {
-  return phaseIsDaylit(sunPhase(sunAltitude(lat, month, hour, lon, tz)));
+export function daylitAt(lat: number, month: number, hour: number, lon?: number, tz?: string, day?: number): boolean {
+  return phaseIsDaylit(sunPhase(sunAltitude(lat, month, hour, lon, tz, day)));
 }
 
 /**
@@ -1687,9 +1705,10 @@ export function shotIsNight(opts: {
   hour: number;
   lon?: number;
   tz?: string;
+  day?: number;
 }): boolean {
   if (opts.repaint) return false;
-  if (daylitAt(opts.lat, opts.month, opts.hour, opts.lon, opts.tz)) return false;
+  if (daylitAt(opts.lat, opts.month, opts.hour, opts.lon, opts.tz, opts.day)) return false;
   /*
    * **白夜不算夜拍**（2026-11-12 实图之后）。
    *
@@ -1699,7 +1718,7 @@ export function shotIsNight(opts: {
    *
    * 判据：午夜太阳高度还在 -16° 以上，这一夜就没有黑透过，按白天那套参数走。
    */
-  const altMid = sunAltitude(opts.lat, opts.month, 0, opts.lon, opts.tz);
+  const altMid = sunAltitude(opts.lat, opts.month, 0, opts.lon, opts.tz, opts.day);
   return !(altMid > -16);
 }
 
@@ -1769,21 +1788,6 @@ export function lightBand(lat: number, month: number, hour: number): LightBand {
 }
 
 /**
- * 一天里的哪一段。极简模式只用这个词说时间 —— 「下午」两个字模型就懂，
- * 「斜光把影子拉得很长，色温偏暖」这种它反而不如自己会。
- */
-function dayPart(hour: number): string {
-  if (hour < 5) return '深夜';
-  if (hour < 8) return '清晨';
-  if (hour < 11) return '上午';
-  if (hour < 14) return '正午前后';
-  if (hour < 17) return '下午';
-  if (hour < 19) return '傍晚';
-  if (hour < 22) return '晚上';
-  return '深夜';
-}
-
-/**
  * ## 极简模式：只写「城市 + 景点 + 光」（2026-11-11）
  *
  * 用户沃兔拿豆包做了我这台机器做不到的对照实验：
@@ -1833,6 +1837,124 @@ export function cleanDoing(raw: string | undefined): string {
 }
 
 /**
+ * 极简模式灯光/时段短语：按太阳高度角细分白昼充足日光、日落过渡与夜晚/深夜，
+ * 避免北方冬半年下午白昼被模糊词诱导成黄昏，也避免刚日落就被一刀切写成「深夜」。
+ */
+/** 把载具与舱位/座位名规整为自然的在途取景短语，避免「在自驾上」「在海景阳台房上」。 */
+export function onRoadViewPhrase(mode: string): string {
+  const m = String(mode ?? '').trim();
+  if (!m) return '在车上往外看';
+  if (/步行/.test(m)) return '沿路步行看风景';
+  if (/自行车|单车|骑行/.test(m)) return '骑自行车沿路往前走';
+  if (/电瓶车/.test(m)) return '骑电瓶车沿路往前走';
+  if (/摩托/.test(m)) return '骑摩托车沿路往前走';
+  if (/^(?:普通)?自驾$/.test(m) || (m.includes('自驾') && !m.includes('房车'))) return '开车沿路往外看';
+  if (/房车/.test(m)) return '在房车车窗旁往外看';
+  if (/海景阳台房/.test(m)) return '站在客轮海景阳台房往外看';
+  if (/客轮内舱房|内舱/.test(m)) return '在客轮甲板往外看';
+  if (/主题远洋游轮|远洋游轮|游轮|客轮|轮船|渡轮|游船/.test(m)) return `在${m}甲板往外看`;
+  if (/飞机|航班|经济舱|公务舱|头等舱/.test(m)) return '坐在飞机舷窗边往外看';
+  if (/二等座|一等座|商务座|硬卧|软卧|高级软卧/.test(m)) return '在火车上往外看';
+  if (/卧铺大巴|航空座椅|普通座/.test(m)) return '在长途汽车上往外看';
+  return `在${m}上往外看`;
+}
+
+/** 在途小吃或小物近景的所处位置短语。 */
+function onRoadInPhrase(mode: string): string {
+  const m = String(mode ?? '').trim();
+  if (!m) return '在车上';
+  if (/步行/.test(m)) return '步行途中';
+  if (/自行车|单车|骑行/.test(m)) return '骑车途中';
+  if (/电瓶车/.test(m)) return '骑电瓶车途中';
+  if (/摩托/.test(m)) return '骑摩托途中';
+  if (/^(?:普通)?自驾$/.test(m) || (m.includes('自驾') && !m.includes('房车'))) return '开车途中';
+  if (/房车/.test(m)) return '房车里';
+  if (/海景阳台房/.test(m)) return '客轮海景阳台房里';
+  if (/客轮内舱房/.test(m)) return '客轮内舱房里';
+  if (/游轮|客轮|轮船|渡轮|游船/.test(m)) return `在${m}上`;
+  if (/飞机|航班|经济舱|公务舱|头等舱/.test(m)) return '飞机机舱里';
+  if (/二等座|一等座|商务座|硬卧|软卧|高级软卧/.test(m)) return '火车上';
+  if (/卧铺大巴|航空座椅|普通座/.test(m)) return '长途汽车上';
+  return `在${m}上`;
+}
+
+/** 区分前半程「出发地出发前往目的地途中」与后半程/缺省「前往目的地途中」。 */
+export function onRoadRoutePhrase(anchorCity: string, destCity?: string): string {
+  const a = String(anchorCity ?? '').trim();
+  const d = String(destCity ?? '').trim();
+  if (d && a && d !== a) return `${a}出发前往${d}途中`;
+  if (d || a) return `前往${d || a}途中`;
+  return '赶路途中';
+}
+
+/** 按在途慢旅行载具与昼夜状态生成窗口/甲板取景短语。 */
+export function onRoadScenePhrase(mode: string, city: string, night: boolean, destCity?: string): string {
+  const m = String(mode ?? '').trim() || '车';
+  const route = onRoadRoutePhrase(city, destCity);
+  if (/观光专列|冰川快车|东方快车/.test(m)) {
+    return night
+      ? `坐在${m}的弧形全景窗边往外看，车厢内暖光柔和，窗外是${city}一带暗蓝的远山与零星灯火`
+      : `坐在${m}的宽大弧形全景窗边往外看，${route}，窗外缓缓掠过雪山、森林或旷野地貌`;
+  }
+  if (/房车/.test(m)) {
+    const rv = m.includes('自驾') ? '房车' : m;
+    return night
+      ? `在${rv}露营停靠点往外看，营地暖灯微亮，上方是${city}一带安静的夜色与稀疏星光`
+      : `在${rv}车窗旁或沿途公路营地驻车往外看，${route}，可见公路与开阔旷野风景`;
+  }
+  if (/内河|河轮|峡谷游轮/.test(m)) {
+    return night
+      ? `站在${m}观景甲板往外看，江风微凉，${city}一带两岸山影与沿岸暖黄灯火倒映在江面上`
+      : `站在${m}观景甲板或江景窗边往外看，${route}，江水缓缓流动，两岸层叠山影与江岸风景铺开`;
+  }
+  const view = onRoadViewPhrase(m);
+  return night
+    ? `${view}，${route}的夜色`
+    : `${view}，${route}，窗外是${city}一带的田野、村庄和路`;
+}
+
+export function minimalLightPart(hour: number, sun: SceneSun): string {
+  if (sun.whiteNight) return '天没黑透';
+  const h = ((hour % 24) + 24) % 24;
+  if (!sun.daylit) {
+    if (sun.phase === 'afterglow') return h < 12 ? '清晨微曦' : '傍晚余晖';
+    if (sun.phase === 'blue') return h < 12 ? '清晨蓝调' : '傍晚蓝调';
+    if (sun.phase === 'twilight') return h < 12 ? '黎明前微光' : '入夜暮色';
+    return h >= 5 && h < 22 ? '夜晚' : '深夜';
+  }
+  if (sun.phase === 'golden') {
+    return h < 12 ? (sun.overcast ? '破晓天光' : '日出晨光') : (sun.overcast ? '日落天光' : '日落夕阳');
+  }
+  if (sun.phase === 'low') {
+    return h < 12 ? (sun.overcast ? '清晨天光' : '清晨低斜阳光') : (sun.overcast ? '傍晚前天光' : '午后偏晚斜阳');
+  }
+  if (!sun.overcast) {
+    if (h < 8) return '清晨明亮日光';
+    if (h < 11) return '上午充足日光';
+    if (h < 14) return '正午充足日光';
+    return '下午大白天充足日光';
+  }
+  if (h < 8) return '清晨白天';
+  if (h < 11) return '上午白天';
+  if (h < 14) return '正午白天';
+  return '下午白天';
+}
+
+/** 识别仅含「时段 + 地名」而无实际动作描述的排表原文，避免生图提示词无意义复读。 */
+export function isBareSpotDoing(doing: string, city: string, spot?: string): boolean {
+  const bare = doing
+    .replace(/^(?:清晨|早上|上午|中午|正午|午后|下午|傍晚|晚上|夜里)[，,、\s]*/, '')
+    .replace(/。+$/, '')
+    .trim();
+  if (!bare) return true;
+  const c = city.trim();
+  const s = (spot ?? '').trim();
+  if (bare === c) return true;
+  if (s && (bare === s || bare === `${c}${s}` || bare === `${c}的${s}`)) return true;
+  return false;
+}
+
+/**
  * 极简模式 v2：适用于理解能力强的云端视觉/生图模型。
  *
  * 覆盖全部 6 种 subject 与 onRoad，剔除元指令、季节废话、画质自残词、高速行人与房评噪音；
@@ -1852,12 +1974,13 @@ function minimalPrompt(scene: PhotoScene): string {
   const subject: PhotoSubject = scene.subject ?? (scene.view === 'sky' ? 'sky' : 'ground');
   const weather = (scene.weather ?? '').trim();
   const msun = sceneSun(scene);
-  const part = msun.whiteNight ? '天没黑透' : !msun.daylit ? '深夜' : dayPart(scene.hour);
+  const part = minimalLightPart(scene.hour, msun);
   const light = [weather, part].filter(Boolean).join('，');
 
   const describe = cleanPhotoText(scene.describe, 4, 120).replace(/。+$/, '');
   const focus = cleanPhotoText(scene.focus, 2, 40).replace(/。+$/, '');
-  const doing = cleanDoing(scene.doing).replace(/。+$/, '');
+  const rawDoing = cleanDoing(scene.doing).replace(/。+$/, '');
+  const doing = rawDoing && !isBareSpotDoing(rawDoing, scene.city, scene.spot) ? rawDoing : '';
   const libHint = (scene.libraryHint ?? '').trim().replace(/。+$/, '');
 
   let core = '';
@@ -1876,25 +1999,28 @@ function minimalPrompt(scene: PhotoScene): string {
       nowCity?.lon,
       nowCity?.tz,
       !scene.onRoad && spotUrban === true,
+      scene.day,
     );
     core = `${scene.city}上空，抬头看天，${skyInfo.told}。`;
   } else if (subject === 'food') {
     const dish = (scene.dish ?? '').trim();
     const target = dish ? (scene.onRoad ? dish : `${scene.city}${dish}`) : `${scene.city}当地餐食`;
     core = scene.onRoad
-      ? `在${veh}上，${target}特写，${light}。`
+      ? `${onRoadInPhrase(veh)}，${target}特写，${light}。`
       : `${target}特写，摆在桌面上，${light}。`;
   } else if (subject === 'street') {
     core = `${place}街头巷景，${light}。`;
   } else if (subject === 'detail') {
     const item = scene.spot ? `${place}的一处旅途小物近景` : `${scene.city}旅途小物近景`;
     core = scene.onRoad
-      ? `在${veh}上，旅途小物近景，浅景深，${light}。`
+      ? `${onRoadInPhrase(veh)}，旅途小物近景，浅景深，${light}。`
       : `${item}，浅景深，${light}。`;
   } else if (subject === 'festival') {
     core = `${place}当下时节街头氛围，${light}。`;
   } else if (scene.onRoad) {
-    core = `在${veh}上往外看，前往${scene.city}途中，${light}。`;
+    core = /观光专列|冰川快车|东方快车|房车|内河|河轮|峡谷游轮/.test(veh)
+      ? `${onRoadScenePhrase(veh, scene.city, !msun.daylit, scene.destCity)}，${light}。`
+      : `${onRoadViewPhrase(veh)}，${onRoadRoutePhrase(scene.city, scene.destCity)}，${light}。`;
   } else {
     const own = spotLook(scene.cityId, scene.spot);
     core = own ? `${place}，${own}，${light}。` : `${place}，${light}。`;
@@ -1940,13 +2066,13 @@ export function sceneSun(scene: PhotoScene): SceneSun {
   const city = scene.cityId ? cityById(scene.cityId) : null;
   const lat = city?.lat ?? 0;
   const month = scene.month ?? 1;
-  const alt = sunAltitude(lat, month, scene.hour, city?.lon, city?.tz);
+  const alt = sunAltitude(lat, month, scene.hour, city?.lon, city?.tz, scene.day);
   /*
    * 午夜那一刻的高度决定「这一夜会不会黑透」。
    * 高纬夏天（漠河、圣彼得堡、柏林）午夜在 -16° 以上，天根本不会黑 ——
    * 这不是特例，是同一个公式在另一个时刻的取值。
    */
-  const altMid = sunAltitude(lat, month, 0, city?.lon, city?.tz);
+  const altMid = sunAltitude(lat, month, 0, city?.lon, city?.tz, scene.day);
   const phase = sunPhase(alt);
   const weather = String(scene.weather ?? '');
   /*
@@ -2132,7 +2258,8 @@ export function photoPrompt(scene: PhotoScene): string {
    * 引号必须去掉：`画面里没有文字` 那句约束挡不住「」里的字，
    * 模型会把台词当店招画出来。超过 40 字的截断 —— 提示词不是叙事的地方。
    */
-  const doingNow = cleanDoing(scene.doing);
+  const rawDoing = cleanDoing(scene.doing);
+  const doingNow = rawDoing && !isBareSpotDoing(rawDoing, scene.city, scene.spot) ? rawDoing : '';
   const withDoing = (base: string): string => {
     if (!doingNow) return base;
     const at = hardAnchorAt(base);
@@ -2256,17 +2383,9 @@ export function photoPrompt(scene: PhotoScene): string {
     : scene.onRoad
       /*
        * 路上的画面要说清「往外看」，不说模型就画一座城。
-       * 带上交通方式是因为火车窗、汽车窗、机翼底下完全不是一回事。
+       * 带上交通方式是因为观光专列全景窗、房车营地窗、内河游轮甲板与普通火车飞机完全不是一回事。
        */
-      /*
-       * **夜里不说「田野、村庄和路」。**（2026-11-10 第三轮）
-       *
-       * 说了模型就得把这句画出来 —— 于是田永远是亮的、能看出绿的黄的。
-       * 半夜在车窗里其实认不出那是田还是荒地，只认得出几个亮点。
-       */
-      ? (night
-          ? `在${scene.mode ?? '车'}上往外看的窗外，${scene.city}一带的夜色`
-          : `在${scene.mode ?? '车'}上往外看的风景，${scene.city}一带的田野、村庄和路`)
+      ? onRoadScenePhrase(scene.mode ?? '车', scene.city, night, scene.destCity)
       /*
        * **有具体景点时，景点是画面主体，城市级描述退到「周围」（2026-11-11）。**
        *
@@ -2396,6 +2515,7 @@ export function photoPrompt(scene: PhotoScene): string {
       : lightLine({
         phase: sun.phase, overcast: sun.overcast, precip: sun.precip,
         indoor: false, whiteNight: sun.whiteNight, urban,
+        morning: ((scene.hour % 24) + 24) % 24 < 12,
       });
   /** 天空那一句。特写没有天，抬头那张由 `skyOf` 说 —— 这里只管「地面以上的颜色」。 */
   /*
@@ -2450,7 +2570,7 @@ export function photoPrompt(scene: PhotoScene): string {
    */
   const skyInfo = sky
     ? skyOf(scene.hour, scene.weather ?? '', latNow, scene.month ?? 0,
-        nowCity?.lon, nowCity?.tz, !scene.onRoad && spotUrban === true)
+        nowCity?.lon, nowCity?.tz, !scene.onRoad && spotUrban === true, scene.day)
     : null;
 
   /*
@@ -2598,6 +2718,7 @@ export function skyOf(
    * 「拍到了星空」—— 那是**两头都在撒谎**：图上没有，话里说有。
    */
   urban = false,
+  day?: number,
 ): SkyView {
   const h = ((hour % 24) + 24) % 24;
   const m = month > 0 ? month : 1;
@@ -2608,9 +2729,9 @@ export function skyOf(
    * 「正午太阳上不上得来」问的是正午。极昼、极夜、白夜这三种现象
    * 都是这两个边界值的结果，不需要再单独列纬度表。
    */
-  const altNow = sunAltitude(lat, m, h, lon, tz);
-  const altNoon = sunAltitude(lat, m, 12, lon, tz);
-  const altMid = sunAltitude(lat, m, 0, lon, tz);
+  const altNow = sunAltitude(lat, m, h, lon, tz, day);
+  const altNoon = sunAltitude(lat, m, 12, lon, tz, day);
+  const altMid = sunAltitude(lat, m, 0, lon, tz, day);
 
   /*
    * 云分两档，别一刀切。

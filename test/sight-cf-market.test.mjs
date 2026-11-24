@@ -501,3 +501,68 @@ test('POST /town/stalls 支持自定义 effects 并按定价预算折算，GET/b
   assert.equal(buyRes.json.ok, true);
   assert.deepEqual(buyRes.json.effects, { food: 50, energy: 20, knowledge: 0.5, fitness: 0.5 });
 });
+
+test('零迁移赛道 category 透传、同买卖方每日限 buy 2 单（429 pair limit）与 /town/deals LEFT JOIN 单价回传', async () => {
+  const db = makeDB();
+
+  // 1. 合法 category='produce' 通过 note.c 持久化并透出，非法 category 静默洗掉
+  const pOk = await req('/town/stalls', {
+    method: 'POST',
+    db,
+    body: { uid: UID_A, pet: '菜农鱼', item: '水灵香葱', price: 12, stock: 5, freshVeg: true, category: 'produce', note: '清晨刚拔' },
+  });
+  assert.equal(pOk.status, 200);
+  assert.equal(pOk.json.category, 'produce');
+
+  const pBadCat = await req('/town/stalls', {
+    method: 'POST',
+    db,
+    body: { uid: UID_A, pet: '菜农鱼', item: '小物件', price: 6, stock: 2, category: 'unknown_track' },
+  });
+  assert.equal(pBadCat.status, 200);
+  assert.equal(pBadCat.json.category, undefined);
+
+  const list = await req('/town/stalls', { db });
+  assert.equal(list.status, 200);
+  assert.equal(list.json.stalls.find((s) => s.id === pOk.json.id)?.category, 'produce');
+  assert.equal(list.json.stalls.find((s) => s.id === pBadCat.json.id)?.category, undefined);
+
+  // 2. 同一买家 UID_B 购买同一卖家 UID_A 前 2 次成功并透出 category，第 3 次触发 429 pair limit
+  const b1 = await req('/town/buy', {
+    method: 'POST',
+    db,
+    body: { stallId: pOk.json.id, buyerUid: UID_B, buyer: '厨师鱼' },
+  });
+  assert.equal(b1.status, 200);
+  assert.equal(b1.json.category, 'produce');
+
+  const b2 = await req('/town/buy', {
+    method: 'POST',
+    db,
+    body: { stallId: pOk.json.id, buyerUid: UID_B, buyer: '厨师鱼' },
+  });
+  assert.equal(b2.status, 200);
+
+  const b3SamePair = await req('/town/buy', {
+    method: 'POST',
+    db,
+    body: { stallId: pOk.json.id, buyerUid: UID_B, buyer: '厨师鱼' },
+  });
+  assert.equal(b3SamePair.status, 429);
+  assert.equal(b3SamePair.json.error, 'pair limit');
+
+  // 换买家 UID_C 购买同摊不受 UID_B 双人限频影响
+  const UID_C = 'c'.repeat(32);
+  const bOtherBuyer = await req('/town/buy', {
+    method: 'POST',
+    db,
+    body: { stallId: pOk.json.id, buyerUid: UID_C, buyer: '路人鱼' },
+  });
+  assert.equal(bOtherBuyer.status, 200);
+
+  // 3. GET /town/deals 通过 LEFT JOIN stalls 透出 unitPrice，且 deals 表自身依然保持 0 金额列
+  const dealsRes = await req(`/town/deals?uid=${UID_A}`, { db });
+  assert.equal(dealsRes.status, 200);
+  assert.equal(dealsRes.json.deals.length, 3);
+  assert.equal(dealsRes.json.deals[0].unitPrice, 12);
+});

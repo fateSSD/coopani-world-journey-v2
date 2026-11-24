@@ -139,7 +139,7 @@
     },
     {
       "name": "journey_photo",
-      "description": "Take a photo from where you are (or out the window on the road) and show it in chat — never tell the user to press a UI button instead. Any hour is valid; one photo per call. Set describe (what is in frame) and focus (camera angle) when specific details are requested; location, time and light are handled automatically. Set view=\"sky\" to tilt up at the real sky right now: stars show only at night and only when it is not overcast; never invent sky details you cannot see.",
+      "description": "Take a photo from where you are (or out the window on the road) and show it in chat — never tell the user to press a UI button instead. Any hour is valid; one photo per call. Prefer writing `prompt` yourself (matching `journey.imageLang` and ground facts: daylight vs night, real temperature outfit, indoor vs outdoor, companion/refs) so you directly compose the whole scene without rigid templates; otherwise pass describe (what is in frame) and focus (camera angle) as light hints. Set view=\"sky\" to tilt up at the real sky right now: stars show only at night and only when it is not overcast; never invent sky details you cannot see.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -171,6 +171,10 @@
           "focus": {
             "type": "string",
             "description": "Optional framing/angle note (<=40 chars), e.g. low angle or back row; never add absent items."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Optional complete scene prompt (<=300 chars) in the language set by `journey.imageLang`. When set, drives generation directly without rigid template rules. Must strictly match actual daylight/night, weather temperature outfit, indoor/outdoor setting and refs; never add absent flowers, snow or extra people."
           }
         }
       },
@@ -178,8 +182,8 @@
         "write"
       ],
       "summary": {
-        "zh": "现在拍一张照片发出来（路上拍窗外，看天则抬头）。",
-        "en": "Takes a photo right now and shows it."
+        "zh": "现在拍一张照片发出来（支持自写完整画面 prompt，路上拍窗外，看天则抬头）。",
+        "en": "Takes a photo right now (supports full authored prompt, road view, or overhead sky)."
       }
     },
     {
@@ -254,7 +258,7 @@
           },
           "mode": {
             "type": "string",
-            "description": "Transport mode: 高铁 / 火车 / 飞机 / 自驾 / 大巴 / 轮船 / 游轮 / 摩托车 / 自行车 / 步行 (omit to pick automatically)."
+            "description": "Transport mode: 高铁 / 火车 / 观光专列 / 飞机 / 自驾 / 房车 / 大巴 / 轮船 / 游轮 / 河轮 / 摩托车 / 自行车 / 步行 (omit to pick automatically)."
           }
         },
         "required": [

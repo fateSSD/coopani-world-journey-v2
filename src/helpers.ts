@@ -394,7 +394,8 @@ export function homeReasonText(r: HomeReason | null): string {
 export function weatherLine(w: Forecast | null): string {
   if (!w) return '';
   const feel = feelOf(w);
-  return `\n天气：${w.dayWeather}，${feel ? `夜里 ${w.nightTemp}℃，${feel}` : `夜里 ${w.nightTemp}℃`}。`;
+  const temps = `白天 ${w.dayTemp}℃ / 夜里 ${w.nightTemp}℃`;
+  return `\n天气：${w.dayWeather}，${feel ? `${temps}，${feel}` : temps}。`;
 }
 
 export function partWord(p: string): string {
@@ -453,11 +454,11 @@ export function modeIdOf(word: string): ModeId | null {
   const s = word.trim();
   if (!s) return null;
   const rules: [RegExp, ModeId][] = [
-    [/高铁|动车|火车|铁路|列车|train|rail/i, 'train'],
+    [/全景观光专列|观光专列|冰川快车|东方快车|高铁|动车|火车|铁路|列车|专列|train|rail/i, 'train'],
     [/飞机|航班|机票|飞过去|飞|plane|flight|fly/i, 'plane'],
-    [/自驾|开车|汽车|租车|拼车|car|drive/i, 'car'],
+    [/房车|旅居车|camper|\brv\b|自驾|开车|汽车|租车|拼车|car|drive/i, 'car'],
     [/大巴|长途汽车|客车|公交|班车|bus|coach/i, 'bus'],
-    [/轮船|游轮|邮轮|渡轮|客轮|游船|船|ship|cruise|ferry|boat/i, 'ship'],
+    [/内河游轮|三峡游轮|峡谷游轮|河轮|轮船|游轮|邮轮|渡轮|客轮|游船|船|ship|cruise|ferry|boat/i, 'ship'],
     [/摩托|机车|motorcycle|motorbike/i, 'motorcycle'],
     [/自行车|单车|骑行|bike|bicycle|cycle/i, 'bike'],
     [/电瓶车|电动车|scooter|e-bike/i, 'scooter'],
@@ -467,14 +468,20 @@ export function modeIdOf(word: string): ModeId | null {
   return null;
 }
 
-/** 从用户或她点名的交通方式词中提取舱位偏好（如「主题游轮」「海景游轮」）。 */
+/** 从用户或她点名的交通方式词中提取舱位偏好（如「主题游轮」「海景游轮」「全景观光专列」「房车」「内河游轮」）。 */
 export function seatHintOf(word: string): string | null {
   const s = (word ?? '').trim();
   if (!s) return null;
+  if (/全景观光|观光专列|专列|冰川快车|东方快车/i.test(s)) return 'scenic-train';
+  if (/房车|旅居车|camper|\brv\b/i.test(s)) return 'campervan';
+  if (/内河|河轮|三峡游轮|峡谷游轮|江景游轮/i.test(s)) return 'river-cruise';
   if (/主题|迪士尼|联名|乐园|豪华游轮|豪华邮轮|远洋游轮|远洋邮轮/i.test(s)) return 'theme-cruise';
   if (/海景|阳台/i.test(s)) return 'ocean-balcony';
   if (/内舱/i.test(s)) return 'inside-cabin';
   if (/观光游船|游船/i.test(s)) return 'sightseeing-boat';
+  if (/高级软卧|高软/i.test(s)) return 'deluxe-sleeper';
+  if (/软卧/i.test(s)) return 'soft-sleeper';
+  if (/商务座/i.test(s)) return 'business';
   if (/游轮|邮轮|cruise/i.test(s)) return 'cruise-prefer';
   return null;
 }
@@ -497,81 +504,115 @@ export function roadText(  modeId: string, idx: number, leg: Journey, from: City
   switch (modeId) {
     case 'car':
     case 'motorcycle':
+      if (modeId === 'car' && (leg.seatId === 'campervan' || leg.seat === '房车自驾')) {
+        if (idx === 0) return night
+          ? `开进服务区营地停好房车，接上电桩，夜里风静，车厢暖灯很柔和。${route}，${tail}`
+          : `开进沿途观景停靠点歇了脚，给房车补满水电，后舱东西收拾得妥帖。${route}，${tail}`;
+        if (idx === 1) return night
+          ? `今晚停在路边营地过夜，拉上侧帘，透过车顶天窗能看见几颗亮星。${tail}`
+          : `在路边营地拉起遮阳棚，用房车便携灶台煮了碗青菜豆腐热汤面，慢慢吃完再走。${tail}`;
+        return night
+          ? `夜路上房车稳稳往前开，远光灯扫过路牌，快到${to.name}了。${tail}`
+          : `收起遮阳棚和灶具重新上路，前方路牌已经写着${to.name}的方向了。${tail}`;
+      }
       if (idx === 0) return night
-        ? `服务区，加油。夜里只有两三家还开着，热食柜是空的。${route}，${tail}`
-        : `服务区，加油。油价比出发时贵几毛，买了瓶水和一包饼干。${route}，${tail}`;
+        ? `服务区停下来加了次油。夜里还亮着灯的窗口不多，热食柜已经空了。${route}，${tail}`
+        : `进服务区加了次油，顺手买了瓶水和一包饼干。${route}，${tail}`;
       if (idx === 1) return night
-        ? `又在服务区停了一下，洗了把脸。镜子里眼睛是红的。${tail}`
-        : `服务区吃饭。快餐窗口排了几个人，菜是温的。${tail}`;
+        ? `夜里又在服务区歇了一会儿，掬了把冷水洗脸。${tail}`
+        : `在服务区吃了顿简餐，快餐窗口排着几个人，菜还热乎。${tail}`;
       return night
-        ? `还在开。路上只剩车灯，对面偶尔来一辆。腰开始酸。${tail}`
-        : `天开始变了颜色。路边的牌子换成了一个没听过的地方名。${tail}`;
+        ? `还在往前开，夜路上只剩远近车灯，对面偶尔掠过一辆。${tail}`
+        : `天色渐渐换了层次，路牌上已经是不太眼熟的地名了。${tail}`;
 
     case 'train':
+      if (leg.seatId === 'scenic-train' || leg.seat === '全景观光专列') {
+        if (idx === 0) return night
+          ? `夜里专列稳稳往前滑，包厢暖灯调暗了，全景玻璃上映出窗外隐约的山影。${route}，${tail}`
+          : `专列驶离站台慢慢提速，整面弧形全景窗外，远山和林带一片片铺开。${route}，${tail}`;
+        if (idx === 1) return night
+          ? `在观景餐吧端了杯热茶坐了会儿，铁轨轻响着，车厢里安静得像移动的小客厅。${tail}`
+          : `去全景餐车用了顿热餐，菌菇炖汤配烤面包，抬头就是窗外缓缓退后的峡谷与旷野。${tail}`;
+        return night
+          ? `包厢广播轻声报了前站，拉开窗帘已经能望见${to.name}城边的灯火。${tail}`
+          : `专列车速缓了下来，窗外宽阔的山野渐渐换成城郊街景，收拾好行李准备下车。${tail}`;
+      }
       if (idx === 0) return night
-        ? `过站，停了两分钟。站台上没人上车，广播念了一串站名。`
-        : `过了一个大站，下去一批人，上来一批人。车厢里的口音变了。`;
+        ? `列车中途停了两分钟，站台上没见人上下，只有广播轻轻念过一串站名。`
+        : `过了一个大站，下去一批人，又上来一批人，车厢里的口音不知不觉换了。`;
       if (idx === 1) return night
-        ? `车厢灯调暗了。邻座的呼吸声很匀，窗外只剩偶尔的一盏灯。${tail}`
-        : `去餐车。盒饭三十块，米饭有点硬，汤是免费的。${tail}`;
+        ? `车厢灯调暗了，邻座呼吸很匀，窗外只偶有零星一两盏远灯掠过。${tail}`
+        : `去餐车吃了份盒饭，米饭略硬，配的汤倒还热乎。${tail}`;
       return night
-        ? `醒了一次，不知道停在哪儿。看了看表，还能再睡一会儿。`
-        : `窗外的地貌已经换了。刚才还是平原，现在开始有坡。${tail}`;
+        ? `迷迷糊糊醒了一次，不知正停在哪一站，看了眼时间，还能再眯一会儿。`
+        : `窗外的地貌悄悄变了，先前一路平阔，现在开始起伏出山坡。${tail}`;
 
     case 'bus':
-      if (idx === 0) return `中途停了一个站，上来几个人，行李塞在过道上。`;
+      if (idx === 0) return `中途停了个小站，上来几位乘客，行李挨个塞进了过道里。`;
       if (idx === 1) return night
-        ? `服务区，二十分钟。下车的人都在抽烟，空气里全是那个味道。${tail}`
-        : `服务区，二十分钟。买了碗泡面，蹲在花坛边上吃完。${tail}`;
+        ? `服务区停二十分钟，夜风微凉，站坪边站着三三两两下车透气的乘客。${tail}`
+        : `服务区停二十分钟，泡了碗面，坐在花坛边慢慢吃完。${tail}`;
       return night
-        ? `车里只剩几盏小灯。有人打呼，司机没开广播。${tail}`
-        : `快到了。前排的人开始收拾东西，有人站起来又坐下。${tail}`;
+        ? `车厢只剩几盏顶灯亮着，前排隐约有鼾声，司机没开广播。${tail}`
+        : `快到站了，前排陆续有人收拾行李，起身张望又坐回去。${tail}`;
 
     case 'ship': {
       const isTheme = leg.seatId === 'theme-cruise' || leg.seat === '主题远洋游轮';
       const isBalcony = leg.seatId === 'ocean-balcony' || leg.seat === '海景阳台房';
+      const isRiver = leg.seatId === 'river-cruise' || /内河|河轮/.test(leg.seat ?? '');
       if (isTheme) {
-        if (idx === 0) return `出了港，顶层甲板上刚开完迎宾派对，海风吹着音乐声。${route}，${tail}`;
+        if (idx === 0) return `出了港，顶层甲板的迎宾派对刚散场，海风里还带着音乐声。${route}，${tail}`;
         if (idx === 1) return night
-          ? `海上大剧院的演出刚散场，端着热饮在船尾甲板看了一会儿夜海。${tail}`
-          : `在游轮顶层冲了两次高空水滑道，又去轮换主题餐厅吃了顿热的。窗外全是蓝的。${tail}`;
+          ? `海上大剧院刚散场，端着热饮在船尾甲板吹了会儿夜风看海。${tail}`
+          : `在游轮顶层滑了两次高空水滑道，又去主题餐厅吃了顿热的，窗外一眼望去全是深蓝海面。${tail}`;
         return night
-          ? `游轮内街的灯还亮着，电玩区和小影院有人进出，船身稳得像在陆地上。${tail}`
-          : `快靠港了。站在观海甲板上能看见远处港口的轮廓。${tail}`;
+          ? `游轮内街的灯还亮着，电玩区和小影院偶有人进出，船身稳得几乎觉不出晃。${tail}`
+          : `快靠港了，站在观海甲板上已经能望见远处港口的轮廓。${tail}`;
       }
       if (isBalcony) {
-        if (idx === 0) return `出了港，站在房间的小阳台上看着岸边灯火退远。${route}，${tail}`;
+        if (idx === 0) return `出了港，站在阳台边看着岸上的灯火一点点退远。${route}，${tail}`;
         if (idx === 1) return night
-          ? `阳台门留了条缝，屋里全是海浪声，泡了杯茶坐在栏杆边。${tail}`
-          : `去船上餐厅吃了顿饭，回来在阳台躺椅上晒了一会儿海面上的太阳。${tail}`;
-        return `快到岸了。海鸥开始绕着船尾飞，已经能望见码头。${tail}`;
+          ? `阳台门留了条缝，屋里满是海浪声，泡了杯茶坐在栏杆边发了会儿呆。${tail}`
+          : `去船上餐厅吃了顿饭，回房在阳台躺椅上晒了会儿海面的太阳。${tail}`;
+        return `快靠岸了，几只海鸥绕着船尾盘旋，远处已经能望见码头。${tail}`;
       }
-      if (idx === 0) return `出了港，岸上的灯缩成一条线。风比刚才大，站不太稳。`;
+      if (isRiver) {
+        if (idx === 0) return night
+          ? `离了码头，两岸城镇的灯火顺着江面拖出一道道细长的倒影，江风很柔和。${route}，${tail}`
+          : `船离了江岸码头顺流往前，两岸层叠的山影和江堤一左一右缓缓推开。${route}，${tail}`;
+        if (idx === 1) return night
+          ? `夜里江风微凉，坐在河轮江景茶廊看两岸零星灯火和漆黑山影，船身稳得几乎觉不出晃。${tail}`
+          : `上到河轮观景甲板吹了会儿江风，两岸峡谷崖壁与青绿山坡慢慢擦肩而过，在茶廊泡了壶热茶。${tail}`;
+        return night
+          ? `远处江岸码头亮起一排暖黄的灯，船身放缓，准备靠岸了。${tail}`
+          : `江面渐渐宽起来，前头岸边的石阶、大桥和楼宇陆续露头，快靠码头了。${tail}`;
+      }
+      if (idx === 0) return `出了港，岸上的灯火渐渐缩成一条细线，甲板上的风比岸边大了不少。`;
       if (idx === 1) return night
-        ? `夜里在甲板上。水是黑的，船的声音从脚底下一直传上来。${tail}`
-        : `船上吃饭。菜偏咸，米饭管够。窗外一直是同一个水平线。${tail}`;
+        ? `夜里上了趟甲板，海水沉黑，船身低沉的震动从脚底一路传上来。${tail}`
+        : `在船上吃了顿简餐，菜偏咸但米饭管够，舷窗外一直是平直的海平线。${tail}`;
       return night
-        ? `天还没亮，甲板上已经有人在等。风冷得站不住。`
-        : `快到岸了。能看见岸上的房子和一条上坡的路。${tail}`;
+        ? `天还没透亮，甲板上已有早起等靠岸的人，海风清冷。`
+        : `快到岸了，已经能望见岸边的房屋和顺着坡往上延展的路。${tail}`;
     }
 
     case 'plane':
-      if (idx === 0) return `起飞后平稳了。遮光板拉开，下面是云，什么也看不见。`;
-      if (idx === 1) return `发餐。铝箔盒里的菜温的，面包是凉的。${tail}`;
-      return `开始下降。耳朵有压力，咽了一下才好。窗外能看见地面了。${tail}`;
+      if (idx === 0) return `起飞后渐渐平稳，拉开遮光板，底下是连成一片的云海。`;
+      if (idx === 1) return `客舱开始发餐，锡纸盒里的热菜带着蒸汽，配的小面包微凉。${tail}`;
+      return `飞机开始下降，耳膜微微发胀，舷窗外已经能看清地面的轮廓。${tail}`;
 
     case 'walk':
-      if (idx === 0) return `走了四分之一。鞋里进了点土，坐在路边倒了倒。`;
-      if (idx === 1) return `水喝掉一半。前面还是个坡，看不见顶。${tail}`;
-      return night ? `天黑了，只能借着最后一点光走。` : `腿开始不听使唤，一步比一步慢。${tail}`;
+      if (idx === 0) return `走了约莫四分之一，鞋里进了点细沙，坐在路边抖了抖再继续。`;
+      if (idx === 1) return `水喝下去一半，前头还是缓坡，一时望不到顶。${tail}`;
+      return night ? `天色沉下来了，借着最后一点余光接着往前走。` : `走了大半程，步子不知不觉慢下来，一步接一步往前挪。${tail}`;
 
     case 'bike':
     case 'scooter':
-      if (idx === 0) return `停在路边歇了一会儿。手被风吹得发麻。`;
+      if (idx === 0) return `在路边停下来歇了口气，顺手活动了下被风吹凉的手。`;
       if (idx === 1) return night
-        ? `路灯一盏一盏过。电量掉得比预想快。${tail}`
-        : `找了家小店买水。老板问去哪儿，说了个地名，他点点头。${tail}`;
-      return `快到了。路边开始有人和房子。${tail}`;
+        ? `路灯一盏接一盏往后退，夜风比白日凉了不少。${tail}`
+        : `路过一家小店买水，老板顺口问起去哪儿，听完点点头指了指前头的路。${tail}`;
+      return `快到了，路边渐渐多出零星人家和灯光。${tail}`;
 
     default:
       return `还在路上。${tail}`;

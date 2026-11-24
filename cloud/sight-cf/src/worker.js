@@ -1429,6 +1429,9 @@ async function townJoinRoute(request, env, method) {
   }
 }
 
+const STALL_CATEGORIES = new Set(['produce', 'food', 'craft', 'writing', 'photo']);
+const PAIR_BUY_PER_DAY_MAX = 2;
+
 const STALL_EFFECT_LIMITS = {
   food: { max: 80, weight: 1, step: 1 },
   energy: { max: 80, weight: 1, step: 1 },
@@ -1502,9 +1505,15 @@ function normStallEffects(raw, price) {
   return Object.keys(picked).length ? picked : null;
 }
 
-function encodeStallNote(noteText, effects) {
-  if (!effects || !Object.keys(effects).length) return noteText || '';
-  return JSON.stringify({ t: noteText || '', e: effects });
+function encodeStallNote(noteText, effects, category) {
+  const cat = STALL_CATEGORIES.has(category) ? category : '';
+  const hasFx = effects && Object.keys(effects).length > 0;
+  if (!hasFx && !cat) return noteText || '';
+  return JSON.stringify({
+    t: noteText || '',
+    ...(hasFx ? { e: effects } : {}),
+    ...(cat ? { c: cat } : {}),
+  });
 }
 
 function decodeStallNote(raw, price, extra) {
@@ -1512,15 +1521,17 @@ function decodeStallNote(raw, price, extra) {
   if (s.startsWith('{')) {
     try {
       const parsed = JSON.parse(s);
-      if (parsed && typeof parsed === 'object' && ('e' in parsed || 't' in parsed)) {
+      if (parsed && typeof parsed === 'object' && ('e' in parsed || 't' in parsed || 'c' in parsed)) {
+        const rawCat = typeof parsed.c === 'string' ? parsed.c : '';
         return {
           note: safeDoing(parsed.t || '', extra),
           effects: normStallEffects(parsed.e, price),
+          category: STALL_CATEGORIES.has(rawCat) ? rawCat : '',
         };
       }
     } catch { /* 按老纯文本 note 处理 */ }
   }
-  return { note: safeDoing(s, extra), effects: null };
+  return { note: safeDoing(s, extra), effects: null, category: '' };
 }
 
 async function townStallsRoute(request, env, method, ctx) {
@@ -1540,13 +1551,15 @@ async function townStallsRoute(request, env, method, ctx) {
     const price = Math.round(Number(body?.price));
     const stock = Math.round(Number(body?.stock ?? 1));
     const freshVeg = body?.freshVeg ? 1 : 0;
+    const rawCategory = typeof body?.category === 'string' ? body.category.trim() : '';
+    const category = STALL_CATEGORIES.has(rawCategory) ? rawCategory : '';
     const note = safeDoing(body?.note || '', extra);
 
     if (!okUid(uid) || !item || !Number.isFinite(price) || price < 1 || price > 999 || !Number.isFinite(stock) || stock < 1 || stock > 99) {
       return reply(400, { ok: false, error: 'bad fields' });
     }
     const effects = normStallEffects(body?.effects, price);
-    const storedNote = encodeStallNote(note, effects);
+    const storedNote = encodeStallNote(note, effects, category);
 
     try {
       const flag = await flagOf(db, uid);
@@ -1578,6 +1591,7 @@ async function townStallsRoute(request, env, method, ctx) {
       await invalidateStallsCache(ctx);
       return reply(200, {
         ok: true, id, seller, kind, item, price, stock, freshVeg: !!freshVeg, note,
+        ...(category ? { category } : {}),
         ...(effects ? { effects } : {}),
         at: nowIso, expiresAt: expIso,
       });
@@ -1647,6 +1661,7 @@ async function townStallsRoute(request, env, method, ctx) {
           price,
           stock: Math.max(0, Math.round(Number(r.stock) || 0)),
           freshVeg: Boolean(r.fresh_veg),
+          ...(decoded.category ? { category: decoded.category } : {}),
           note: decoded.note,
           ...(decoded.effects ? { effects: decoded.effects } : {}),
         };
@@ -1736,6 +1751,10 @@ async function townBuyRoute(request, env, method, ctx) {
     if (buyerUid === row.uid) {
       return reply(400, { ok: false, error: 'own stall' });
     }
+    const pairKey = `tp:${buyerUid}:${row.uid}:${day}`;
+    if (await rateOf(db, pairKey) >= PAIR_BUY_PER_DAY_MAX) {
+      return reply(429, { ok: false, error: 'pair limit' });
+    }
 
     const upd = await db.prepare(
       `UPDATE stalls SET stock = stock - ?1
@@ -1764,6 +1783,7 @@ async function townBuyRoute(request, env, method, ctx) {
     const price = Math.max(1, Math.round(Number(row.price) || 0));
     const decoded = decodeStallNote(row.note, price, extra);
     await bumpRate(db, rKey, day);
+    await bumpRate(db, pairKey, day);
     await invalidateStallsCache(ctx);
     return reply(200, {
       ok: true,
@@ -1772,6 +1792,7 @@ async function townBuyRoute(request, env, method, ctx) {
       price,
       seller: safePet(row.seller, extra).name || '街坊',
       freshVeg: Boolean(row.fresh_veg),
+      ...(decoded.category ? { category: decoded.category } : {}),
       ...(decoded.effects ? { effects: decoded.effects } : {}),
       qty,
       stockLeft: Math.max(0, Number(row.stock) - qty),
@@ -1833,10 +1854,11 @@ async function townDealsRoute(request, env, url, method, path) {
 
     const [listRes, unseenRow] = await Promise.all([
       db.prepare(
-        `SELECT id, stall_id, item, qty, buyer_pet, note, seen, at
-           FROM deals
-          WHERE seller_uid = ?1
-          ORDER BY at DESC LIMIT 30`,
+        `SELECT d.id, d.stall_id, d.item, d.qty, d.buyer_pet, d.note, d.seen, d.at, s.price AS unit_price
+           FROM deals d
+           LEFT JOIN stalls s ON s.id = d.stall_id
+          WHERE d.seller_uid = ?1
+          ORDER BY d.at DESC LIMIT 30`,
       ).bind(uid).all(),
       db.prepare(
         `SELECT COUNT(*) AS n
@@ -1856,6 +1878,7 @@ async function townDealsRoute(request, env, url, method, path) {
       note: safeDoing(r.note, extra),
       seen: Boolean(r.seen),
       at: String(r.at || ''),
+      unitPrice: Math.max(0, Math.round(Number(r.unit_price) || 0)),
     }));
     let unseen = Number(unseenRow?.n ?? 0) || 0;
 

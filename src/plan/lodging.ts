@@ -377,6 +377,32 @@ export function rollLodging(
   return { ...raw, price: withFloor(raw.tier, scaleNum(raw.price, scale)) };
 }
 
+/** 房车自驾到站后的「车住合一」营地露营过夜方案（仅收水电桩与泊位费，省去大额酒店房费）。 */
+export function camperLodging(
+  priceIdx = 1,
+  abroad = false,
+  terrain?: Terrain,
+): Lodging {
+  const scale = abroad ? abroadFactor(priceIdx) : priceIdx;
+  const price = abroad
+    ? Math.max(80, Math.min(260, scaleNum(180, scale)))
+    : Math.max(40, Math.min(160, scaleNum(80, scale)));
+  const feel = terrain?.sea
+    ? '把房车停在海边营地接上水电，拉起遮阳棚吹海风，夜里躺在星空卧铺听浪，省下一晚酒店钱。'
+    : terrain?.lake
+      ? '把房车驻在湖畔营地接好水电，傍晚推开门就是水光与微风，夜里睡车里卧铺，省去一晚房费。'
+      : terrain?.mountain
+        ? '把房车停进山脚营地接好水电，抬头能看见连片山影和夜空，车里卧铺暖和踏实，省去一晚房费。'
+        : '把房车停进郊外营地接好水电，拉起遮阳棚歇脚，夜里躺在车内卧铺看天窗星空，省去一晚酒店房费。';
+  return {
+    tier: 'view',
+    kind: '房车营地露营过夜',
+    price,
+    feel,
+    amen: ['camper'],
+  };
+}
+
 /**
  * 这座城最便宜的一张床（只算价，不掷骰子）。
  *

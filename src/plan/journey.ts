@@ -15,10 +15,10 @@
  * 「走了十一个小时」—— 时间线本身是稳的。
  */
 import type { City } from '../geo/cities.ts';
-import { CITIES, cityById, isForeign } from '../geo/cities.ts';
+import { CITIES, cityById, isForeign, terrainOf } from '../geo/cities.ts';
 import { distanceKm, waypoints, haulOf, bearingDeg, angleBetween } from '../geo/distance.ts';
 import { climateOf, affinity } from '../geo/climate.ts';
-import { MODES, modeById, hoursFor, reachable, type ModeId, type TravelMode, type SeatGrade } from '../geo/modes.ts';
+import { MODES, modeById, hoursFor, reachable, shipGrades, type ModeId, type TravelMode, type SeatGrade } from '../geo/modes.ts';
 
 export interface Journey {
   readonly id: string;
@@ -618,18 +618,56 @@ export function pickMode(
  * 用户的抱怨（「2000 公里自驾 30 小时、最后还是硬卧」）不是「选项少」，
  * 是她**只有换交通方式这一个手段**。有了档位，她可以在同一趟车上买到舒服。
  */
+/** 虽无「海」字标签但本身属于海港/海峡或河口入海港的城市 id，避免内河游轮误判入海线。 */
+const COASTAL_PORT_IDS: ReadonlySet<string> = new Set([
+  'fuzhou', 'guangzhou', 'aomen', 'tainan',
+  'tokyo', 'osaka', 'seoul', 'singapore', 'bangkok', 'dubai',
+  'newyork', 'buenosaires', 'petersburg', 'murmansk', 'kaliningrad',
+  'hamburg', 'dublin', 'amsterdam',
+]);
+
+function isCoastalPort(c: City): boolean {
+  return terrainOf(c).sea || COASTAL_PORT_IDS.has(c.id);
+}
+
+/** 判断起终点之间是否适合按内河江河游轮航线运行（两端均有码头、陆路相连且均为内陆河港）。 */
+export function isInlandRiverRoute(from: City, to: City): boolean {
+  return Boolean(
+    from.port
+    && to.port
+    && landLinked(from.country, to.country)
+    && (from.region === '中国台湾') === (to.region === '中国台湾')
+    && !isCoastalPort(from)
+    && !isCoastalPort(to),
+  );
+}
+
+/** 获取指定交通方式与城市对对应的舱位/车型分档列表。 */
+export function gradesFor(
+  mode: TravelMode,
+  km: number,
+  pair?: { from: City; to: City },
+): readonly SeatGrade[] {
+  if (mode.id === 'ship' && pair && isInlandRiverRoute(pair.from, pair.to)) {
+    return shipGrades(km, true);
+  }
+  return mode.grades?.(km) ?? [];
+}
+
 export function pickGrade(
   mode: TravelMode,
   km: number,
   /** 余钱 ÷ 最低档票价。`null` = 没记账，按「不紧不松」算。 */
   purse: number | null = null,
   rnd: () => number = Math.random,
+  pair?: { from: City; to: City },
 ): SeatGrade | undefined {
-  const list = mode.grades?.(km) ?? [];
+  const list = gradesFor(mode, km, pair);
   if (!list.length) return undefined;
   const base = list[0]!;
   const second = list[1];
   const third = list[2];
+  const fourth = list[3];
   /*
    * 「这一趟够不够长、值不值得买贵的」—— 门槛 **600 公里**，不是 1200。
    *
@@ -640,7 +678,7 @@ export function pickGrade(
    * 600 公里大约是三到五个小时的车：坐这么久，买张舒服的票是合理的。
    * 三百公里的城际，再怎么有钱也不该买商务座。
    */
-  const long = mode.id === 'ship' ? km >= 300 : km >= 600;
+  const long = mode.id === 'ship' || mode.id === 'car' ? km >= 300 : km >= 600;
 
   // 没记账当成「手头有四张票的钱」—— 不上不下，该省的时候还是会省。
   const p = Number.isFinite(purse) && purse !== null ? (purse as number) : 4;
@@ -649,6 +687,16 @@ export function pickGrade(
 
   // 长途更值得花钱：同样一笔钱，坐八小时比坐两小时值。
   const up = long ? 1.5 : 1;
+
+  if (mode.id === 'car' && second.id === 'campervan') {
+    const prob = p >= 9 ? 0.45 : p >= 4 ? 0.30 : 0.15;
+    return rnd() < prob ? second : base;
+  }
+
+  if (mode.id === 'ship' && pair && isInlandRiverRoute(pair.from, pair.to) && second.id === 'river-cruise') {
+    const prob = p >= 6 ? 0.55 : p >= 3.5 ? 0.35 : 0.18;
+    return rnd() < prob ? second : base;
+  }
 
   /*
    * 主题游轮（3.2x）账面测算：
@@ -664,6 +712,15 @@ export function pickGrade(
 
   if (p < 4) return rnd() < (long ? 0.3 : 0.15) ? second : base;
   if (p < 9) return rnd() < Math.min(0.7, 0.4 * up) ? second : base;
+
+  // 火车中长途且余钱充裕：留出全景观光专列（fourth）入选机会，同时保留商务座 / 高级软卧比例。
+  if (mode.id === 'train' && long && fourth && p >= 9) {
+    const r = rnd();
+    if (r < 0.16) return fourth;
+    if (r < 0.36) return third!;
+    if (r < 0.86) return second;
+    return base;
+  }
 
   // 余钱很松：顶档也开始出现，但只有长途才常见 —— 短途买商务座不值。
   if (third && long && rnd() < 0.3) return third;

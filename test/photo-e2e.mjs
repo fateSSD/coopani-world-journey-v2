@@ -544,7 +544,7 @@ test('在路上点「现在补一张」：拍窗外，不拍出发城市的街�
 
 const photoTool = (world) => world.tools().find((t) => t.name === 'journey_photo');
 
-test('工具表里有 journey_photo：四个可选参数 view + subject + describe + focus', async () => {
+test('工具表里有 journey_photo：五个可选参数 view + subject + describe + focus + prompt', async () => {
   const { world } = await makeWorld();
   const tool = photoTool(world);
   assert.ok(tool, '工具表里没有 journey_photo —— 她还是只能让人去点按钮');
@@ -595,13 +595,18 @@ test('工具表里有 journey_photo：四个可选参数 view + subject + descri
    */
   assert.deepEqual(
     Object.keys((tool.parameters && tool.parameters.properties) ?? {}),
-    ['view', 'subject', 'describe', 'focus'],
-    '参数表动了：现在应该是 view + subject + describe + focus，四个都可选',
+    ['view', 'subject', 'describe', 'focus', 'prompt'],
+    '参数表动了：现在应该是 view + subject + describe + focus + prompt，五个都可选',
   );
   /*
    * `describe` 的边界必须写在描述里 —— 模型读的是描述，不是代码注释。
    * 只说「写一句画面」等于给她一支笔，她会拿去写不存在的花和雪。
    */
+  const promptDesc = String(tool.parameters.properties.prompt?.description ?? '');
+  assert.match(promptDesc, /300/, '没说清 prompt 的长度建议上限');
+  assert.match(promptDesc, /journey\.imageLang/, 'prompt 描述没指到 journey.imageLang');
+  assert.match(promptDesc, /never add|temperature|daylight/i,
+    'prompt 边界没写清真实昼夜、气温穿衣和禁编造约束');
   const descDesc = String(tool.parameters.properties.describe?.description ?? '');
   assert.match(descDesc, /120/, '没说清 120 字上限');
   assert.match(descDesc, /frame content|WHAT IS IN THE FRAME/i, '没说清它管画面内容');

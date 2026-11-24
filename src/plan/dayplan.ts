@@ -50,9 +50,9 @@ export type BeatKind =
  * 说的都是**逛这件事本身**：走了一半、比想的大、人变多了、脚酸了。
  */
 const MID_LINES: readonly string[] = [
-  '还在{spot}，走了这么久才转过一半',
-  '{spot}比看着大，这会儿还在里头',
-  '还在{spot}，人比刚进来的时候多了',
+  '还在{spot}里慢慢转，走了这么久才逛过一半',
+  '{spot}比看着大得多，这会儿还在里头',
+  '还在{spot}，游人比刚进来那会儿多起来了',
   '在{spot}里绕到第二圈，脚有点酸',
 ];
 
@@ -1314,6 +1314,7 @@ export function planDay(args: {
       playLine(city.id, () => (hashOf(`${city.id}${dateKey}night`) % 997) / 997)
         || nightIn(city, Number(dateKey.slice(5, 7)))
         || '',
+      lodging.kind,
     );
     if (!eve) return;
     if (eve.price > 0) extraItems.push(eve.item);
@@ -1747,13 +1748,13 @@ function sunriseIsPlausible(city: City): boolean {
 /** 「到了这儿是什么感觉」—— 供给事实，不是台词。 */
 function shapeWord(city: City): string {
   const t = city.tags;
-  if (t.includes('海') || t.includes('海岛')) return '空气里有咸味';
-  if (t.includes('高原')) return '呼吸比平时费一点劲';
-  if (t.includes('沙漠') || t.includes('戈壁')) return '干，嘴唇立刻就感觉得到';
-  if (t.includes('山') || t.includes('峡谷')) return '四周一下就变窄了';
-  if (t.includes('草原')) return '视野一下变得很大';
-  if (t.includes('古城') || t.includes('古都')) return '脚下的地换了颜色';
-  return '走出站的时候风的方向变了';
+  if (t.includes('海') || t.includes('海岛')) return '风里带着淡淡的咸湿气息';
+  if (t.includes('高原')) return '空气清冽，呼吸比平时略费些劲';
+  if (t.includes('沙漠') || t.includes('戈壁')) return '空气干爽，风里带着西北特有的燥意';
+  if (t.includes('山') || t.includes('峡谷')) return '四周山影合拢，视野一下收窄了';
+  if (t.includes('草原')) return '天幕压低，眼前的视野一下敞开了';
+  if (t.includes('古城') || t.includes('古都')) return '脚下的石板和街巷一下换了旧模样';
+  return '出站时的风向和先前那座城不一样了';
 }
 
 /** 3.5 → 「三点半」。用在事实描述里，避免出现「03:30」这种机器读数。 */

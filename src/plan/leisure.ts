@@ -102,41 +102,41 @@ export function spotRideOptions(spot: string): readonly RideOption[] {
       how: 'camel',
       label: '骆驼',
       price: 120,
-      text: '牵了峰骆驼上去，铃铛一路响。走到半坡回头看，脚印歪歪扭扭拖了一串',
+      text: '牵了峰骆驼缓步上沙坡，驼铃一路轻响，回头看脚印歪歪扭扭拖了一长串',
     });
     out.push({
       how: 'slide',
       label: '滑沙',
       price: 30,
-      text: '借了块滑沙板从沙脊上下来，屁股底下像有人推了一把，吃了一嘴沙',
+      text: '借了块滑沙板顺着沙脊滑下来，耳边全是风声，溅起一阵细沙',
     });
   } else if (MOUNTAIN.test(spot)) {
     out.push({
       how: 'cableway',
       label: '索道',
       price: 140,
-      text: '坐索道上去的，缆车在钢索上轻轻晃，脚下的树变成一片颜色',
+      text: '坐索道缓缓上山，缆车在钢索上轻晃，脚下的山林铺成一片深绿',
     });
     if (SEDAN_CHAIR.test(spot)) {
       out.push({
         how: 'sedan',
         label: '滑竿',
         price: 260,
-        text: '坐了一段滑竿，两个师傅一前一后抬着，上坡的时候他们比走路的还稳',
+        text: '坐了一段滑竿，两位师傅前后步调极稳，上陡坡比走路还平顺',
       });
     }
     out.push({
       how: 'slide',
       label: '滑道',
       price: 50,
-      text: '下山坐了滑道，铁槽一路拐弯，前面那个人一路在叫',
+      text: '下山坐了滑道，顺着铁槽一路拐弯冲下去，前头笑声和惊呼不断',
     });
   } else if (/山|峰|峡|瀑|森林|湿地|草原|大峡谷/.test(spot)) {
     out.push({
       how: 'shuttle',
       label: '观光车',
       price: 40,
-      text: '坐了景区的观光车，省下两三公里的上坡',
+      text: '坐了景区观光车，省下两三公里的盘山上坡',
     });
   }
 
@@ -145,7 +145,7 @@ export function spotRideOptions(spot: string): readonly RideOption[] {
       how: 'bike',
       label: '景区自行车',
       price: 20,
-      text: '景区门口有一排扫码的自行车，沿着%s骑了一圈',
+      text: '在景区门口扫了辆自行车，沿着%s慢慢骑了一圈',
     });
   }
 
@@ -154,11 +154,11 @@ export function spotRideOptions(spot: string): readonly RideOption[] {
       how: 'guide',
       label: '讲解',
       price: 30,
-      text: '在%s门口请了个讲解，一路听下来，比牌子上的字多得多',
+      text: '在%s门口请了位讲解，一路听下来，比牌子上的简介鲜活得多',
     });
   }
 
-  out.push({ how: 'walk', label: '自己走', price: 0, text: '这一段没坐车，走上去的，到顶的时候腿是酸的' });
+  out.push({ how: 'walk', label: '自己走', price: 0, text: '这一段没乘代步工具，一步一步走上去的，登顶时腿微微发沉' });
   return out;
 }
 
@@ -298,7 +298,7 @@ export function beachPlay(
   /* 冷的时候只剩「踩水」这一件不要钱的事。 */
   if (!warm) {
     return Math.abs(seed) % 100 < 50
-      ? { item: '海边走走', price: 0, text: `在${spot}的沙上走了一段，风凉，水只没过脚背` }
+      ? { item: '海边走走', price: 0, text: `沿着${spot}的沙上走了一段，海风偏凉，浪花只轻轻漫过脚背` }
       : null;
   }
   if (Math.abs(seed) % 100 >= 70) return null;
@@ -306,17 +306,17 @@ export function beachPlay(
   /* 同样要带种子：不带的话同一片沙滩永远是同一个项目。 */
   const roll = (hashOf(`${spot}${city.id}`) + Math.abs(Math.round(seed))) % 4;
   if (roll === 0) {
-    return { item: '香蕉艇', price: 100, text: `在${spot}坐了香蕉艇，前面那个浪把整条艇掀起来，人全掉进海里，起来还在笑` };
+    return { item: '香蕉艇', price: 100, text: `在${spot}坐了香蕉艇，迎面一个大浪把整条艇掀起来，溅了一身水花，大家都笑作一团` };
   }
   if (roll === 1) {
-    if (!comfortable) return { item: '堆沙堡', price: 0, text: `在${spot}蹲了半天堆了个沙堡，浪一来就塌了半边` };
-    return { item: '摩托艇', price: 180, text: `在${spot}骑了十分钟摩托艇，油门一给，脸被风推得往后退` };
+    if (!comfortable) return { item: '堆沙堡', price: 0, text: `在${spot}蹲着堆了半天沙堡，浪一涌上来就冲塌了半边` };
+    return { item: '摩托艇', price: 180, text: `在${spot}骑了十分钟摩托艇，油门一拧，海风迎面扑来` };
   }
   if (roll === 2) {
-    if (!comfortable) return { item: '堆沙堡', price: 0, text: `在${spot}蹲了半天堆了个沙堡，用贝壳当窗户` };
-    return { item: '体验潜水', price: 400, text: `在${spot}下了水，背着气瓶，耳边只剩自己的呼吸声，底下的珊瑚是灰的、鱼是蓝的` };
+    if (!comfortable) return { item: '堆沙堡', price: 0, text: `在${spot}蹲着堆了个沙堡，还捡了几片贝壳嵌上去当窗户` };
+    return { item: '体验潜水', price: 400, text: `在${spot}背着气瓶下了水，水下很静，只剩气泡和呼吸声，礁石间游过几尾蓝鱼` };
   }
-  return { item: '堆沙堡', price: 0, text: `在${spot}脱了鞋，沙子烫脚，蹲下来把沙堆成一座城，再看着它被浪抹平` };
+  return { item: '堆沙堡', price: 0, text: `在${spot}脱了鞋踩着温热的细沙，蹲下来堆了座小沙城，又看着潮水把它慢慢抹平` };
 }
 
 /**
@@ -366,26 +366,35 @@ export function hotelNightOptions(
   around: readonly { readonly n: string; readonly km: number }[] = [],
   /** 这座城夜里那处地方（`city.night`，如「九眼桥那一带的夜」）。空则说通用的话。 */
   nightText = '',
+  /** 住处类别（如「房车营地露营过夜」），用于兼容缺 amen 的已落盘房车存档。 */
+  kind = '',
 ): readonly NightOption[] {
   const out: NightOption[] = [];
   const has = (k: string): boolean => amen.includes(k);
+  if (has('camper') || kind === '房车营地露营过夜') {
+    return [
+      { what: 'stargaze', label: '营地看星空', price: 0, text: '拉开天窗和遮阳棚，在营地折叠椅上吹了会儿晚风，抬头看了一阵夜空里的星星' },
+      { what: 'cook', label: '车里煮面', price: 0, text: '用房车里的便携灶台烧水煮了碗热腾腾的素面，就着营地微亮的暖灯吃完了' },
+      { what: 'campwalk', label: '营地散步', price: 0, text: '沿着营地泊位间的小路慢悠悠走了一圈，听见远处的风声和几家旅人收帐篷的动静才回车里' },
+    ];
+  }
   /** 说不出地名时那句通用的话。两处引用同一份，改一处就够。 */
-  const AROUND_PLAIN = '出门沿着街走了一段，路上人不多了，回来的时候买了瓶水';
+  const AROUND_PLAIN = '出门沿着周边街巷慢悠悠走了一段，夜里行人稀少，回程顺手买了瓶水';
 
   if (has('pool')) {
-    out.push({ what: 'pool', label: '泳池', price: 0, text: '在泳池里游了二十分钟，水是温的，池底打着灯' });
+    out.push({ what: 'pool', label: '泳池', price: 0, text: '去泳池游了二十分钟，水温刚好，池底柔光照着水面波纹' });
   }
   if (has('onsen')) {
-    out.push({ what: 'onsen', label: '温泉', price: 0, text: '去泡了温泉，水有点烫，泡到手指起皱才上来' });
+    out.push({ what: 'onsen', label: '温泉', price: 0, text: '去泡了会儿温泉，热气氤氲，泡得浑身舒展才上来' });
   }
   if (has('gym')) {
-    out.push({ what: 'gym', label: '健身房', price: 0, text: '去健身房跑了三公里，跑步机正对着窗，外面的车灯连成一条线' });
+    out.push({ what: 'gym', label: '健身房', price: 0, text: '去健身房慢跑了三公里，跑步机正对着落地窗，窗外夜色里的车灯连成光带' });
   }
   if (has('spa')) {
-    out.push({ what: 'spa', label: 'SPA', price: 380, text: '做了个一小时的推背，出来的时候肩是松的，走路都轻' });
+    out.push({ what: 'spa', label: 'SPA', price: 380, text: '做了个一小时的舒缓推背，出来时肩颈轻松了不少' });
   }
   if (has('bar')) {
-    out.push({ what: 'bar', label: '楼下喝一杯', price: 80, text: '下楼在吧台要了杯东西，坐了半小时就上来了' });
+    out.push({ what: 'bar', label: '楼下喝一杯', price: 80, text: '下楼在大堂吧要了杯饮品，安静坐了半小时才回房' });
   }
   /*
    * 出门转转：只在**最近的去处一公里出头**时给。
@@ -416,10 +425,10 @@ export function hotelNightOptions(
      * 四种说法按城市文本取哈希挑，同一城稳定（重算不换），不同城不同。
      */
     const AROUND_SAY = [
-      (t: string) => `出门去了${t}，转了一圈才回来`,
-      (t: string) => `晚上出去走了走，${t}`,
-      (t: string) => `去了${t}，来回走了四十来分钟`,
-      (t: string) => `${t}，人不少，看了一会儿就回来了`,
+      (t: string) => `出门去了${t}，不紧不慢转了一圈才回来`,
+      (t: string) => `晚上出去散了会儿步，顺路去了${t}`,
+      (t: string) => `去了趟${t}，来回逛了约莫四十来分钟`,
+      (t: string) => `去了${t}，夜里挺热闹，待了一会儿才回店`,
     ];
     out.push({
       what: 'around',
@@ -449,10 +458,10 @@ export function hotelNightOptions(
 
   /* 通用项：任何一家店都成立，也是没设施数据时的兜底。 */
   if (tier === 'luxury' || tier === 'view') {
-    out.push({ what: 'bath', label: '泡澡', price: 0, text: '放了一缸热水泡着，窗户开了一条缝，外面的风是凉的' });
-    out.push({ what: 'room', label: '在房间待着', price: 0, text: '窗帘只拉开一半，坐在窗边听了一会儿楼下的声音' });
+    out.push({ what: 'bath', label: '泡澡', price: 0, text: '放了一缸热水慢慢泡澡，窗留了条小缝，透进一点清凉夜风' });
+    out.push({ what: 'room', label: '在房间待着', price: 0, text: '窗帘拉开一半，靠在窗边听了一会儿楼下的夜声' });
   } else {
-    out.push({ what: 'bath', label: '冲个澡', price: 0, text: '冲了个澡就躺下了，热水很足，一会儿就睡着了' });
+    out.push({ what: 'bath', label: '冲个澡', price: 0, text: '舒舒服服冲了个热水澡，躺下没多久就泛起困意' });
   }
   return out;
 }
@@ -470,8 +479,9 @@ export function hotelEvening(
   amen: readonly string[] = [],
   around: readonly { readonly n: string; readonly km: number }[] = [],
   nightText = '',
+  kind = '',
 ): Leisure | null {
-  const all = hotelNightOptions(tier, amen, around, nightText);
+  const all = hotelNightOptions(tier, amen, around, nightText, kind);
   const free = all.filter((x) => x.price === 0 || comfortable);
   if (!free.length) return null;
   const pickd = free[Math.abs(seed) % free.length];

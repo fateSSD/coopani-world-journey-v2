@@ -1237,7 +1237,8 @@ test('照片：提示词必须写明「没有人物」，否则模型会往画�
    */
   /* 2026-11-12 实图之后：「低角度的暖光」改成「光从很低的角度打过来」——
      「暖」字在这个底模上会被放大成整片橙，喀什十九点直接烧成落日大片。 */
-  assert.match(p, /很低的角度|暖光|黄昏/, '光没进提示词');
+  assert.match(p, /很低的角度|日光斜照|暖光|黄昏/, '光没进提示词');
+  assert.match(photoPrompt({ city: '天水', cityId: 'tianshui', spot: '麦积山石窟', month: 1, hour: 17 }), /很低的角度/, '天水一月十七点太阳不足十度，该给低角度光');
   const late = photoPrompt({ city: '天水', spot: '麦积山石窟', hour: 19 });
   assert.match(late, /黑|夜/, `天水一月十九点该是暗的：${late.slice(0, 90)}`);
   assert.equal(p.includes('天水，的'), false, '空地点拼出了「天水，的」这种话');

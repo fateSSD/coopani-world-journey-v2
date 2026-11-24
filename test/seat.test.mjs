@@ -23,11 +23,13 @@ const train = modeById('train');
 const plane = modeById('plane');
 const ship = modeById('ship');
 
-test('火车按距离换档：长途是卧铺，短途才是座位', () => {
+test('火车按距离换档：长途是卧铺，600 公里起含全景观光专列，短途才是座位', () => {
+  const veryShort = train.grades(300).map((g) => g.name);
   const short = train.grades(600).map((g) => g.name);
   const long = train.grades(2000).map((g) => g.name);
-  assert.deepEqual(short, ['二等座', '一等座', '商务座']);
-  assert.deepEqual(long, ['硬卧', '软卧', '高级软卧']);
+  assert.deepEqual(veryShort, ['二等座', '一等座', '商务座']);
+  assert.deepEqual(short, ['二等座', '一等座', '商务座', '全景观光专列']);
+  assert.deepEqual(long, ['硬卧', '软卧', '高级软卧', '全景观光专列']);
 });
 
 test('钱紧就只买最低档 —— 一次都不许升', () => {
@@ -55,7 +57,8 @@ test('短途不买顶档 —— 两个小时的车买商务座不值', () => {
 
 test('不分档的方式返回 undefined，不是崩', () => {
   assert.equal(pickGrade(modeById('walk'), 10, 20), undefined);
-  assert.equal(pickGrade(modeById('car'), 500, 20), undefined);
+  assert.equal(pickGrade(modeById('bike'), 40, 20), undefined);
+  assert.equal(pickGrade(modeById('car'), 150, 20), undefined);
 });
 
 test('没记账（purse=null）也能给出一档，不当成没钱', () => {
@@ -180,4 +183,233 @@ test('审查回归：uiSnapshot().leg 透出 seatId / seat / seatMult / fare，p
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('二期（P2）：全景观光专列（scenic-train）选档、文案、拍照提示词与过夜反哺', async () => {
+  const { roadText } = await import('../src/helpers.ts');
+  const { photoPrompt } = await import('../src/photo.ts');
+  const { buildPhotoFacts } = await import('../src/photo-facts.ts');
+
+  const g800 = train.grades(800);
+  const scenic800 = g800.find((g) => g.id === 'scenic-train');
+  assert.ok(scenic800 && scenic800.mult === 3.6, 'train >= 600km 应包含 mult=3.6 的全景观光专列');
+
+  const seen = new Set();
+  for (let i = 0; i < 300; i++) seen.add(pickGrade(train, 1200, 15, () => (i + 0.5) / 300).id);
+  assert.ok(seen.has('scenic-train'), `余钱充裕的长途应能选中全景观光专列：${[...seen].join('/')}`);
+  assert.equal(pickGrade(train, 1200, 1.2).id, 'hard-sleeper', '钱紧时退回硬卧');
+
+  assert.equal(modeIdOf('坐全景观光专列去'), 'train');
+  assert.equal(modeIdOf('我想搭冰川快车'), 'train');
+  assert.equal(seatHintOf('全景观光专列'), 'scenic-train');
+  assert.equal(seatHintOf('冰川快车'), 'scenic-train');
+
+  const cd = cityById('chengdu');
+  const ls = cityById('lasa');
+  const leg = buildJourney({
+    from: cd, to: ls, mode: train, km: 1200,
+    at: new Date('2026-11-24T08:00:00Z'), speed: 1, grade: scenic800,
+  });
+  const midDay = roadText('train', 1, leg, cd, ls, 14, 0.5);
+  assert.match(midDay, /全景餐车|峡谷与旷野/);
+  assert.doesNotMatch(midDay, /鱼|虾|蟹|海鲜|生鱼/);
+
+  const prompt = photoPrompt({
+    city: '拉萨', cityId: 'lasa', onRoad: true, mode: '全景观光专列',
+    hour: 14, month: 11, day: 24, minimal: true,
+  });
+  assert.match(prompt, /全景窗.*雪山|森林|旷野/);
+  const facts = buildPhotoFacts({
+    city: ls, hour: 14, month: 11, day: 24, onRoad: true, mode: '全景观光专列',
+  });
+  assert.match(facts.placeLabel, /全景观光专列.*雪山|森林|旷野/);
+});
+
+test('二期（P2）：房车自驾（campervan）分档、驾照门控联动、营地露营过夜省房费与持久化', async () => {
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { StateStore, initialState } = await import('../src/state.ts');
+  const { camperLodging, rollLodging } = await import('../src/plan/lodging.ts');
+  const { roadText } = await import('../src/helpers.ts');
+
+  const car = modeById('car');
+  assert.deepEqual(car.grades(200), [], 'car < 300km 不分档');
+  const grades400 = car.grades(400);
+  assert.deepEqual(grades400.map((g) => g.id), ['standard-car', 'campervan']);
+  assert.equal(grades400.find((g) => g.id === 'campervan')?.mult, 1.5);
+  assert.equal(pickGrade(car, 500, 1.2).id, 'standard-car');
+  assert.equal(modeIdOf('开房车去玩'), 'car');
+  assert.equal(seatHintOf('开房车去玩'), 'campervan');
+
+  const cd = cityById('chengdu');
+  const kmCity = cityById('kunming');
+  const camperGrade = grades400.find((g) => g.id === 'campervan');
+  const leg = buildJourney({
+    from: cd, to: kmCity, mode: car, km: 800,
+    at: new Date('2026-11-24T08:00:00Z'), speed: 1, grade: camperGrade,
+  });
+  const midCamp = roadText('car', 1, leg, cd, kmCity, 13, 0.5);
+  assert.match(midCamp, /房车便携灶台|营地/);
+  assert.doesNotMatch(midCamp, /鱼|虾|蟹|海鲜/);
+
+  const campLod = camperLodging(kmCity.priceIdx, false);
+  const hotelLod = rollLodging(() => 0.7, false, kmCity.priceIdx, false, false);
+  assert.equal(campLod.kind, '房车营地露营过夜');
+  assert.ok(campLod.price < hotelLod.price, `房车营地过夜（${campLod.price}）应显著省于同城酒店（${hotelLod.price}）`);
+
+  const dir = mkdtempSync(join(tmpdir(), 'jr-camper-'));
+  const origFetch = globalThis.fetch;
+  let wNoLic;
+  try {
+    let fixedNow = new Date('2026-11-24T08:00:00Z');
+    new StateStore(dir).save({ ...initialState('lanzhou'), phase: 'home', hereId: 'lanzhou' });
+    globalThis.fetch = async () => { throw new Error('offline'); };
+    const fakeHost = {
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => ({ ...e, blobs: [] }),
+      pushDeferred() {},
+      store: {},
+      drainPendingEvents: async () => [],
+    };
+    wNoLic = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', hasLicense: false },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => fixedNow,
+    });
+    await wNoLic.start(fakeHost);
+    const goTo = wNoLic.tools().find((t) => t.name === 'journey_go_to').handler;
+    const hotelNightTool = wNoLic.tools().find((t) => t.name === 'journey_hotel_night').handler;
+
+    const blocked = await goTo({ city: '成都', mode: '房车' });
+    assert.equal(blocked.isError, true);
+    assert.match(String(blocked.text), /驾照/);
+
+    // 兼容旧版 life-public.json（缺 certs 字段）时，回退读取 life-state.json.job.certs
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: fixedNow.toISOString(),
+    }), 'utf8');
+    writeFileSync(join(dir, 'life-state.json'), JSON.stringify({
+      job: { certs: ['驾照'] },
+    }), 'utf8');
+    assert.equal(wNoLic.effectiveHasLicense(), true, '旧版 life-public.json 缺 certs 时应回退识别 life-state.json 中的驾照');
+
+    // 新版 life-public.json 若显式声明 certs: []，必须以公开广播为准返回 false（不穿透旧状态）
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: fixedNow.toISOString(),
+      certs: [],
+    }), 'utf8');
+    assert.equal(wNoLic.effectiveHasLicense(), false, '新版 life-public.json 显式写 certs:[] 时应以公开广播为准');
+
+    // 生活层考下驾照后广播进 life-public.json，即便 journey 设置未开 hasLicense 也应放行房车自驾并落盘 camper=true
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: fixedNow.toISOString(),
+      certs: ['驾照'],
+    }), 'utf8');
+    assert.equal(wNoLic.effectiveHasLicense(), true);
+    const goRes = await goTo({ city: '成都', mode: '房车' });
+    assert.notEqual(goRes.isError, true, String(goRes.text));
+    assert.equal(wNoLic.st.leg?.modeId, 'car');
+    assert.equal(wNoLic.st.leg?.seatId, 'campervan');
+    assert.equal(wNoLic.st.car?.camper, true);
+
+    // 验证重启读档保持 car.camper 且到站排程走房车营地过夜
+    const reloaded = new StateStore(dir).load('lanzhou').state;
+    assert.equal(reloaded.car?.camper, true, 'StateStore.load 必须保留 car.camper');
+
+    wNoLic.hotels.hotels = async () => [];
+    wNoLic.weather.forecast = async () => null;
+    wNoLic.st = {
+      ...wNoLic.st,
+      phase: 'staying',
+      hereId: 'chengdu',
+      leg: null,
+      stayStartedAt: fixedNow.toISOString(),
+      stayDateKey: '2026-11-24',
+      lodging: null,
+    };
+    await wNoLic.rebuildPlan(fixedNow, 'arrival', 10, cd);
+    assert.equal(wNoLic.plan?.lodging.kind, '房车营地露营过夜');
+    assert.deepEqual(wNoLic.plan?.lodging.amen, ['camper']);
+    assert.match(wNoLic.nowSummary(), /房车.*营地过夜省房费/);
+
+    // 房车营地夜间独立项（不套酒店泡澡/房间窗帘，并兼容无 amen 老房车存档）
+    const { hotelNightOptions, hotelEvening } = await import('../src/plan/leisure.ts');
+    const campOpts = hotelNightOptions(campLod.tier, campLod.amen, [], '', campLod.kind);
+    const legacyCampOpts = hotelNightOptions('view', [], [], '', '房车营地露营过夜');
+    for (const opts of [campOpts, legacyCampOpts]) {
+      assert.deepEqual(opts.map((o) => o.label), ['营地看星空', '车里煮面', '营地散步']);
+      const joined = opts.map((o) => `${o.label}:${o.text}`).join('|');
+      assert.doesNotMatch(joined, /泡澡|浴缸|在房间待着|窗帘/);
+    }
+    const campEve = hotelEvening('view', 123, true, [], [], '', '房车营地露营过夜');
+    assert.ok(campEve && ['营地看星空', '车里煮面', '营地散步'].includes(campEve.item));
+    fixedNow = new Date('2026-11-24T12:00:00Z'); // 北京 20:00
+    const bathDeny = await hotelNightTool({ what: '泡澡' });
+    assert.equal(bathDeny.isError, true);
+    assert.doesNotMatch(String(bathDeny.text), /在房间待着/);
+    const starOk = await hotelNightTool({ what: '营地看星空' });
+    assert.notEqual(starOk.isError, true, String(starOk.text));
+    assert.match(String(starOk.text), /天窗|夜空/);
+  } finally {
+    wNoLic?.stop?.();
+    globalThis.fetch = origFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('二期（P2）：内河游轮（river-cruise）与远洋海港航线区分、点名、途中文案与拍照场景', async () => {
+  const { isInlandRiverRoute, gradesFor } = await import('../src/plan/journey.ts');
+  const { roadText } = await import('../src/helpers.ts');
+  const { photoPrompt } = await import('../src/photo.ts');
+
+  const cq = cityById('chongqing');
+  const yc = cityById('yichang');
+  const wh = cityById('wuhan');
+  const nj = cityById('nanjing');
+  const sh = cityById('shanghai');
+  const qd = cityById('qingdao');
+  const tok = cityById('tokyo');
+  const sy = cityById('sanya');
+  const gz = cityById('guangzhou');
+
+  assert.equal(isInlandRiverRoute(cq, yc), true, '重庆↔宜昌应判为内河游轮航线');
+  assert.equal(isInlandRiverRoute(cq, wh), true, '重庆↔武汉应判为内河游轮航线');
+  assert.equal(isInlandRiverRoute(wh, nj), true, '武汉↔南京应判为内河游轮航线');
+  assert.equal(isInlandRiverRoute(sh, qd), false, '上海↔青岛不得判为内河游轮');
+  assert.equal(isInlandRiverRoute(sh, tok), false, '上海↔东京跨海不得判为内河游轮');
+  assert.equal(isInlandRiverRoute(gz, sy), false, '广州↔三亚沿海航线不得判为内河游轮');
+
+  const riverGrades = gradesFor(ship, 600, { from: cq, to: wh });
+  assert.deepEqual(riverGrades.map((g) => g.id), ['inside-cabin', 'river-cruise']);
+  assert.equal(riverGrades.some((g) => g.id === 'theme-cruise'), false, '内河航线不应混入主题远洋游轮');
+
+  const seaGrades = gradesFor(ship, 700, { from: sh, to: qd });
+  assert.deepEqual(seaGrades.map((g) => g.id), ['inside-cabin', 'ocean-balcony', 'theme-cruise']);
+
+  assert.equal(modeIdOf('坐三峡河轮去宜昌'), 'ship');
+  assert.equal(seatHintOf('内河游轮'), 'river-cruise');
+
+  const riverGrade = riverGrades.find((g) => g.id === 'river-cruise');
+  const leg = buildJourney({
+    from: cq, to: yc, mode: ship, km: 550,
+    at: new Date('2026-11-24T08:00:00Z'), speed: 1, grade: riverGrade,
+  });
+  const midDay = roadText('ship', 1, leg, cq, yc, 14, 0.5);
+  const midNight = roadText('ship', 1, leg, cq, yc, 22, 0.5);
+  assert.match(midDay, /河轮.*两岸|峡谷|山坡/);
+  assert.match(midNight, /河轮.*灯火|山影/);
+  assert.doesNotMatch(midDay + midNight, /鱼|虾|蟹|海鲜/);
+
+  const prompt = photoPrompt({
+    city: '宜昌', cityId: 'yichang', onRoad: true, mode: '内河峡谷游轮',
+    hour: 22, month: 11, day: 24, minimal: true,
+  });
+  assert.match(prompt, /两岸山影.*灯火|江面/);
 });

@@ -1,5 +1,32 @@
 # 更新日志
 
+## 2.9.0 — 2026-11-24（慢旅行二期 + 拍照内核掌镜架构 A+B + `sight-cf` 零迁移升级 + 六项审查修复）
+
+- **慢旅行二期（全景观光专列 / 房车自驾 / 内河游轮）与驾照联机门控**（`src/geo/modes.ts`、`src/plan/journey.ts`、`src/plan/lodging.ts`、`src/plan/leisure.ts`、`src/plan/dayplan.ts`、`src/helpers.ts`、`src/world-plan.ts`、`src/world-purse.ts`）：
+  - `MODES` 火车长途档新增 `全景观光专列`（3.6x），自驾 ≥ 300km 新增 `普通自驾` / `房车自驾`（1.5x），轮船短途与长途依据内河航线支持 `内河游轮` 区分与在途专属取景/途中文案；
+  - 房车自驾接入跨扩展驾照门控（优先读 `life-public.json.certs` 中的「驾照」，旧版广播缺 `certs` 时回退只读 `life-state.json.job.certs`），到站走 `camperLodging()` 营地露营过夜省房费，并与酒店设施隔离、独立出「营地看星空 / 车里煮面 / 营地散步」三项夜间活动；
+- **`sight-cf` 鱼市街服务端零表迁移升级**（`cloud/sight-cf/src/worker.js`）：
+  - 不改 D1 表结构：利用既有 `stalls.note` JSON 透明扩展 `c` 字段持久化与校验五赛道 `category`（`produce` / `food` / `craft` / `writing` / `photo`）并在 `/town/stalls` 与 `/town/buy` 透出；
+  - 基于既有 `rate` 表新增买卖双方每日同买 2 单防互刷限频（超限回 `429 pair limit`）；`/town/deals` 通过 `LEFT JOIN stalls` 返回 `unitPrice` 供客户端真金白银结算；
+
+- **白昼天色与昼夜气温同源校准**（`src/photo.ts`、`src/helpers.ts`、`src/photo-facts.ts`、`src/geo/season.ts`）：
+  - 修正日光充足时段光照词汇与 `sceneSun` / 天空基线，解决大白天被误画成黄昏、夜景与路灯的问题；
+  - `weatherLine()` 补全 `白天 X℃ / 夜里 Y℃`，使主会话能看见白天气温穿衣依据；
+  - `phaseWeather()` 统一改用天文 `daylitAt` / `sun.daylit` 判昼夜，消除冬季 17:30 日落后「白天天气 + 夜间温度」的错位。
+- **拍照内核化（方案 A + 方案 B）与护栏拆分**（`src/photo-facts.ts`、`src/world-photo.ts`、`src/world-plan.ts`、`src/world.ts`、`src/world-purse.ts`、`src/world-webui.ts`、`src/config.ts`、`src/describe.ts`、`describe.json`、`ENV_PROMPT.md`）：
+  - 新增 `src/photo-facts.ts` 硬事实层，计算太阳高度、昼夜边界、气温穿衣温区、室内外与参考图状态；`buildCognitionPromptBrief()` 向后台 `cognition` 传递防黄昏/不亮路灯、气温着装与同伴简报约束，`compileDirectorPrompt()` 在底层保留画风前缀、参考图五官锁定与去可读文字/去水印最小技术护栏（主会话自写 `prompt` 需按实况自行遵循光线与着装约定），不再把括号规则参数与管道符混进事件正文与 `nowSummary`；
+  - 修正 `imageDirector` 默认 `template` 模式也走 `cognition` 的跳过条件，房车营地露营过夜独立出「营地看星空 / 车里煮面 / 营地散步」夜间项，规整在途载具/舱位表达与前半程「出发地出发前往目的地途中」，同行同伴标签改用「他（叙事同行）」，驾照判据兼容回退读取 `life-state.json`，移除事件正文祈使句并消除 `photo.ts` 与 `photo-facts.ts` 循环引用；
+  - `journey_photo` 工具新增第 5 个可选参数 `prompt`，允许主会话在了解实况后直接写出完整画面提示词并跳过规则模板；新增配置项 `worlds.journey.imageDirector`（默认保持 **`template`** 后台稳出图不漏拍，支持切换 **`auto`** 优先走宿主 `WorldHost.cognition` 后台编导，宿主未开放时在到达景点/长途中段事件末尾附简洁观察态「此刻留影实况」，由主会话自行决定是否拍）；
+  - `nowSummary()` 末尾新增极简 `此刻留影参考`（未配生图零输出），`currentNowPhotoTag()` 对人物参考图判定增加 30 秒实机缓存以消除每回合重复扫盘。
+- **途中、景区与酒店夜间白描文案润色**（`src/helpers.ts`、`src/plan/dayplan.ts`、`src/plan/leisure.ts`）：
+  - 保留日常质感白描底子，精简并润色 `roadText`、景点中段节点、`shapeWord` 到站环境描写与 `leisure.ts` 景区/海滩/酒店夜间文案；同步收口 `ENV_PROMPT.md` 提示词规范。
+- **修复「让你跟着一块走（`withUser`）」开启后仍自称一个人问题**（`src/config.ts`、`src/world-purse.ts`、`src/world.ts`、`ENV_PROMPT.md`）：
+  - 补充 `'x-hot': true` 热更新标记、修复 `ENV_PROMPT.md` 模板嵌套病句并强化开启态表述；将同行状态实时透出至 `nowSummary()` 全三阶段（`home` / `traveling` / `staying`）与 `journey.depart` / `journey.arrive` / `journey.day` 事件，并在 `tick()` 中捕获运行中热切换即时推送状态更新以覆盖旧系统前缀。
+- **修复「关闭旅行花她的钱（`payFromLife=false`）」仍沿用鱼生余额/面板误导问题**（`src/world-purse.ts`、`src/world.ts`、`src/config.ts`、`src/world-webui.ts`、`src/ui.ts`、`dist/webui.js`）：
+  - `queueLifeSpend()` 入口加守卫严禁写出正数扣款条子（保留 `amount===0` 纯状态反哺）；`purseLeft()` / `purseStage()` / `moneyLine()` / `purseTravelLine()` 在请客模式下屏蔽鱼生现金限制与「还能动用」提示，改为明确「由他出钱（不扣你的钱包）」；
+  - `tick()` 捕获运行中热关 `payFromLife` / `moneyEnabled` 时清理队列中尚未结算的正数扣款条子；`moneyEnabled` 与 `payFromLife` 补充 `'x-hot': true`；设置页徽章与面板页脚在请客模式下标为 `你请客` / `你请客 {n}（不扣她钱包）`。
+- **测试**：新增 `test/photo-director.test.mjs`、`test/with-user.test.mjs` 与 `test/life-spend-bridge.test.mjs` 请客回归，并在 `test/sight-cf-market.test.mjs` 补充五赛道 `category` / 双人每日限购 / `/town/deals` 单价回归；`node --check dist/webui.js`、`node --check cloud/sight-cf/src/worker.js`、`verify-world.mjs` **37/37** 通过，全量 `test/*.test.mjs` **1306/1306** 与 `clock-sync` / `home-e2e` / `home-reason` / `photo-e2e` / `ui-smoke` **118/118** 全过。
+
 ## 2.8.2 — 2026-11-24（出发地钉住 + 回访要有由头；「去过的地方」进上下文；更新扩展图标）
 
 - **视觉更新**：更新扩展图标为「大肥鱼」清新水彩旅行手账风圆形透明头像（`assets/icon.png`，512×512）。

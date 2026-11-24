@@ -109,7 +109,7 @@ test('阴雨天不许出现「阳光」「金色」 —— 一句提示词里不
   const base = { city: '昆明', cityId: 'kunming', month: 11, onRoad: true, view: 'ground' };
   for (const hour of [7, 9, 12, 15, 19]) {
     const t = photoPrompt({ ...base, hour, weather: '阴' });
-    assert.doesNotMatch(t, /金色|明亮日光|低角度的暖光|斜着打过来/,
+    assert.doesNotMatch(t, /金色|明亮日光|充足日光|低角度的暖光|斜着打过来/,
       `${hour} 点阴天还写着太阳：${t.slice(0, 120)}`);
   }
   /* 反过来：晴天该有的还得有，别为了消矛盾把晴天的光削平。
@@ -233,4 +233,166 @@ test('重拍判夜的修复不影响正常拍照', async () => {
   assert.equal(shotIsNight({ repaint: false, lat: 25, month: 11, hour: 21 }), true, '晚上九点该是夜');
   // 重拍在白天也不该被判成夜（repaint 分支直接返回 false）
   assert.equal(shotIsNight({ repaint: true, lat: 25, month: 11, hour: 14 }), false);
+});
+
+/* ============ 白昼日光与极简日落后分档修复（2026-11-24） ============ */
+
+test('北方深秋下午两点半（天津 11 月 24 日 14:31 瓷房子）：完整与极简模式均给出白昼充足日光并剔除纯地名复读', () => {
+  const scene = {
+    city: '天津',
+    cityId: 'tianjin',
+    spot: '瓷房子',
+    month: 11,
+    day: 24,
+    hour: 14.52,
+    weather: '晴',
+    doing: '下午，瓷房子',
+    castFromRef: true,
+  };
+  const full = photoPrompt({ ...scene, minimal: false });
+  assert.match(full, /白天充足日光/, `完整模式缺失明确白昼日光：${full}`);
+  assert.match(full, /白天晴朗干净的蓝天/, `完整模式缺失晴朗蓝天：${full}`);
+  assert.doesNotMatch(full, /天往浅里退|西边有一层薄云|正在发生的事：下午，瓷房子|黄昏|深夜/, `完整模式仍有诱导或复读噪音：${full}`);
+
+  const min = photoPrompt({ ...scene, minimal: true });
+  assert.match(min, /下午大白天充足日光/, `极简模式缺失大白天充足日光：${min}`);
+  assert.doesNotMatch(min, /深夜|黄昏|下午，瓷房子/, `极简模式存在时段或复读噪音：${min}`);
+
+  // 真实动作仍必须保留，只过滤纯「时段 + 地名」
+  const withAction = photoPrompt({ ...scene, doing: '在瓷房子门口买门票准备进去', minimal: true });
+  assert.match(withAction, /在瓷房子门口买门票准备进去/);
+});
+
+test('极简模式日落后分档：余晖/蓝调/暮色/夜晚/深夜按太阳高度角区分，不再一刀切「深夜」', () => {
+  const base = { city: '嘉峪关', cityId: 'jiayuguan', spot: '新城魏晋壁画墓', month: 11, day: 24, weather: '晴', minimal: true };
+  // 嘉峪关（98.29°E）真太阳时比北京时间慢 ~87 分钟：11 月 24 日傍晚各档分布如下
+  const golden = photoPrompt({ ...base, hour: 18.2 });
+  const afterglow = photoPrompt({ ...base, hour: 18.5 });
+  const blue = photoPrompt({ ...base, hour: 18.8 });
+  const twilight = photoPrompt({ ...base, hour: 19.2 });
+  const evening = photoPrompt({ ...base, hour: 20.5 });
+  const late = photoPrompt({ ...base, hour: 23.0 });
+  const dawn = photoPrompt({ city: '天津', cityId: 'tianjin', spot: '瓷房子', month: 11, day: 24, hour: 7, weather: '晴', minimal: true });
+  assert.match(golden, /日落夕阳/, `夕阳档错位：${golden}`);
+  assert.match(afterglow, /傍晚余晖/, `余晖档错位：${afterglow}`);
+  assert.match(blue, /傍晚蓝调/, `蓝调档错位：${blue}`);
+  assert.match(twilight, /入夜暮色/, `暮色档错位：${twilight}`);
+  assert.match(evening, /夜晚/, `晚上档错位：${evening}`);
+  assert.match(late, /深夜/, `深夜档错位：${late}`);
+  assert.match(dawn, /清晨微曦/, `日出前曙光档不应出现傍晚字样：${dawn}`);
+  assert.doesNotMatch(dawn, /傍晚/, `早上 7 点出现了傍晚：${dawn}`);
+  const dawnFull = photoPrompt({ city: '天津', cityId: 'tianjin', spot: '瓷房子', month: 11, day: 24, hour: 7, weather: '晴', minimal: false });
+  assert.doesNotMatch(dawnFull, /太阳刚落|傍晚/, `完整模式早上 7 点出现了太阳刚落/傍晚：${dawnFull}`);
+  assert.match(dawnFull, /天快亮了|太阳还没出来/, `完整模式早上 7 点未给出日出前文案：${dawnFull}`);
+  for (const p of [golden, afterglow, blue, twilight, evening]) {
+    assert.doesNotMatch(p, /深夜/, `刚日落或晚上被错标成深夜：${p}`);
+  }
+});
+
+test('分钟级时刻不因 Math.round 跨过日落线，回执仍报整数小时', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { sceneSun } = await import('../src/photo.ts');
+
+  const dir = mkdtempSync(join(tmpdir(), 'jr-min-clock-'));
+  const origFetch = globalThis.fetch;
+  try {
+    // 天津 2026-11-24 16:31（Asia/Shanghai = 08:31Z），距 16:45 日落尚余十余分钟
+    const now = new Date('2026-11-24T08:31:00Z');
+    const minPngB64 = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    ]).toString('base64');
+    globalThis.fetch = async (url) => {
+      if (String(url).startsWith('https://registry.npmjs.org/')) {
+        return { ok: true, status: 200, json: async () => ({ latest: '0.0.0' }) };
+      }
+      return new Response(JSON.stringify({ data: [{ b64_json: minPngB64 }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    };
+
+    const w = new JourneyWorld({
+      cfg: {
+        ...JOURNEY_DEFAULTS(),
+        enabled: true,
+        homeCity: '兰州',
+        imageProtocol: 'openai',
+        imageApi: 'https://img.test/v1',
+        imageKey: 'sk-test',
+        imageModel: 'gpt-image-1',
+      },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => now,
+    });
+    await w.start({
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => ({ ...e, cursor: 1, blobs: [{ handle: 'log:t1631.png' }] }),
+      reportUsage: () => {},
+      store: {},
+      drainPendingEvents: async () => [],
+    });
+    w.st = { ...w.st, phase: 'staying', hereId: 'tianjin' };
+
+    const sc = w.photoSceneNow();
+    assert.equal(sc.ok, true);
+    assert.ok(sc.hour > 16.4 && sc.hour < 16.6, `16:31 未保留分钟精度：${sc.hour}`);
+    const sun1631 = sceneSun({ city: '天津', cityId: 'tianjin', month: 11, day: 24, hour: sc.hour });
+    assert.equal(sun1631.daylit, true, `16:31 被提前推过日落线：alt=${sun1631.alt}`);
+
+    const toolRes = await w.takePhotoForUser('ground', 'ground');
+    assert.match(toolRes.text, /当地 16 点/, `回执未取整到当地 16 点：${toolRes.text}`);
+    assert.doesNotMatch(toolRes.text, /16\.5/, `回执泄露了小数小时：${toolRes.text}`);
+    await w.stop();
+  } finally {
+    globalThis.fetch = origFetch;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('参考图激活时 readLifeLibraryHint 跳过角色文字外观，保留服饰与场景防双外观冲突', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+
+  const dir = mkdtempSync(join(tmpdir(), 'jr-lib-skip-'));
+  const libDir = join(dir, 'image-library');
+  try {
+    mkdirSync(join(libDir, 'characters', 'fish'), { recursive: true });
+    writeFileSync(join(libDir, 'characters', 'fish', 'entry.json'), JSON.stringify({
+      id: 'fish', name: '大肥鱼', aliases: [], appearance: '蓝发鱼尾少女固定外观',
+    }));
+    mkdirSync(join(libDir, 'outfits', 'coat'), { recursive: true });
+    writeFileSync(join(libDir, 'outfits', 'coat', 'entry.json'), JSON.stringify({
+      id: 'coat', name: '冬日大衣', aliases: ['大衣'], appearance: '米白色羊毛大衣配围巾',
+    }));
+    mkdirSync(join(libDir, 'scenes', 'spot'), { recursive: true });
+    writeFileSync(join(libDir, 'scenes', 'spot', 'entry.json'), JSON.stringify({
+      id: 'spot', name: '瓷房子', aliases: [], appearance: '碎瓷片贴墙法式洋楼',
+    }));
+
+    const w = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' },
+      dataDir: dir,
+      botName: '大肥鱼',
+    });
+    const noRefHint = w.readLifeLibraryHint('ground', true, '瓷房子', '大肥鱼', '穿着冬日大衣', false);
+    assert.match(noRefHint, /蓝发鱼尾少女固定外观/);
+    assert.match(noRefHint, /米白色羊毛大衣配围巾/);
+    assert.match(noRefHint, /碎瓷片贴墙法式洋楼/);
+
+    const refActiveHint = w.readLifeLibraryHint('ground', true, '瓷房子', '大肥鱼', '穿着冬日大衣', true);
+    assert.doesNotMatch(refActiveHint, /蓝发鱼尾少女/, `参考图激活后仍塞入角色文字外观：${refActiveHint}`);
+    assert.match(refActiveHint, /米白色羊毛大衣配围巾/, `参考图激活后误丢服饰描述：${refActiveHint}`);
+    assert.match(refActiveHint, /碎瓷片贴墙法式洋楼/, `参考图激活后误丢场景描述：${refActiveHint}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

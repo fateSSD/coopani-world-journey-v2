@@ -106,6 +106,12 @@ export const MODES: readonly TravelMode[] = [
   {
     id: 'car', name: '自驾', kmh: 75, overhead: 0.3, maxKm: 2500, needs: null, cost: 4,
     feel: '自己掌握节奏，可以随时停下看风景，但长时间开车会困。',
+    grades: (km) => (km >= 300
+      ? [
+        { id: 'standard-car', name: '普通自驾', mult: 1, feel: '常规家用轿车或 SUV，灵活轻快、好找车位，晚上照常住酒店。' },
+        { id: 'campervan', name: '房车自驾', mult: 1.5, feel: '车住合一的旅居房车，车内自带便携灶台和星空卧铺，沿途营地能自己做饭、停在风景里过夜。' },
+      ]
+      : []),
   },
   {
     id: 'bus', name: '长途汽车', kmh: 50, overhead: 0.7, maxKm: 1500, needs: null, cost: 2,
@@ -132,12 +138,20 @@ export const MODES: readonly TravelMode[] = [
         { id: 'hard-sleeper', name: '硬卧', mult: 1, feel: '六个人的隔间，上中下铺；能躺平，但夜里一直有人上下车。' },
         { id: 'soft-sleeper', name: '软卧', mult: 1.7, feel: '四个人一间、有门，能关灯；白天也能躺着看书。' },
         { id: 'deluxe-sleeper', name: '高级软卧', mult: 2.8, feel: '两个人一间，带沙发和独立卫生间；车次很少，能买到算运气。' },
+        { id: 'scenic-train', name: '全景观光专列', mult: 3.6, feel: '全景天窗车厢配独立软卧包厢、观景餐车与餐吧，窗外整片山河缓缓向后铺开，在车上也能把长途过成假期。' },
       ]
-      : [
-        { id: 'second', name: '二等座', mult: 1, feel: '2+3 布局，小桌板；坐三四个小时会想站起来走两步。' },
-        { id: 'first', name: '一等座', mult: 1.6, feel: '2+2 布局，扶手更宽，前后能伸开腿；车厢安静一半。' },
-        { id: 'business', name: '商务座', mult: 3.5, feel: '能平躺的独立座舱，有人送餐；进站有专用通道和候车区，全程不排队。' },
-      ]),
+      : km >= 600
+        ? [
+          { id: 'second', name: '二等座', mult: 1, feel: '2+3 布局，小桌板；坐三四个小时会想站起来走两步。' },
+          { id: 'first', name: '一等座', mult: 1.6, feel: '2+2 布局，扶手更宽，前后能伸开腿；车厢安静一半。' },
+          { id: 'business', name: '商务座', mult: 3.5, feel: '能平躺的独立座舱，有人送餐；进站有专用通道和候车区，全程不排队。' },
+          { id: 'scenic-train', name: '全景观光专列', mult: 3.6, feel: '整面弧形全景观景窗配观景餐车与慢行包厢，窗外雪山、森林或旷野一路铺开，适合把赶路过成慢假期。' },
+        ]
+        : [
+          { id: 'second', name: '二等座', mult: 1, feel: '2+3 布局，小桌板；坐三四个小时会想站起来走两步。' },
+          { id: 'first', name: '一等座', mult: 1.6, feel: '2+2 布局，扶手更宽，前后能伸开腿；车厢安静一半。' },
+          { id: 'business', name: '商务座', mult: 3.5, feel: '能平躺的独立座舱，有人送餐；进站有专用通道和候车区，全程不排队。' },
+        ]),
   },
   {
     id: 'ship', name: '轮船', kmh: 28, overhead: 2.5, maxKm: 0, needs: 'port', cost: 4,
@@ -168,6 +182,20 @@ export const MODES: readonly TravelMode[] = [
 ];
 
 const BY_ID = new Map(MODES.map((m) => [m.id, m]));
+
+/** 按内河航线或远洋航线返回轮船舱位列表。 */
+export function shipGrades(km: number, inlandRiver = false): readonly SeatGrade[] {
+  if (!inlandRiver) return BY_ID.get('ship')?.grades?.(km) ?? [];
+  return km >= 300
+    ? [
+      { id: 'inside-cabin', name: '客轮内舱房', mult: 1, feel: '安静无窗的标准双床舱，能锁门睡觉洗热水澡，稳当省钱。' },
+      { id: 'river-cruise', name: '内河峡谷游轮', mult: 2.0, feel: '专跑江河峡谷航线的观景河轮，带江景露台、茶廊与观景餐厅，沿途缓缓穿过两岸青山与江岸灯火。' },
+    ]
+    : [
+      { id: 'ferry', name: '江河渡轮', mult: 1, feel: '普通江河客渡，客舱座椅加露天甲板，吹着江风看两岸慢慢退后。' },
+      { id: 'river-cruise', name: '内河观光游轮', mult: 1.8, feel: '双层观景内河游船，推开舱窗就能看两岸山影与城镇灯火，江风轻缓不颠簸。' },
+    ];
+}
 
 export function modeById(id: string): TravelMode | null {
   return BY_ID.get(id.trim().toLowerCase() as ModeId) ?? null;

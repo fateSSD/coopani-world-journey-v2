@@ -30,7 +30,7 @@ import { actionsPrompt } from './pet-vocab.ts';
 import { VersionCheck } from './version-check.ts';
 import { AMAP_KEY_NAME, IMAGE_KEY_NAME, adoptKey, readKey, type KeyPorts } from './secrets.ts';
 import {
-  rollLodging, rerollLodging, withHotel, lodgingLabel,
+  rollLodging, rerollLodging, withHotel, lodgingLabel, camperLodging,
   type Lodging, type LodgingWant,
 } from './plan/lodging.ts';
 import { HotelDirectory } from './geo/hotels.ts';
@@ -492,15 +492,19 @@ export const planMethods: Record<string, any> = {
       && this.st.lodging.stayKey === stayKey
       ? (this.st.lodging.value as unknown as Lodging)
       : null;
+    const isCamperMode = !override && !pinned && !this.plan?.lodging && Boolean(this.st.car?.camper);
     let base = override
       ?? pinned
       ?? this.plan?.lodging
       // 最后一个参数：出了国就换那一套房型词（「县城宾馆」不该出现在柏林）。
       // 最后两个参数：出了国就换那一套房型词；地形决定「山景/海景/湖景」能不能开。
-      ?? rollLodging(seededRandom(seed), this.isTight(), c.priceIdx, this.purseRich(),
-        c.country !== 'CN', terrainOf(c));
+      ?? (isCamperMode
+        ? camperLodging(c.priceIdx, c.country !== 'CN', terrainOf(c))
+        : rollLodging(seededRandom(seed), this.isTight(), c.priceIdx, this.purseRich(),
+          c.country !== 'CN', terrainOf(c)));
     /* 旧存档缺设施就补一次（见 healLodgingFacts）。补上就地用，也写回盘。 */
-    const heal = this.healLodgingFacts(base, c.id);
+    const isCamperLodging = base.kind === '房车营地露营过夜';
+    const heal = isCamperLodging ? { healed: false, lod: base } : this.healLodgingFacts(base, c.id);
     if (heal.healed) base = heal.lod;
     /*
      * **先看本地真数据，再退回联网查。**（2026-11-09）
@@ -513,10 +517,12 @@ export const planMethods: Record<string, any> = {
      * 用户已经被「名字猜档次」坑过两次（「汝阳轩源大酒店」二钻 92 块），
      * 所以有真数据时必须用真数据。
      */
-    const facts = factsFor(c.id);
+    const facts = isCamperLodging ? [] : factsFor(c.id);
     // 已经挂过真名的房型不必再查一次（同一个地方住几天就是同一家）。
-    const pois = base.name ? null : (facts.length ? facts : await this.hotels.hotels(c));
-    const lodging = withHotel(base, pois, seededRandom(`${seed}|hotel`), c.priceIdx, c.country !== 'CN');
+    const pois = (isCamperLodging || base.name) ? null : (facts.length ? facts : await this.hotels.hotels(c));
+    const lodging = isCamperLodging
+      ? base
+      : withHotel(base, pois, seededRandom(`${seed}|hotel`), c.priceIdx, c.country !== 'CN');
     /*
      * 定下来就记住。`override` 是用户明确要求换（`journey_lodging`），要覆盖旧的。
      * 只有这两种情况写盘 —— 普通重算不写，免得每次重建都落一次文件。
@@ -926,7 +932,12 @@ export const planMethods: Record<string, any> = {
     const clearPending = () => {
       if (this.pendingBeats.get(senderKey) === key) this.pendingBeats.delete(senderKey);
     };
-    await this.push('journey.beat', senderKey, text, trigger, undefined, {
+    const actSpot = last.kind === 'activity' ? (last.spot ?? spotFromBeat(last.what)) : '';
+    const actHour = Math.round(localNow * 60) / 60;
+    const offerTail = last.kind === 'activity' && typeof this.autoPhotoOfferLine === 'function'
+      ? this.autoPhotoOfferLine(city, actHour, dateKey, actSpot, plan.weather, false, '')
+      : '';
+    await this.push('journey.beat', senderKey, text + offerTail, trigger, undefined, {
       tags: ['snapshot'],
       deferredRender: () => {
         if (this.st.lastBeatKey !== key || this.st.phase !== 'staying' || !this.plan) {
@@ -946,7 +957,20 @@ export const planMethods: Record<string, any> = {
           clearPending();
           return null;
         }
-        return beatText(liveCity, this.plan, liveBeat.kind, liveBeat.at, liveBeat.what, liveBeat.pilgrim) + skippedNote;
+        const baseText = beatText(liveCity, this.plan, liveBeat.kind, liveBeat.at, liveBeat.what, liveBeat.pilgrim) + skippedNote;
+        if (liveBeat.kind !== 'activity' || typeof this.autoPhotoOfferLine !== 'function') return baseText;
+        const liveSpot = liveBeat.spot ?? spotFromBeat(liveBeat.what);
+        const liveMoment = localMoment(this.worldNow(), liveCity.tz);
+        const liveOffer = this.autoPhotoOfferLine(
+          liveCity,
+          Math.round(liveMoment.decimal * 60) / 60,
+          liveMoment.dateKey,
+          liveSpot,
+          this.plan.weather,
+          false,
+          '',
+        );
+        return baseText + liveOffer;
       },
     });
 
@@ -992,12 +1016,13 @@ export const planMethods: Record<string, any> = {
     // 拍一张：只在「出去逛」这个节点，一天一次。**不 await** ——
     // 生图要十几秒，等它会把这个巡检卡住，后面该推的节点全被推迟。
     if (last.kind === 'activity') {
-      void this.maybePhoto(
-        city, Math.round(localNow), dateKey,
-        // 地名优先取 beat 上带着的；老状态里没有这个字段时再退回从文字里反解。
-        last.spot ?? spotFromBeat(last.what),
-        plan.weather,
-      );
+      const spotArg = last.spot ?? spotFromBeat(last.what);
+      const hrArg = Math.round(localNow * 60) / 60;
+      if (typeof this.triggerAutoPhoto === 'function') {
+        this.triggerAutoPhoto(city, hrArg, dateKey, spotArg, plan.weather);
+      } else {
+        void this.maybePhoto(city, hrArg, dateKey, spotArg, plan.weather);
+      }
     }
   },
 
@@ -1526,7 +1551,8 @@ export const planMethods: Record<string, any> = {
      * 而用户此刻正在问「去酒吧喝一杯」，等不到那时候。
      * 补完写回 `plan` 与 state，下一次就不用再查。
      */
-    const heal = this.healLodgingFacts(this.plan.lodging, here.id);
+    const isCamperLodging = this.plan.lodging.kind === '房车营地露营过夜';
+    const heal = isCamperLodging ? { healed: false, lod: this.plan.lodging } : this.healLodgingFacts(this.plan.lodging, here.id);
     if (heal.healed) {
       this.plan = { ...this.plan, lodging: heal.lod };
       if (this.st.lodging) {
@@ -1558,12 +1584,12 @@ export const planMethods: Record<string, any> = {
      */
     const month = Number(localMoment(this.worldNow(), here.tz).dateKey.slice(5, 7));
     const nightLine = playLine(here.id) || (nightIn(here, month) ?? '');
-    const opts = hotelNightOptions(lod.tier, lod.amen, lod.around, nightLine);
+    const opts = hotelNightOptions(lod.tier, lod.amen, lod.around, nightLine, lod.kind);
     const want = whatRaw.trim();
     const hit = opts.find((o) => o.what === want) ?? opts.find((o) => o.label.includes(want));
     if (!hit) {
       const list = opts.map((o) => (o.price > 0 ? `${o.label}（${o.price} 块）` : o.label)).join('、');
-      const where = lod.name ? `${lod.name}没这个` : '这儿没这个';
+      const where = lod.name ? `${lod.name}没这个` : (isCamperLodging ? '房车营地没这个' : '这儿没这个');
       /*
        * 这里是整个功能的**边界**：查过没有就是没有。
        * 编一个「在泳池里游了二十分钟」，用户上携程一看没泳池 —— 第三次返工。
@@ -1597,6 +1623,15 @@ export const planMethods: Record<string, any> = {
       this.queueLifeEffect('酒店泡澡', { vitalsDelta: { clean: 20 } });
     } else if (hit.what === 'gym') {
       this.queueLifeEffect('酒店健身房', { vitalsDelta: { fun: 10, energy: -8, clean: -8 }, fitnessDelta: 2 });
+    } else if (hit.what === 'stargaze') {
+      this.queueLifeEffect('营地看星空', {
+        vitalsDelta: { fun: 16 },
+        moodlet: { text: '坐在房车营地外看了一会儿夜空，风很清静', kind: 'good', hours: 4 },
+      });
+    } else if (hit.what === 'cook') {
+      this.queueLifeEffect('房车煮面', { vitalsDelta: { food: 22, fun: 8 } });
+    } else if (hit.what === 'campwalk') {
+      this.queueLifeEffect('营地散步', { vitalsDelta: { fun: 12 }, fitnessDelta: 0.5 });
     } else {
       this.queueLifeEffect(`酒店夜间：${hit.label}`, { vitalsDelta: { fun: 12 } });
     }

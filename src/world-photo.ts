@@ -68,7 +68,14 @@ import {
   pickPosters, posterPrompt, yearlyHtml, type MonthlyPoster, type MonthlyPhoto, type MonthlyEntry,
   type YearlyTaste,
 } from './monthly.ts';
-import { shootPhoto, photoPrompt, photoTitle, spotFromBeat, skyOf, nightNegative, shotIsNight, imagePixelSize, sniffImage, type SkyView, type PhotoSubject } from './photo.ts';
+import {
+  shootPhoto, photoPrompt, photoTitle, spotFromBeat, skyOf, nightNegative, shotIsNight,
+  imagePixelSize, sniffImage, type SkyView, type PhotoSubject,
+} from './photo.ts';
+import {
+  buildPhotoFacts, compileDirectorPrompt, buildCognitionPromptBrief,
+  sanitizeDirectorText, type PhotoFacts,
+} from './photo-facts.ts';
 import { scalePng } from './png-crop.ts';
 import { shootComfy, parseSize } from './comfy.ts';
 import { resolveImageBackend, presetDefaults } from './image-backend.ts';
@@ -438,7 +445,7 @@ export const photoMethods: Record<string, any> = {
       : city;
     // 时区跟着拍摄地走 —— 跨时区的时候，出发地和目的地的「下午」不是一个下午。
     const moment = localMoment(this.worldNow(), target.tz);
-    const hour = Math.round(moment.decimal);
+    const hour = Math.round(moment.decimal * 60) / 60;
     let spot = onRoad ? '' : this.spotNow(moment.decimal);
     if (!onRoad && this.st.phase === 'home') {
       const lifeAct = this.readLifeActivityNow();
@@ -453,7 +460,11 @@ export const photoMethods: Record<string, any> = {
       dateKey: moment.dateKey,
       spot,
       onRoad,
-      mode: onRoad ? modeById(this.st.leg!.modeId).name : '',
+      mode: onRoad
+        ? ((['theme-cruise', 'ocean-balcony', 'river-cruise', 'scenic-train', 'campervan'].includes(this.st.leg!.seatId ?? '')
+          ? this.st.leg!.seat
+          : '') || modeById(this.st.leg!.modeId).name)
+        : '',
     };
   },
 
@@ -471,6 +482,259 @@ export const photoMethods: Record<string, any> = {
    * **给模型看的一句话** —— 没有标题，她只能说「拍了张照片」，或者更糟：
    * 自己编一个画面。标题是那句话里唯一能说的事实。
    */
+  /** 按城市与日期选取匹配天气预报（停留走当天 plan，在家走当日 homeWeather）。 */
+  weatherForCity(cityId: string, dateKey: string): Forecast | null {
+    if (this.plan?.cityId === cityId && this.plan.dateKey === dateKey && this.plan.weather) {
+      return this.plan.weather;
+    }
+    if (this.homeWeather?.cityId === cityId && this.homeWeather.dateKey === dateKey) {
+      return this.homeWeather.w;
+    }
+    return null;
+  },
+
+  /** 非手动补拍时的通用准入闸：配置、拍照时段、冷却与每日去重（事件入口与后台生图共用）。 */
+  autoPhotoGate(
+    city: City,
+    hour: number,
+    dateKey: string,
+    onRoad: boolean,
+  ):
+    | { ok: true; sceneId: string; lifePolicy: { policy: 'off' | 'milestone' | 'active'; cooldownMin: number } | null }
+    | { ok: false; reason: string } {
+    const cfgProblem = this.photoConfigProblem();
+    if (cfgProblem) return { ok: false, reason: cfgProblem };
+    if (hour < 7 || hour >= 20) return { ok: false, reason: `她那边 ${Math.floor(hour)} 点，不在拍照时段（7–20）` };
+    const sceneId = onRoad ? 'road' : city.id;
+    const lifePolicy = this.readLifeImagePolicy();
+    if (lifePolicy?.policy === 'off') {
+      return { ok: false, reason: '留影策略已设为静默' };
+    }
+    if (lifePolicy && lifePolicy.cooldownMin > 0) {
+      const latestAt = this.photos.list()[0]?.at;
+      const lastMs = latestAt ? Date.parse(latestAt) : NaN;
+      const nowMs = this.realNow().getTime();
+      if (Number.isFinite(lastMs) && nowMs - lastMs < lifePolicy.cooldownMin * 60_000) {
+        return { ok: false, reason: `距上一张照片未满 ${lifePolicy.cooldownMin} 分钟冷却` };
+      }
+    }
+    const allowMultiPerDay = lifePolicy?.policy === 'active' && lifePolicy.cooldownMin > 0;
+    if (!allowMultiPerDay && this.photos.has(dateKey, sceneId)) {
+      return { ok: false, reason: onRoad ? '今天在路上已经拍过' : '这一天这个城市已经拍过' };
+    }
+    return { ok: true, sceneId, lifePolicy };
+  },
+
+  /** 当前在场同伴标签（用于防止生图编出不存在的路人或漏掉真实同伴）。 */
+  photoCompanionLabel(cityId: string): string {
+    const mates = this.st.pledge?.arrivedAt && this.st.pledge.cityId === cityId
+      ? namesIn(this.st.pledge).join('、')
+      : '';
+    if (mates && this.cfg.withUser) return `${mates}、他（叙事同行）`;
+    return mates || (this.cfg.withUser ? '他（叙事同行）' : '');
+  },
+
+  /** 汇总当前拍照场景的不可违背硬事实包（方案 A + B 共用）。 */
+  buildSceneFacts(opts: {
+    city: City;
+    hour: number;
+    dateKey: string;
+    spot: string;
+    weather: Forecast | null;
+    onRoad: boolean;
+    mode: string;
+    destCity?: string;
+    view: 'ground' | 'sky';
+    subject: PhotoSubject;
+    doing: string;
+    dish?: string;
+    castOn: boolean;
+    personRefActive: boolean;
+    libraryHint: string;
+    style: string;
+  }): PhotoFacts {
+    const month = Number(opts.dateKey.slice(5, 7)) || 1;
+    const day = Number(opts.dateKey.slice(8, 10)) || 1;
+    return buildPhotoFacts({
+      city: opts.city,
+      hour: opts.hour,
+      month,
+      day,
+      spot: opts.spot,
+      onRoad: opts.onRoad,
+      mode: opts.mode,
+      destCity: opts.destCity ?? (opts.onRoad && this.st.leg ? this.cityOrNull(this.st.leg.toId)?.name : undefined),
+      view: opts.view,
+      subject: opts.subject,
+      weather: opts.weather,
+      feel: opts.onRoad ? '' : bodyFeeling(opts.city, this.resolveHome().city),
+      dish: opts.dish,
+      doing: opts.doing,
+      castOn: opts.castOn,
+      cast: this.cfg.imageCast,
+      personRefActive: opts.personRefActive,
+      libraryHint: opts.libraryHint,
+      style: opts.style,
+      lang: this.cfg.imagePromptLang,
+      companion: photoMethods.photoCompanionLabel.call(this, opts.city.id),
+    });
+  },
+
+  /**
+   * 方案 B：若宿主 Persona 提供了后台认知能力（`WorldHost.cognition`），
+   * 将客观硬事实交给内核大模型实时写出画面提示词；不可用、拒答或超时时返回 null 退回模板兜底。
+   */
+  async draftPromptWithCognition(
+    facts: PhotoFacts,
+    fallbackPrompt: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    const cog = this.host?.cognition;
+    if (!cog || signal?.aborted) return null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let onAbort: (() => void) | null = null;
+    try {
+      const brief = buildCognitionPromptBrief(facts, fallbackPrompt);
+      const result = await Promise.race([
+        cog.request({ brief, hint: { rounds: 1 } }),
+        new Promise<{ error: string }>((resolve) => {
+          timer = setTimeout(() => resolve({ error: 'cognition prompt timeout' }), 25_000);
+          if (signal) {
+            onAbort = () => resolve({ error: 'aborted' });
+            signal.addEventListener('abort', onAbort, { once: true });
+          }
+        }),
+      ]);
+      if (signal?.aborted) return null;
+      if ('error' in result) {
+        this.log?.info(`后台 cognition 写生图词未采用（退回规则模板）：${result.error}`);
+        return null;
+      }
+      const cleaned = sanitizeDirectorText(result.text);
+      if (!cleaned) {
+        this.log?.info('后台 cognition 返回空或无效内容，退回规则模板。');
+        return null;
+      }
+      return compileDirectorPrompt(cleaned, facts);
+    } catch (e) {
+      this.log?.warn(`后台 cognition 写生图词异常（退回规则模板）：${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    }
+  },
+
+  /** 给 `nowSummary()` 使用的一行实时拍照硬事实（未配生图时不输出，零上下文占用）。 */
+  currentNowPhotoTag(): string {
+    if (this.photoConfigProblem()) return '';
+    const scene = this.photoSceneNow();
+    if (!scene.ok) return '';
+    const sceneId = scene.onRoad ? 'road' : scene.city.id;
+    const castOn = !!this.cfg.imageCast
+      && seededRandom(`${scene.dateKey}:${sceneId}:cast`)() <= this.cfg.imageCastChance;
+    const weather = this.weatherForCity(scene.city.id, scene.dateKey);
+    const doing = this.photoDoingNow(scene.city, scene.hour);
+    const backend = resolveImageBackend(this.cfg);
+    const canSendRefs = backend.protocol !== 'comfyui' && this.refsAllowedBackend(backend);
+    let personRefActive = false;
+    if (castOn && this.cfg.imageUseRefs && canSendRefs) {
+      const cacheKey = `${scene.dateKey}|${sceneId}|${scene.spot}|${this.cfg.imageCast ?? ''}|${this.cfg.imageRefs ?? ''}|${doing}|${this.cfg.libraryDir ?? ''}`;
+      const holder = this as { _nowPersonRefCache?: { key: string; at: number; active: boolean } };
+      const nowMs = (this.realNow ? this.realNow() : new Date()).getTime();
+      if (holder._nowPersonRefCache && holder._nowPersonRefCache.key === cacheKey && nowMs - holder._nowPersonRefCache.at < 30_000) {
+        personRefActive = holder._nowPersonRefCache.active;
+      } else {
+        const refPaths = this.collectRefPaths('ground', castOn, scene.spot, String(this.cfg.imageCast ?? ''), doing);
+        personRefActive = refPaths.hasPersonRef && refPaths.paths.length > 0;
+        holder._nowPersonRefCache = { key: cacheKey, at: nowMs, active: personRefActive };
+      }
+    }
+    const shootStyle = castOn && this.cfg.imageStyleCast ? this.cfg.imageStyleCast : this.cfg.imageStyle;
+    const facts = this.buildSceneFacts({
+      city: scene.city,
+      hour: scene.hour,
+      dateKey: scene.dateKey,
+      spot: scene.spot,
+      weather,
+      onRoad: scene.onRoad,
+      mode: scene.mode,
+      view: 'ground',
+      subject: 'ground',
+      doing,
+      castOn,
+      personRefActive,
+      libraryHint: '',
+      style: shootStyle,
+    });
+    return facts.nowTag;
+  },
+
+  /**
+   * 方案 A：当前在 `imageDirector === 'auto'` 且宿主暂未开放后台 `cognition` 时，
+   * 在到达景点（`activity`）与长途中段（`road`）事件正文末尾附上紧凑的可留影实况，
+   * 由主会话大肥鱼决定是否亲自写 `prompt` 调 `journey_photo`；已有图片或无资格时返回空串。
+   */
+  autoPhotoOfferLine(
+    city: City,
+    hour: number,
+    dateKey: string,
+    spot: string,
+    weather: Forecast | null,
+    onRoad = false,
+    mode = '',
+  ): string {
+    if (this.cfg.imageDirector === 'template' || this.host?.cognition || this.shooting) return '';
+    const gate = this.autoPhotoGate(city, hour, dateKey, onRoad);
+    if (!gate.ok) return '';
+    const castOn = !!this.cfg.imageCast
+      && seededRandom(`${dateKey}:${gate.sceneId}:cast`)() <= this.cfg.imageCastChance;
+    const doing = this.photoDoingNow(city, hour);
+    const refPaths = this.cfg.imageUseRefs
+      ? this.collectRefPaths('ground', castOn, spot, String(this.cfg.imageCast ?? ''), doing)
+      : { paths: [] as string[], hasPersonRef: false };
+    const backend = resolveImageBackend(this.cfg);
+    const canSendRefs = backend.protocol !== 'comfyui' && this.refsAllowedBackend(backend);
+    const personRefActive = castOn && canSendRefs && refPaths.hasPersonRef && refPaths.paths.length > 0;
+    const shootStyle = castOn && this.cfg.imageStyleCast ? this.cfg.imageStyleCast : this.cfg.imageStyle;
+    const facts = this.buildSceneFacts({
+      city,
+      hour,
+      dateKey,
+      spot,
+      weather,
+      onRoad,
+      mode,
+      view: 'ground',
+      subject: 'ground',
+      doing,
+      castOn,
+      personRefActive,
+      libraryHint: this.readLifeLibraryHint('ground', castOn, onRoad ? '' : spot, castOn ? this.cfg.imageCast : '', doing, personRefActive),
+      style: shootStyle,
+    });
+    return `\n（此刻留影实况：${facts.summaryLine}。）`;
+  },
+
+  /**
+   * 旅途自动拍照分流入口：
+   * - `imageDirector === 'template'` 或宿主已实现 `cognition`（方案 B）→ 直接走 `maybePhoto` 后台生图；
+   * - `imageDirector === 'auto'` 且宿主尚无 `cognition`（方案 A）→ 不背着主会话瞎出图，机会已由事件附给大肥鱼。
+   */
+  triggerAutoPhoto(
+    city: City,
+    hour: number,
+    dateKey: string,
+    spot: string,
+    weather: Forecast | null,
+    onRoad = false,
+    mode = '',
+  ): void {
+    if (this.cfg.imageDirector === 'template' || this.host?.cognition) {
+      void this.maybePhoto(city, hour, dateKey, spot, weather, false, onRoad, mode);
+    }
+  },
+
   async maybePhoto(
     city: City, hour: number, dateKey: string, spot: string, weather: Forecast | null,
     replace = false,
@@ -517,6 +781,8 @@ export const photoMethods: Record<string, any> = {
     },
     /** 外部取消信号（如工具被打断时中止请求）。 */
     signal?: AbortSignal,
+    /** 主会话大肥鱼自写的完整画面提示词（方案 A，可选；传了则跳过 3415 行模板拼接）。 */
+    authoredPrompt = '',
   ): Promise<{ ok: boolean; reason?: string; title?: string; sky?: SkyView }> {
     /*
      * 跳过时给一句人话。**手动（replace）记 info，自动只记 debug** ——
@@ -542,40 +808,13 @@ export const photoMethods: Record<string, any> = {
      *
      * 判据：**凡是「要等 / 要花钱 / 要写盘」的分支，能力判断一律提到最前。**
      */
-    const cfgProblem = this.photoConfigProblem();
-    if (cfgProblem) return skip(cfgProblem);
-    /*
-     * 时间窗只管**自动**那条：她半夜不该自己掏相机。
-     *
-     * 2026-11-01 的反馈就卡在这一行 —— 用户点了「现在补一张」，可她当地过了二十点，
-     * 于是被挡掉，一声不响。手动是明确意图，几点都该拍。
-     */
-    if (!replace && (hour < 7 || hour >= 20)) return skip(`她那边 ${hour} 点，不在拍照时段（7–20）`);
-    /*
-     * 「一天一张」是**自动**那条路的成本闸。手动补拍是明确意图，不该被它挡住 ——
-     * 挡住的表现是点了没反应，比拍一张贵得多。所以 replace=true 时跳过判重，
-     * 成功之后把当天那条旧记录摘掉。
-     */
-    /*
-     * 路上拍的那张按 `road` 这个伪城市记，每天最多一张。
-     * 不这么分的话，「今天在城里逛过」会把「今天路上那张」挡掉。
-     */
     const sceneId = onRoad ? 'road' : city.id;
-    const lifePolicy = !replace ? this.readLifeImagePolicy() : null;
-    if (!replace && lifePolicy?.policy === 'off') {
-      return skip('留影策略已设为静默');
-    }
-    if (!replace && lifePolicy && lifePolicy.cooldownMin > 0) {
-      const latestAt = this.photos.list()[0]?.at;
-      const lastMs = latestAt ? Date.parse(latestAt) : NaN;
-      const nowMs = this.realNow().getTime();
-      if (Number.isFinite(lastMs) && nowMs - lastMs < lifePolicy.cooldownMin * 60_000) {
-        return skip(`距上一张照片未满 ${lifePolicy.cooldownMin} 分钟冷却`);
-      }
-    }
-    const allowMultiPerDay = lifePolicy?.policy === 'active' && lifePolicy.cooldownMin > 0;
-    if (!replace && !allowMultiPerDay && this.photos.has(dateKey, sceneId)) {
-      return skip(onRoad ? '今天在路上已经拍过' : '这一天这个城市已经拍过');
+    if (replace) {
+      const cfgProblem = this.photoConfigProblem();
+      if (cfgProblem) return skip(cfgProblem);
+    } else {
+      const gate = photoMethods.autoPhotoGate.call(this, city, hour, dateKey, onRoad);
+      if (!gate.ok) return skip(gate.reason);
     }
 
     // 标题要在 try 外面算好：catch 里要用它拼日志，写在里面就出作用域了。
@@ -699,78 +938,81 @@ export const photoMethods: Record<string, any> = {
        * 这样「风景写实 + 自拍二次元」才成立 —— 风格和有没有人本来就是两件事。
        */
       const shootStyle = castOn && this.cfg.imageStyleCast ? this.cfg.imageStyleCast : this.cfg.imageStyle;
-      const prompt = override?.prompt.trim() || photoPrompt({
+      const doingNow = typeof this.photoDoingNow === 'function' ? this.photoDoingNow(city, hour) : '';
+      const dishNow = subject === 'food'
+        ? pickFood(city, hour < 10 ? 0 : hour < 15 ? 1 : 2,
+          localMoment(this.worldNow(), city.tz).dateKey, typeof this.tasteForPlan === 'function' ? this.tasteForPlan() : undefined)
+        : undefined;
+      const libHintNow = typeof this.readLifeLibraryHint === 'function'
+        ? this.readLifeLibraryHint(
+          subject,
+          castOn,
+          onRoad ? '' : spot,
+          castOn ? this.cfg.imageCast : '',
+          doingNow,
+          personRefActive,
+        )
+        : '';
+      const destCity = onRoad && this.st.leg ? this.cityOrNull(this.st.leg.toId)?.name : undefined;
+      const facts = photoMethods.buildSceneFacts.call(this, {
+        city,
+        hour,
+        dateKey,
+        spot,
+        weather,
+        onRoad,
+        mode,
+        destCity,
+        view,
+        subject,
+        doing: doingNow,
+        dish: dishNow,
+        castOn,
+        personRefActive,
+        libraryHint: libHintNow,
+        style: shootStyle,
+      });
+      const fallbackPrompt = photoPrompt({
         city: city.name,
         // 视觉锚点按 id 查（名字会重，id 唯一）
         cityId: city.id,
         spot: onRoad ? undefined : spot,
         onRoad,
         mode,
+        destCity,
         hour,
-        weather: weather?.dayWeather,
-        /*
-         * 体感参与提示词：高原和湿热拍出来的调子不一样，那是她眼睛看到的东西。
-         *
-         * **路上那张不传**（2026-11-17，读者实测指出）。路上 `this.plan` 是 null，
-         * `weather` 跟着是 null —— 于是 1.10.1 那个「有天气就以天气为准」的修法
-         * 在路上一律走 else 分支，照样把「冷得不像话」拼成「画面能看出这一点」。
-         * 而他报的那张「哈尔滨一带的路上」**正是路上自动拍的**。
-         *
-         * 两个理由不传，不只是为了绕开：
-         * ① 路上那张的 city 是「XX 一带」，不是真城 —— 按那座城算体感本来就不准；
-         * ② 没有天气数据时再拼体感，等于让模型自己编天气。
-         */
+        weather: facts.weatherText || weather?.dayWeather,
         feel: onRoad ? '' : bodyFeeling(city, this.resolveHome().city),
-        // 风格交给用户：接本地模型的人要能盖掉「胶片质感」这种写实指令。
         style: shootStyle,
-        /*
-         * 极简提示词（2026-11-11）。用户沃兔实测「只写地名和景点反而对」，
-         * 这一格把这套开关接到那条路上。默认关，见 `imageMinimal` 的定义。
-         */
         minimal: this.cfg.imageMinimal,
-        /*
-         * 有参考图时**不写人物描述**：两套外观同时给，模型会各听一半。
-         * 外观交给图，提示词只留「画面里只有这一个人」这条存在性约束。
-         */
         cast: castOn && !personRefActive ? this.cfg.imageCast : '',
         ...(castOn && personRefActive ? { castFromRef: true } : {}),
-        // 抬头还是看脚下。天空照仍受当地时刻和天气约束。
         view,
-        /* 她自己写的那一句（2026-11-10）。空 = 不出现，老行为不变。 */
         describe,
-        /*
-         * 拍什么（2026-11-06）。用户说「拍晚饭」时，这里就不再是风景。
-         * 美食的具体菜名由 `pickFood` 按城市和时段挑 —— 是当地此刻会吃的东西。
-         */
         subject,
-        /* 她自己补的取景（2026-11-09）。空 = 这一句根本不出现，老行为不变。 */
         focus,
-        /*
-         * 菜名按「城市 + 日期 + 餐次」抽签，和作息表里写的**同一套**算出来 ——
-         * 不然照片上是担担面、正文写的是钟水饺，两个人对不上。
-         */
-        dish: subject === 'food'
-          ? pickFood(city, hour < 10 ? 0 : hour < 15 ? 1 : 2,
-              localMoment(this.worldNow(), city.tz).dateKey, this.tasteForPlan())
-          : undefined,
-        /*
-         * 她这一刻在做什么（2026-11-08 Mr.Q：「把鱼看到的说到的直接写入图片提示词」）。
-         *
-         * 取日程里**已经过掉的那一格**，不是她现编的一句 ——
-         * 照片对不对得上，靠的就是「文字说的」和「画面画的」是同一件事。
-         */
-        doing: this.photoDoingNow(city, hour),
-        libraryHint: this.readLifeLibraryHint(
-          subject,
-          castOn,
-          onRoad ? '' : spot,
-          castOn ? this.cfg.imageCast : '',
-          this.photoDoingNow(city, hour),
-        ),
+        dish: dishNow,
+        doing: doingNow,
+        libraryHint: libHintNow,
         cityIdx: city.priceIdx,
         month,
         day,
       });
+      let prompt = override?.prompt.trim() ?? '';
+      if (!prompt && authoredPrompt.trim().length >= 6) {
+        prompt = compileDirectorPrompt(authoredPrompt, facts);
+      }
+      if (!prompt) {
+        prompt = this.cfg.imageDirector === 'auto'
+          ? ((await photoMethods.draftPromptWithCognition.call(this, facts, fallbackPrompt, signal)) ?? fallbackPrompt)
+          : fallbackPrompt;
+      }
+      if (isStale()) {
+        this.log?.info(signal?.aborted
+          ? '生成提示词期间请求已被取消，放弃调用生图接口。'
+          : '生成提示词期间相册已清空或触发新请求，放弃调用生图接口。');
+        return { ok: false, reason: signal?.aborted ? '生图已取消' : '生图期间相册已清空或变更，结果已丢弃' };
+      }
       /*
        * 分派只有这一处，是因为入口只有这一处。
        *
@@ -815,8 +1057,9 @@ export const photoMethods: Record<string, any> = {
       const nightShot = shotIsNight({
         repaint: !!override,
         lat: city.lat ?? 0,
-        month: Number(dateKey.slice(5, 7)) || 1,
+        month,
         hour,
+        day,
         /*
          * **经度和时区要一起传（2026-11-12 实图之后）。**
          *
@@ -1074,7 +1317,7 @@ export const photoMethods: Record<string, any> = {
         ...(view === 'sky'
           ? {
               sky: skyOf(hour, weather?.dayWeather ?? '', city.lat, month, city.lon, city.tz,
-                !onRoad && (spot ? spotProfile(spot).setting === 'urban' : true)),
+                !onRoad && (spot ? spotProfile(spot).setting === 'urban' : true), day),
             }
           : {}),
       };
@@ -1440,19 +1683,22 @@ export const photoMethods: Record<string, any> = {
     spot = '',
     castHint = '',
     doing = '',
+    skipCharacter = false,
   ): string {
     if (subject === 'sky') return '';
     try {
       const pack = this.libraryPack();
       if (!pack) return '';
       const parts: string[] = [];
-      if (castOn) {
+      if (castOn && !skipCharacter) {
         const ch = matchLibraryEntry(
           loadLibraryCategory(pack.root, 'characters'),
           [castHint, this.opts.botName ?? ''],
           true,
         );
         if (ch) parts.push(ch.appearance);
+      }
+      if (castOn) {
         const out = matchLibraryEntry(
           loadLibraryCategory(pack.root, 'outfits'),
           [pack.outfitHint, doing, castHint],
@@ -1741,6 +1987,7 @@ export const photoMethods: Record<string, any> = {
     focus = '',
     describe = '',
     signal?: AbortSignal,
+    prompt = '',
   ): Promise<{ text: string }> {
     const cfgProblem = this.photoConfigProblem();
     if (cfgProblem) {
@@ -1753,7 +2000,7 @@ export const photoMethods: Record<string, any> = {
 
     const res = await this.maybePhoto(
       scene.city, scene.hour, scene.dateKey, scene.spot,
-      this.plan?.weather ?? null,
+      this.weatherForCity(scene.city.id, scene.dateKey),
       true,
       scene.onRoad,
       scene.mode,
@@ -1763,10 +2010,11 @@ export const photoMethods: Record<string, any> = {
       describe,
       undefined,
       signal,
+      prompt,
     );
 
     if (res.ok) {
-      const hour = scene.hour;
+      const hour = Math.floor(scene.hour);
       const seesImage = Boolean(this.host?.modelFacts?.accepts?.('image/png'));
       const noHallucinate = seesImage
         ? '别描述画面里没看清的细节（你只能按真正看到的画面说）'

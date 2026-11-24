@@ -357,6 +357,15 @@ export interface JourneyConfigSection extends WorldSection {
    */
   imagePromptLang: 'en' | 'zh';
   /**
+   * 自动拍照谁来写画面词（方案 A + 方案 B）。
+   *
+   * - `template`（默认·后台直出）：到达景点或长途中段由插件内置规则在后台稳出图，
+   *   挂机不漏拍；聊天时她仍可随时自己写完整 `prompt` 调 `journey_photo` 掌镜或重拍。
+   * - `auto`（内核主导）：有宿主后台认知 `cognition` 时由内核在后台写词直出；
+   *   若宿主暂未开放 `cognition`，只在到达景点或长途中段提醒主对话，由她亲自决定是否拍。
+   */
+  imageDirector: 'auto' | 'template';
+  /**
    * 面板底部「说两句」那一栏发给谁。**空 = 整块不显示。**
    *
    * 默认是作者自己的地址：这个扩展就是给谁用、反馈就发给谁，
@@ -443,6 +452,8 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   imageModel: '',
   /* 默认英文 = 老行为，一个字节都不变。中文系的本地模型由用户自己切到 `zh`。 */
   imagePromptLang: 'en',
+  /* 默认后台直出（template），保住挂机自动出图不漏拍；宿主接通 cognition 后再切换 auto。 */
+  imageDirector: 'template',
   /*
    * 作者本人收反馈的地址。写成字面量而不是读 package.json 的 author 字段：
    * `author` 里是名字不是邮箱，而这里要的就是一个能发信的地方。
@@ -536,12 +547,14 @@ export function journeyConfigGroups(): ConfigGroup[] {
           'worlds.journey.withUser': {
             type: 'boolean',
             title: '让你跟着一块走',
-            description: '打开后她说「我们」、日记里提到你。只是叙事上的同行，她不会因此知道你在干什么。',
+            description: '打开后她会在聊天与旅行日记里把你当同行者、自然说「我们」，旅途中热切换立即生效。只是叙事上的同行，她不会因此知道你现实里在干什么。',
+            'x-hot': true,
           },
           'worlds.journey.moneyEnabled': {
             type: 'boolean',
             title: '记花销',
             description: '打开才累计交通、房费、三餐。关着一分不记，也不会提钱。',
+            'x-hot': true,
           },
           'worlds.journey.hasLicense': {
             type: 'boolean',
@@ -551,9 +564,10 @@ export function journeyConfigGroups(): ConfigGroup[] {
           'worlds.journey.payFromLife': {
             type: 'boolean',
             title: '旅行花她的钱',
-            description: '打开（默认）= 路费房费每笔从她那本账里扣，想去远处就得先赚出那笔钱。'
-              + '关掉 = 这趟你请：不算进她的钱包，「这趟花了多少」照记。'
+            description: '打开（默认）= 路费房费每笔从她在「模拟鱼生」的钱包里扣，想去远处就得先赚出那笔钱。'
+              + '关掉 = 这趟你请：绝不扣她的钱包，也不拿她的余额卡预算，面板会标成你请客照记花销。'
               + '要装了「模拟鱼生」才生效；没装就走这里自己的预算。',
+            'x-hot': true,
           },
           'worlds.journey.budget': {
             type: 'integer',
@@ -663,6 +677,15 @@ export function journeyConfigGroups(): ConfigGroup[] {
               + '不确定就保持英文。',
             enum: ['en', 'zh'],
             default: 'en',
+          },
+          'worlds.journey.imageDirector': {
+            type: 'string',
+            title: '自动拍照方式',
+            description: '到达景点或长途途中自动留影时谁来构思画面。'
+              + '后台直出（template，默认）：到点直接由插件内置规则静默出图，挂机不漏拍；聊天时她仍可随时自写 prompt 重拍或另拍。'
+              + '内核主导（auto）：宿主支持后台认知时由内核直接写词出图；暂不支持时只在到达景点或长途中段提醒主对话，由她亲自决定是否调 journey_photo（挂机不聊天时可能不出图）。',
+            enum: ['template', 'auto'],
+            default: 'template',
           },
         },
       },

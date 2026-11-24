@@ -33,6 +33,7 @@ const TEXT = {
     tripDays: '第 {n} 天',
     visited: '去过 {n} 个地方',
     spent: '花销 {n}',
+    spentTreat: '你请客 {n}（不扣她钱包）',
     budgetLeft: '预算还剩 {n}',
     diary: '日记 {n} 天',
     working: '打工',
@@ -248,6 +249,7 @@ const TEXT = {
     tripDays: 'Day {n}',
     visited: '{n} places visited',
     spent: 'spent {n}',
+    spentTreat: 'on you {n}',
     budgetLeft: '{n} of budget left',
     diary: '{n} diary days',
     working: 'Working',
@@ -1297,7 +1299,7 @@ export default {
           if (s.trip.moneyOn) {
             bits.push(s.trip.budget > 0
               ? fmt(T.budgetLeft, Math.max(0, s.trip.budget - s.trip.spent))
-              : fmt(T.spent, s.trip.spent));
+              : fmt(s.trip.payFromLife === false ? T.spentTreat : T.spent, s.trip.spent));
           }
           bits.push(fmt(T.diary, s.diary.days));
           foot.append(el('p', null, bits.join(' · ')));

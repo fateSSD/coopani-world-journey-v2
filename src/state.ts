@@ -357,7 +357,7 @@ export interface TripState {
    * 项目用 tsx 直接跑 TS，不做类型检查。2026-11-07 加租车分档时才发现，
    * 补上顺便把 `tier` 也定死，省得以后又靠猜。
    */
-  car: { fuel: 'oil' | 'ev'; days: number; km: number; tier?: CarTier } | null;
+  car: { fuel: 'oil' | 'ev'; days: number; km: number; tier?: CarTier; camper?: boolean } | null;
   /**
    * 今天剩下的时间不出去逛了（2026-11-07）。
    *
@@ -1024,6 +1024,7 @@ export class StateStore {
           km: Math.max(0, Math.round(Number(o.km) || 0)),
           /* 老状态里没有这一格 —— 当 `comfort`（就是原来那个 200/天的价），不编新的。 */
           ...(tier ? { tier } : {}),
+          ...(o.camper === true ? { camper: true } : {}),
         };
       })(),
       // 老状态里没有这两格：当她还没被提醒过任何邀约。
