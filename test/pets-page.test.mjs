@@ -46,6 +46,8 @@ test('Worker 能发出管鱼页：是 HTML，且涵盖 /pets /pets/all /pets/lif
   assert.ok(body.includes('id="worldJourney"') && body.includes('id="worldLife"'), '缺少 Journey 与 Life 一级分区');
   assert.ok(body.includes("base + '/life'"), '缺少 /admin/life 请求以显示 Life 多少鱼');
   assert.ok(body.includes('id="addStreet"') && body.includes('id="addRule"'), '缺少添加街道/城规按钮');
+  assert.ok(body.includes("setAttribute('data-step', '-1')") && body.includes("setAttribute('data-step', '1')"), '街道属性应支持 -1 / +1 微调按钮');
+  assert.ok(!body.includes('select.street-mod') && body.includes('input.street-mod'), '街道属性已切换为可微调输入框，不应再使用 select.street-mod');
   assert.ok(body.length > 8000, `页面太短，像是被截断了：${body.length}`);
 });
 
@@ -82,4 +84,90 @@ test('前端 SLOTS 与服务端 TOWN_LIST_MAX 保持一致', () => {
   assert.ok(htmlMatch, 'site/pets.html 中找不到 var SLOTS');
   assert.ok(workerMatch, 'worker.js 中找不到 const TOWN_LIST_MAX');
   assert.equal(Number(htmlMatch[1]), Number(workerMatch[1]), '前后端街道/城规条数上限不一致');
+});
+
+test('街道属性微调控件支持 -1/+1、Shift±5 及 [-30, +30] 任意整数读写（不限 5 的倍数）', () => {
+  const mkNode = (tag) => {
+    const attrs = {};
+    const listeners = {};
+    return {
+      tagName: tag.toUpperCase(),
+      className: '',
+      children: [],
+      textContent: '',
+      value: '',
+      type: '',
+      title: '',
+      disabled: false,
+      style: {},
+      setAttribute(k, v) { attrs[k] = String(v); },
+      getAttribute(k) { return k in attrs ? attrs[k] : null; },
+      appendChild(c) { this.children.push(c); return c; },
+      addEventListener(ev, fn) { (listeners[ev] ||= []).push(fn); },
+      dispatch(ev, payload = {}) {
+        for (const fn of (listeners[ev] || [])) fn({ preventDefault() {}, ...payload });
+      },
+      select() {},
+      blur() { this.dispatch('blur'); },
+      querySelectorAll(sel) {
+        if (sel === 'input.street-mod') {
+          return this.children.filter((c) => c.tagName === 'INPUT' && c.className === 'street-mod');
+        }
+        return [];
+      },
+    };
+  };
+  const fakeDoc = {
+    createElement: (t) => mkNode(t),
+    createTextNode: (t) => ({ nodeType: 3, textContent: t }),
+  };
+  const mClamp = /function clampMod\([\s\S]*?\n  \}/.exec(html);
+  const mFmt = /function fmtMod\([\s\S]*?\n  \}/.exec(html);
+  const mStepper = /function makeModStepper\([\s\S]*?\n  \}/.exec(html);
+  assert.ok(mClamp && mFmt && mStepper, '缺少 makeModStepper 相关函数');
+  const factory = new Function(
+    'document',
+    'STREET_MOD_MIN',
+    'STREET_MOD_MAX',
+    `${mClamp[0]}\n${mFmt[0]}\n${mStepper[0]}\nreturn { clampMod, makeModStepper };`,
+  );
+  const { clampMod, makeModStepper } = factory(fakeDoc, -30, 30);
+
+  const item = makeModStepper('fun', '娱乐', 15);
+  const dec = item.children.find((c) => c.getAttribute('data-step') === '-1');
+  const inp = item.children.find((c) => c.className === 'street-mod');
+  const inc = item.children.find((c) => c.getAttribute('data-step') === '1');
+
+  assert.equal(inp.value, '+15%');
+  assert.equal(inp.getAttribute('data-val'), '15');
+  assert.equal(inp.getAttribute('data-sign'), 'pos');
+
+  // 单击 +1 到 +16、+17（非 5 倍数）
+  inc.dispatch('click', { shiftKey: false });
+  assert.equal(inp.value, '+16%');
+  inc.dispatch('click', { shiftKey: false });
+  assert.equal(inp.value, '+17%');
+
+  // Shift +1 变为 +22%，Shift -1 减 5 回到 +17%
+  inc.dispatch('click', { shiftKey: true });
+  assert.equal(inp.value, '+22%');
+  dec.dispatch('click', { shiftKey: true });
+  assert.equal(inp.value, '+17%');
+
+  // 连点至上界 +30% 时锁定 + 按钮
+  for (let i = 0; i < 20; i++) inc.dispatch('click', { shiftKey: false });
+  assert.equal(inp.value, '+30%');
+  assert.equal(inc.disabled, true);
+  assert.equal(dec.disabled, false);
+
+  // 直接键盘输入 -7 与超限 -99 夹紧回 -30%
+  inp.value = '-7';
+  inp.dispatch('input');
+  assert.equal(inp.getAttribute('data-val'), '-7');
+  assert.equal(inp.getAttribute('data-sign'), 'neg');
+  inp.value = '-99';
+  inp.dispatch('blur');
+  assert.equal(inp.value, '-30%');
+  assert.equal(dec.disabled, true);
+  assert.equal(clampMod(14.6), 15);
 });

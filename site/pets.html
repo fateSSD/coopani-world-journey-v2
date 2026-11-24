@@ -170,10 +170,27 @@
   .street-top input.street { flex: 0 0 150px; min-width: 110px; font-weight: 600; }
   .street-top input.street-desc { flex: 1 1 240px; min-width: 0; font-size: 13px; }
   .street-mods { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .street-mod-item { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--dim); background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
-  .street-mod-item select { border: 0; background: transparent; font: inherit; color: var(--ink); font-weight: 600; cursor: pointer; outline: none; }
-  .street-mod-item select[data-sign="pos"] { color: var(--ok); }
-  .street-mod-item select[data-sign="neg"] { color: var(--bad); }
+  .street-mod-item {
+    display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--dim);
+    background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 2px 5px;
+  }
+  .street-mod-item .mod-lbl { white-space: nowrap; margin-right: 1px; }
+  .street-mod-item button.mod-step {
+    width: 22px; height: 22px; padding: 0; border: 1px solid var(--line); border-radius: 4px;
+    background: #f6f7f9; color: var(--ink); font: inherit; font-weight: 600; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer; user-select: none;
+  }
+  .street-mod-item button.mod-step:hover:not(:disabled) { background: #e9edf3; border-color: #c8cfd8; }
+  .street-mod-item button.mod-step:disabled { opacity: 0.35; cursor: not-allowed; }
+  .group .slot-row .street-mod-item input.street-mod {
+    width: 46px; flex: 0 0 46px; padding: 2px 1px; border: 0; border-radius: 4px;
+    background: transparent; font: inherit; font-weight: 600; font-variant-numeric: tabular-nums;
+    text-align: center; color: var(--dim); outline: none;
+  }
+  .group .slot-row .street-mod-item input.street-mod:focus { background: #f3f5f8; }
+  .group .slot-row .street-mod-item input.street-mod[data-sign="pos"] { color: var(--ok); }
+  .group .slot-row .street-mod-item input.street-mod[data-sign="neg"] { color: var(--bad); }
+  .group .slot-row .street-mod-item input.street-mod[data-sign="zero"] { color: var(--dim); }
   .townfoot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
               display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .townfoot .msg { margin: 0; min-height: 0; }
@@ -909,36 +926,120 @@
     { key: 'know', label: '见识' },
     { key: 'work', label: '工钱' }
   ];
-  var STREET_MOD_STEPS = [-30, -25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25, 30];
+  var STREET_MOD_MIN = -30;
+  var STREET_MOD_MAX = 30;
   var SLOT_GROUPS = {
     street: { root: 'townStreets', addBtn: 'addStreet', ph: '街名（最多 12 字）', maxlen: 12 },
     rule: { root: 'townRules', addBtn: 'addRule', ph: '城规（最多 60 字）', maxlen: 60 }
   };
 
-  function makeModSelect(key, label, val) {
-    var wrap = document.createElement('label');
+  function clampMod(val) {
+    var n = Math.round(Number(val));
+    if (!isFinite(n)) return 0;
+    if (n < STREET_MOD_MIN) return STREET_MOD_MIN;
+    if (n > STREET_MOD_MAX) return STREET_MOD_MAX;
+    return n;
+  }
+
+  function fmtMod(n) {
+    return n > 0 ? '+' + n + '%' : n + '%';
+  }
+
+  function makeModStepper(key, label, val) {
+    var wrap = document.createElement('div');
     wrap.className = 'street-mod-item';
-    wrap.appendChild(document.createTextNode(label));
-    var sel = document.createElement('select');
-    sel.className = 'street-mod';
-    sel.setAttribute('data-mod-key', key);
-    var cur = Math.round(Number(val) || 0);
-    if (STREET_MOD_STEPS.indexOf(cur) < 0) cur = 0;
-    for (var i = 0; i < STREET_MOD_STEPS.length; i++) {
-      var step = STREET_MOD_STEPS[i];
-      var opt = document.createElement('option');
-      opt.value = String(step);
-      opt.textContent = step > 0 ? '+' + step + '%' : step + '%';
-      if (step === cur) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    var syncSign = function () {
-      var n = Number(sel.value) || 0;
-      sel.setAttribute('data-sign', n > 0 ? 'pos' : (n < 0 ? 'neg' : 'zero'));
+
+    var lbl = document.createElement('span');
+    lbl.className = 'mod-lbl';
+    lbl.textContent = label;
+
+    var dec = document.createElement('button');
+    dec.type = 'button';
+    dec.className = 'mod-step';
+    dec.setAttribute('data-step', '-1');
+    dec.title = '减 1%（按住 Shift 减 5%）';
+    dec.setAttribute('aria-label', label + '减 1%');
+    dec.textContent = '-';
+
+    var inp = document.createElement('input');
+    inp.type = 'text';
+    inp.className = 'street-mod';
+    inp.setAttribute('inputmode', 'numeric');
+    inp.setAttribute('data-mod-key', key);
+    inp.setAttribute('aria-label', label + '加成百分比');
+
+    var inc = document.createElement('button');
+    inc.type = 'button';
+    inc.className = 'mod-step';
+    inc.setAttribute('data-step', '1');
+    inc.title = '加 1%（按住 Shift 加 5%）';
+    inc.setAttribute('aria-label', label + '加 1%');
+    inc.textContent = '+';
+
+    var setVal = function (next) {
+      var n = clampMod(next);
+      inp.setAttribute('data-val', String(n));
+      inp.value = fmtMod(n);
+      inp.setAttribute('data-sign', n > 0 ? 'pos' : (n < 0 ? 'neg' : 'zero'));
+      dec.disabled = n <= STREET_MOD_MIN;
+      inc.disabled = n >= STREET_MOD_MAX;
+      return n;
     };
-    syncSign();
-    sel.addEventListener('change', syncSign);
-    wrap.appendChild(sel);
+
+    var curVal = function () {
+      var raw = String(inp.value || '').replace(/%/g, '').trim();
+      if (raw !== '' && raw !== '-' && raw !== '+') {
+        var parsed = Number(raw);
+        if (isFinite(parsed)) return clampMod(parsed);
+      }
+      return clampMod(inp.getAttribute('data-val') || 0);
+    };
+
+    setVal(val);
+
+    dec.addEventListener('click', function (ev) {
+      setVal(curVal() - (ev.shiftKey ? 5 : 1));
+    });
+    inc.addEventListener('click', function (ev) {
+      setVal(curVal() + (ev.shiftKey ? 5 : 1));
+    });
+    inp.addEventListener('focus', function () {
+      try { inp.select(); } catch (e) {}
+    });
+    inp.addEventListener('input', function () {
+      var raw = String(inp.value || '').replace(/%/g, '').trim();
+      if (raw === '' || raw === '-' || raw === '+') return;
+      var parsed = Number(raw);
+      if (!isFinite(parsed)) return;
+      var n = clampMod(parsed);
+      inp.setAttribute('data-val', String(n));
+      inp.setAttribute('data-sign', n > 0 ? 'pos' : (n < 0 ? 'neg' : 'zero'));
+      dec.disabled = n <= STREET_MOD_MIN;
+      inc.disabled = n >= STREET_MOD_MAX;
+    });
+    inp.addEventListener('blur', function () {
+      var raw = String(inp.value || '').replace(/%/g, '').trim();
+      setVal(raw === '' ? 0 : curVal());
+    });
+    inp.addEventListener('keydown', function (ev) {
+      if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        setVal(curVal() + (ev.shiftKey ? 5 : 1));
+        try { inp.select(); } catch (e) {}
+      } else if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        setVal(curVal() - (ev.shiftKey ? 5 : 1));
+        try { inp.select(); } catch (e) {}
+      } else if (ev.key === 'Enter') {
+        ev.preventDefault();
+        inp.blur();
+      }
+    });
+
+    wrap.appendChild(lbl);
+    wrap.appendChild(dec);
+    wrap.appendChild(inp);
+    wrap.appendChild(inc);
     return wrap;
   }
 
@@ -981,7 +1082,7 @@
       var rawMods = (item.mods && typeof item.mods === 'object') ? item.mods : {};
       for (var m = 0; m < STREET_MOD_META.length; m++) {
         var meta = STREET_MOD_META[m];
-        modsBar.appendChild(makeModSelect(meta.key, meta.label, rawMods[meta.key]));
+        modsBar.appendChild(makeModStepper(meta.key, meta.label, rawMods[meta.key]));
       }
 
       row.appendChild(top);
@@ -1074,10 +1175,13 @@
       var descEl = card.querySelector('.street-desc');
       var desc = String(descEl && descEl.value ? descEl.value : '').trim();
       var mods = {};
-      var sels = card.querySelectorAll('select.street-mod');
-      for (var j = 0; j < sels.length; j++) {
-        var k = sels[j].getAttribute('data-mod-key');
-        var v = Math.round(Number(sels[j].value) || 0);
+      var modInps = card.querySelectorAll('input.street-mod');
+      for (var j = 0; j < modInps.length; j++) {
+        var modEl = modInps[j];
+        var k = modEl.getAttribute('data-mod-key');
+        var rawTxt = String(modEl.value || '').replace(/%/g, '').trim();
+        var rawNum = rawTxt !== '' && rawTxt !== '-' && rawTxt !== '+' ? Number(rawTxt) : Number(modEl.getAttribute('data-val') || 0);
+        var v = clampMod(rawNum);
         if (k && v !== 0) mods[k] = v;
       }
       out.push({ name: name, desc: desc, mods: mods });
@@ -1174,7 +1278,7 @@
        * 可能不是同一份 —— 回填一次，屏幕上就是他真正改成的样子。
        */
       fillTown(r.body.town);
-      townMsg('ok', '存好了。她下一次开口就用新的城名。');
+      townMsg('ok', '存好了。客户端打开「模拟鱼生」面板（或每 15 分钟自动同步）就会更新。');
     }).catch(function (e) {
       townMsg('bad', '没存上：' + e.message);
     }).then(function () {
@@ -1260,10 +1364,16 @@
         row.remove();
         syncSlotAddBtn(kind);
       } else {
-        var inps = row.querySelectorAll('input');
+        var inps = row.querySelectorAll('input.street, input.street-desc, input.rule');
         for (var j = 0; j < inps.length; j++) inps[j].value = '';
-        var sels = row.querySelectorAll('select.street-mod');
-        for (var k = 0; k < sels.length; k++) { sels[k].value = '0'; sels[k].setAttribute('data-sign', 'zero'); }
+        var modInps = row.querySelectorAll('input.street-mod');
+        for (var k = 0; k < modInps.length; k++) {
+          modInps[k].setAttribute('data-val', '0');
+          modInps[k].value = '0%';
+          modInps[k].setAttribute('data-sign', 'zero');
+        }
+        var modSteps = row.querySelectorAll('button.mod-step');
+        for (var s = 0; s < modSteps.length; s++) modSteps[s].disabled = false;
         if (inps[0]) inps[0].focus();
       }
     });
