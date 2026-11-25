@@ -707,3 +707,114 @@ test('前端产物：点缩略图放大，× 关掉，箭头翻下一张', async
     assert.equal(big.src, '', '关了还攥着那张原图，内存会涨');
   } finally { restore(); }
 });
+
+/* ---------------- 邀约页（2026-11-25） ---------------- */
+
+/** 邀约页要的三份数据：plan / board / post。抽出来给两个用例共用。 */
+function inviteInvoke(sent) {
+  return async (method, args) => {
+    sent.push({ method, args });
+    if (method === 'plan') {
+      return {
+        here: { id: 'chengdu', name: '成都' },
+        meet: null,
+        dest: { id: 'lasa', name: '拉萨' },
+        nameProblem: '',
+        meetProblem: '',
+        meetReady: true,
+        legs: [{ label: '成都 → 拉萨', km: 2000, modes: ['火车', '飞机'] }],
+        ok: true,
+        reason: '',
+      };
+    }
+    if (method === 'board') {
+      return {
+        ready: true,
+        reason: '',
+        here: { id: 'chengdu', name: '成都' },
+        pool: 641,
+        mineTaken: 2,
+        list: [{
+          id: 'a1b2c3d4e5f6a7b8', pet: '小雪', to: 'lasa', toName: '拉萨',
+          days: 3, note: '一起去看布达拉宫', meetName: '西安', taken: false, mode: '火车',
+        }],
+        canPost: '',
+      };
+    }
+    if (method === 'post') return { ok: true, text: '发出去了：成都 → 拉萨，在那儿一起待 2 天。' };
+    return {};
+  };
+}
+
+test('前端产物：邀约页有填表三格、把可用交通方式列出来、公告栏看得见别人发的约', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const sent = [];
+    const root = new FakeNode('div');
+    const ctx = makeCtx(root, inviteInvoke(sent));
+    ctx.panelId = 'invite';
+    await bundle.panels.invite.mount(ctx);
+    /* mount 里那两件事是 fire-and-forget，等一轮微任务再看渲染结果。 */
+    await new Promise((r) => setTimeout(r, 0));
+
+    const inputs = root.all((n) => n.tagName === 'INPUT');
+    assert.ok(inputs.length >= 3, `目的地 / 在哪汇合 / 一句话该有三个输入框，实际 ${inputs.length}`);
+
+    /* 方式按钮来自 plan —— 写死的下拉做不到「牛津没有机场就不给飞机」。 */
+    const chips = root.all((n) => String(n.className).includes('jr-inv-chip'));
+    const names = chips.map((c) => c.textContent);
+    assert.ok(names.includes('飞机'), `没列出可用交通方式：${names.join('/')}`);
+    assert.ok(names.includes('火车'), `没列出可用交通方式：${names.join('/')}`);
+    /* 天数那组也在，同样走 chips；别把「其实没渲染」当成通过。 */
+    assert.ok(names.some((n) => /^2天$/.test(n)), `天数 chips 没渲染：${names.join('/')}`);
+
+    /* 两段路的实况 */
+    assert.match(root.text, /成都 → 拉萨/);
+    assert.match(root.text, /2000/);
+
+    /* 公告栏 */
+    assert.match(root.text, /小雪/, '公告栏没显示别人发的约');
+    assert.match(root.text, /一起去看布达拉宫/);
+    assert.match(root.text, /641/, '没显示公共池条数');
+    assert.match(root.text, /西安/, '碰头城没显示');
+    /* 对方挑的走法（2026-11-25 起是协议字段，不再是正文前缀）——公告栏上要看得见。 */
+    assert.match(root.text, /怎么去 火车/, '对方怎么去没显示');
+
+    /* 宿主网关硬校验数组参数 —— plan 那两个值必须原样传过去。 */
+    const plan = sent.find((s) => s.method === 'plan');
+    assert.ok(plan, '没调 plan');
+    assert.ok(Array.isArray(plan.args), 'plan 的参数必须是数组');
+    assert.equal(plan.args.length, 2);
+  } finally { restore(); }
+});
+
+test('前端产物：邀约页按发布 —— 五个参数走数组，成功后就地回执并刷新公告栏', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const sent = [];
+    const root = new FakeNode('div');
+    const ctx = makeCtx(root, inviteInvoke(sent));
+    ctx.panelId = 'invite';
+    await bundle.panels.invite.mount(ctx);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const go = root.find((n) => String(n.className).includes('jr-inv-go'));
+    assert.ok(go, '没有发布按钮');
+    const boardsBefore = sent.filter((s) => s.method === 'board').length;
+
+    go.handlers.click[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const post = sent.find((s) => s.method === 'post');
+    assert.ok(post, '点了发布却没发请求');
+    assert.ok(Array.isArray(post.args), 'post 的参数必须是数组（宿主网关硬校验）');
+    assert.equal(post.args.length, 5, `目的地/汇合/天数/一句话/怎么去 五格，实际 ${post.args.length}`);
+
+    assert.match(root.text, /发出去了/, '回执没显示出来');
+    const boardsAfter = sent.filter((s) => s.method === 'board').length;
+    assert.ok(boardsAfter > boardsBefore, '发完之后应刷新公告栏');
+  } finally { restore(); }
+});

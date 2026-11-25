@@ -272,12 +272,12 @@ test('邀约：列表只留约定的字段（含见面城），脏条目剔掉�
     assert.equal(r.ok, true);
     assert.equal(r.list.length, 3, `该截到三条，实际 ${r.list.length}`);
     /*
-     * 2026-11-07 起多了 `meetCity` / `pace` 两个字段。
-     * 服务端这行没给它们 —— 所以这里断言的是「没给也要有默认值」：
-     * 空串 = 就在目的地见（老口径），0 = 对方没报流速。
+     * 2026-11-07 起多了 `meetCity` / `pace`，11-25 又多了 `mode`。
+     * 服务端这行一个都没给 —— 所以这里断言的是「没给也要有默认值」：
+     * 空串 = 就在目的地见（老口径）/ 没挑怎么去，0 = 对方没报流速。
      */
     assert.deepEqual(r.list[0],
-      { id: 'aaaaaaaaaaaaaaaa', pet: '小满', to: 'lhasa', days: 3, note: '想看雪山', meetCity: '', pace: 0 },
+      { id: 'aaaaaaaaaaaaaaaa', pet: '小满', to: 'lhasa', days: 3, note: '想看雪山', meetCity: '', pace: 0, mode: '' },
       '多带了字段，或者少了字段');
     assert.equal(r.list[1].days, 2, '字符串天数没转成数字');
   } finally { globalThis.fetch = orig; }

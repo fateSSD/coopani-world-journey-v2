@@ -719,6 +719,39 @@ test('邀约里的那句话也过滤 —— 它是整个系统唯一的自由文
   assert.equal(body.list[0].note, '', `广告句漏出去了：${body.list[0].note}`);
 });
 
+test('「怎么去」是独立一列 —— 发文带上去，列表和接单都读得到', async () => {
+  const env = { DB: makeDB() };
+  const { id } = await (await worker.fetch(inviteReq('POST', mk({ note: '一起去看雪山', mode: '火车' })), env)).json();
+
+  const pool = await (await worker.fetch(new Request(
+    `${INV}?city=xian&uid=${'b'.repeat(24)}`,
+  ), env)).json();
+  assert.equal(pool.list[0].mode, '火车');
+  assert.equal(pool.list[0].note, '一起去看雪山', '正文里不该混进走法');
+
+  /* `/sight/status` 是客户端真正在用的那一条，别只测另一条。 */
+  const st = await (await worker.fetch(new Request(
+    `${BASE}/status?city=xian&uid=${'b'.repeat(24)}`,
+  ), env)).json();
+  assert.equal(st.list[0].mode, '火车');
+
+  /* 接的人也得知道 —— 否则这个字段只是公告栏上的装饰。 */
+  const acc = await (await worker.fetch(acceptReq({ uid: 'c'.repeat(24), id }), env)).json();
+  assert.equal(acc.mode, '火车');
+});
+
+test('「怎么去」和正文一样过内容过滤，长度也截', async () => {
+  const env = { DB: makeDB() };
+  await worker.fetch(inviteReq('POST', mk({ uid: 'a'.repeat(24), mode: '加微信 abc123 领优惠券' })), env);
+  await worker.fetch(inviteReq('POST', mk({ uid: 'd'.repeat(24), to: 'lasa', mode: '火车' + '慢一点'.repeat(20) })), env);
+  const body = await (await worker.fetch(new Request(
+    `${INV}?city=xian&uid=${'b'.repeat(24)}`,
+  ), env)).json();
+  const byTo = Object.fromEntries(body.list.map((x) => [x.to, x.mode]));
+  assert.equal(byTo.dali, '', `广告词漏进走法了：${byTo.dali}`);
+  assert.equal(byTo.lasa.length, 40, `没截到 40：${byTo.lasa.length}`);
+});
+
 test('邀约里的名字也过滤', async () => {
   const env = { DB: makeDB() };
   await worker.fetch(inviteReq('POST', mk({ pet: 'www.abc.com' })), env);

@@ -1277,3 +1277,111 @@
   accent-color: var(--jr-accent);
   cursor: pointer;
 }
+
+/* ---------- 邀约页（2026-11-25） ---------- */
+
+.jr-inv {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--jr-line);
+}
+.jr-inv-sub {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--jr-accent);
+  letter-spacing: .06em;
+}
+.jr-inv-row {
+  display: grid;
+  grid-template-columns: 78px 1fr;
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 10px;
+}
+.jr-inv-k {
+  padding-top: 7px;
+  font-size: 12.5px;
+  color: var(--jr-soft);
+}
+.jr-inv-body { display: flex; flex-direction: column; gap: 4px; }
+.jr-inv-txt { max-width: 320px; }
+.jr-inv-hint {
+  font-size: 11.5px;
+  color: var(--jr-soft);
+  line-height: 1.6;
+}
+.jr-inv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.jr-inv-chip {
+  padding: 4px 12px;
+  border: 1px solid var(--jr-line);
+  border-radius: 999px;
+  background: var(--jr-card);
+  color: var(--jr-ink);
+  font-size: 12.5px;
+}
+.jr-inv-chip:hover { border-color: var(--jr-accent); }
+.jr-inv-chip[data-on="1"] {
+  border-color: var(--jr-accent);
+  background: var(--jr-accent-soft);
+  color: var(--jr-accent);
+  font-weight: 600;
+}
+.jr-inv-plan {
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--jr-line);
+  border-radius: 10px;
+  background: var(--jr-card);
+}
+.jr-inv-where {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  color: var(--jr-ink);
+  margin-bottom: 6px;
+}
+.jr-inv-leg {
+  font-size: 12.5px;
+  color: var(--jr-soft);
+  margin: 2px 0;
+}
+.jr-inv-leg[data-bad="1"] { color: #b4462f; }
+.jr-inv-bad {
+  font-size: 12.5px;
+  color: #b4462f;
+  margin: 6px 0 0;
+  line-height: 1.6;
+}
+.jr-inv-idle {
+  font-size: 12.5px;
+  color: var(--jr-soft);
+  margin: 6px 0 0;
+}
+.jr-inv-status {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--jr-soft);
+  line-height: 1.7;
+}
+.jr-inv-status[data-tone="ok"] { color: var(--jr-ok); }
+.jr-inv-status[data-tone="bad"] { color: #b4462f; }
+.jr-inv-go[disabled] { opacity: .45; cursor: not-allowed; }
+.jr-inv-board { display: flex; flex-direction: column; gap: 8px; }
+.jr-inv-card {
+  padding: 10px 12px;
+  border: 1px solid var(--jr-line);
+  border-radius: 10px;
+  background: var(--jr-card);
+}
+.jr-inv-card-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+.jr-inv-note {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--jr-ink);
+  line-height: 1.6;
+}

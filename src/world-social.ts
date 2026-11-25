@@ -858,6 +858,14 @@ export const socialMethods: Record<string, any> = {
      * 于是缺的那一级就是 A，而 B 一直是 `to`。
      */
     meetName?: string,
+    /**
+     * 打算怎么去（2026-11-25）。空 = 没挑。
+     *
+     * 只从面板那条路传进来 —— `journey_invite` 工具没有这一格，她自己在
+     * 文字里说「坐火车去」就够了。存在服务器上是为了**对方能看见**：
+     * 「怎么去」进正文的话，接的人读到的就分不清哪句是正文、哪句是方式。
+     */
+    mode?: string,
   ): Promise<{ text: string; isError?: boolean }> {
     const meet = this.meetOptions();
     if (!meet) {
@@ -961,6 +969,7 @@ export const socialMethods: Record<string, any> = {
       ...(meetCity ? { meetCity: meetCity.id } : {}),
       // 自己的流速要带上 —— 对方接之前得知道两边对不对得上日子。
       pace: this.speedNow(),
+      ...(mode ? { mode } : {}),
     });
     if (!r.ok) {
       /*
@@ -1053,6 +1062,197 @@ export const socialMethods: Record<string, any> = {
             + `　id=${x.id}`;
         }).join('\n')
         + tail,
+    };
+  },
+
+
+  /* ---------------- 面板：发起邀约与公告栏（2026-11-25） ---------------- */
+
+  /**
+   * 面板填表时用：这一段路能不能走、两段各有哪些交通方式。
+   *
+   * **只算不发。** `inviteSomeone` 那一套（可达 / 撑得住 / 流速 / 一天几条）在按发布时
+   * 再完整跑一遍 —— 这里只回答「填表时就得知道」的那几个事实，免得用户填完才被拒。
+   *
+   * 「怎么去」在协议里没有这一格（`Invite` 只有 to / days / note / meetCity / pace），
+   * 所以这里列出来的方式是**给她自己挑**的：挑完写进正文前缀，对方看得见，票各买各的。
+   */
+  invitePlan(toNameRaw: string, meetNameRaw: string): {
+    here: { id: string; name: string };
+    meet: { id: string; name: string } | null;
+    dest: { id: string; name: string } | null;
+    nameProblem: string;
+    meetProblem: string;
+    meetReady: boolean;
+    legs: Array<{ label: string; km: number; modes: string[] }>;
+    ok: boolean;
+    reason: string;
+  } {
+    const here = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
+    const toName = String(toNameRaw ?? '').trim();
+    const meetName = String(meetNameRaw ?? '').trim();
+    const dest = toName ? cityByName(toName) : null;
+    /*
+     * 空 = 就在她脚下这座城碰头（老口径）。填了别的城才算多一级；
+     * 填的正好是目的地就等于没有这一级 —— 和 `sendInvite` 里那条判定一致。
+     */
+    const meetWant = meetName ? cityByName(meetName) : here;
+    const meetCity = meetWant && dest && meetWant.id === dest.id ? here : meetWant;
+    const meetReady = Boolean(this.meetOptions());
+
+    const legs: Array<{ label: string; km: number; modes: string[] }> = [];
+    if (dest) {
+      const first = meetCity ?? here;
+      /*
+       * 碰头城就是她脚下这座 → 没有「去碰头」那一段，只列真正要走的那一程。
+       * 零公里也塞一条进去的话，面板上会出现「成都 → 成都 0 公里 步行」这种废话。
+       */
+      if (first.id !== here.id) {
+        const km1 = Math.round(distanceKm(here, first));
+        legs.push({
+          label: `${here.name} → ${first.name} 碰头`,
+          km: km1,
+          modes: usableModesFor(here, first, km1).map((m) => m.name),
+        });
+      }
+      if (first.id !== dest.id) {
+        const km2 = Math.round(distanceKm(first, dest));
+        legs.push({
+          label: `${first.name} → ${dest.name}`,
+          km: km2,
+          modes: usableModesFor(first, dest, km2).map((m) => m.name),
+        });
+      }
+    }
+
+    const sameHere = Boolean(dest) && dest!.id === here.id;
+    const isHome = Boolean(dest) && dest!.id === this.resolveHome().city.id;
+    const nameProblem = !toName
+      ? ''
+      : (dest ? '' : `内置城市表里没有「${toName}」—— 换个大一点的城市名`);
+    const meetProblem = !meetReady
+      ? (this.meetUrlError
+        ? `碰面服务器那一栏读不成网址：${this.meetUrlError}`
+        : '还没配碰面服务器 —— 邀约存在服务器上，本机发不出去')
+      : (meetName && !meetWant ? `城市表里没有「${meetName}」` : '');
+    const whereProblem = sameHere
+      ? `她现在就在${here.name}，不用约人去那儿`
+      : (isHome ? `${dest!.name}是她家 —— 回家不走邀约这条路` : '');
+    const dead = legs.find((l) => !l.modes.length);
+    const reason = nameProblem || meetProblem || whereProblem || (dead ? `${dead.label}没有能走的交通方式` : '');
+    return {
+      here: { id: here.id, name: here.name },
+      meet: meetCity && dest && meetCity.id !== dest.id && meetCity.id !== here.id
+        ? { id: meetCity.id, name: meetCity.name }
+        : null,
+      dest: dest ? { id: dest.id, name: dest.name } : null,
+      nameProblem,
+      meetProblem,
+      meetReady,
+      legs,
+      ok: Boolean(dest) && !reason,
+      reason,
+    };
+  },
+
+  /**
+   * 面板发一条邀约。
+   *
+   * 参数顺序：目的地、碰头城、天数、一句话、怎么去。
+   *
+   * 「怎么去」现在走协议真字段（2026-11-25，`invites.mode`），
+   * 不再拼进正文 —— 拼进去的话对方读到的正文里混着结构性数据，
+   * 而且面板上也没法把它单独显示出来。
+   */
+  async inviteFromPanel(args: unknown[]): Promise<{ ok: boolean; text: string }> {
+    const toName = String(args?.[0] ?? '').trim();
+    const meetName = String(args?.[1] ?? '').trim();
+    const days = Number(args?.[2] ?? 2);
+    const noteRaw = String(args?.[3] ?? '').trim();
+    const modeRaw = String(args?.[4] ?? '').trim();
+    if (!toName) return { ok: false, text: '先填一个目的地。' };
+    /*
+     * 选中的方式必须是这一段路**现在**真的能走的。
+     *
+     * 面板上的按钮是后端算的，但页面可能停在旧结果上（他刚改了目的地、
+     * 列表还没刷回来），于是「成都→拉萨 飞机」会配上一条只通火车的路。
+     * 这种情况**丢掉方式、不拒发整条** —— 方式是附注，不是契约。
+     */
+    const plan = this.invitePlan(toName, meetName);
+    const walkable = new Set(plan.legs.flatMap((l) => l.modes));
+    const mode = walkable.has(modeRaw) ? modeRaw : '';
+    const r = await this.inviteSomeone(toName, days, noteRaw, meetName, mode);
+    return { ok: !r.isError, text: r.text };
+  },
+
+  /**
+   * 公告栏：现在挂着的邀约 + 她发出去被接过几次。
+   *
+   * **不调 `myTakenInvites`。** 那条是「认领一次就没了」的一次性接口
+   * （服务端收到就置 `owner_seen=1`，还会在本地建一份约定）——
+   * 面板每刷一次就认领一次的话，等于替她答应了别人的约。
+   * 只读数走 `fetchStatus`，里面的 `mineTaken` 是计数，没有副作用。
+   */
+  async inviteBoard(): Promise<{
+    ready: boolean;
+    reason: string;
+    here: { id: string; name: string };
+    pool: number;
+    mineTaken: number;
+    list: Array<{ id: string; pet: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string }>;
+    canPost: string;
+  }> {
+    const here = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
+    /*
+     * 「现在能不能发」是一条独立的判断，和「能不能看」分开：
+     * 人在路上就看不了这一带的约，但她也确实发不出去 —— 面板要把这句写出来，
+     * 而不是让按钮灰着不解释。
+     */
+    const canPost = this.st.phase === 'traveling'
+      ? '她在路上，落地之后才发得出邀约'
+      : this.st.phase === 'home'
+        ? (this.stillResting(this.worldNow()) ? '她还在家歇着，这会儿发的约赶不上' : '')
+        : '';
+    const meet = this.meetOptions();
+    const base = {
+      here: { id: here.id, name: here.name },
+      pool: 0,
+      mineTaken: 0,
+      list: [] as Array<{ id: string; pet: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string }>,
+      canPost,
+    };
+    if (!meet) {
+      return {
+        ready: false,
+        reason: this.meetUrlError
+          ? `碰面服务器那一栏读不成网址：${this.meetUrlError}`
+          : '还没配碰面服务器 —— 邀约挂在服务器上，本机看不到也发不出去。',
+        ...base,
+      };
+    }
+    const st = await fetchStatus(meet, here.id);
+    if (!st.ok) return { ready: false, reason: `没连上碰面服务器：${st.reason}`, ...base };
+    const claimed = new Set(this.st.claimedInvites ?? []);
+    return {
+      ready: true,
+      reason: '',
+      here: base.here,
+      pool: st.pool,
+      mineTaken: st.mineTaken,
+      list: st.invites.map((x) => ({
+        id: x.id,
+        pet: this.nameOf(x.pet),
+        to: x.to,
+        toName: cityById(x.to)?.name ?? x.to,
+        meetName: x.meetCity ? (cityById(x.meetCity)?.name ?? x.meetCity) : '',
+        days: x.days,
+        note: x.note,
+        /* 对方打算怎么去。空 = 没挑 / 老数据，界面上就不显示这一行。 */
+        mode: x.mode,
+        /* 「已经接过、或者去的就是她脚下这座」—— 面板上标一下，免得他奇怪为什么她没接。 */
+        taken: claimed.has(x.id) || x.to === here.id,
+      })),
+      canPost,
     };
   },
 
@@ -1403,6 +1603,11 @@ export const socialMethods: Record<string, any> = {
       `答应了${this.nameOf(r.withPet)}：`
       + (useMeet ? `先在${useMeet.name}碰头，再一起去${dest.name}，在那儿待 ${r.days} 天。` : `一起去${dest.name}，在那儿待 ${r.days} 天。`)
       + (r.note ? `对方留的话是「${r.note}」。` : '')
+      /*
+       * 对方挑的走法（2026-11-25）。**不当作约定** —— 票各买各的，
+       * 她自己怎么去由她定。写出来只是让她心里有数。
+       */
+      + (r.mode ? `对方打算这么过去：${r.mode}。` : '')
       + (useMeet
         ? (here.id === useMeet.id
           // 就在会合点：立刻进入「等」。
@@ -1436,6 +1641,7 @@ export const socialMethods: Record<string, any> = {
             ? `她本来就在${dest.name}，这几天不走。`
             : `下一站会往${dest.name}走，到了之后待满 ${r.days} 天。`))
         + (r.note ? `对方原话：「${r.note}」。` : '')
+        + (r.mode ? `对方打算这么过去：${r.mode} —— 各走各的票，她按自己的来。` : '')
         /*
          * **今天到底走不走，必须跟她说清**（2026-11-20）。
          *

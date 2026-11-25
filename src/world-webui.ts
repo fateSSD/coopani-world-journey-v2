@@ -179,6 +179,18 @@ export const webUiMethods: Record<string, any> = {
          */
         { id: 'mates', title: '路上遇见的人', description: '她记得的每一只鱼：走过几次、上次哪天、她写的印象。' },
         /*
+         * 邀约（2026-11-25，Mr.Q 定的）：「面板里能填去哪、怎么去、在哪汇合，
+         * 把可用的交通工具列出来，再加一块正在进行的邀约」。
+         *
+         * 原来发邀约只有一条路 —— 跟她说「帮我发个约」。填表这件事本来就该有界面：
+         * 哪座城通不通、两段各能坐什么，代码早就算得出来，没道理让他靠猜。
+         */
+        {
+          id: 'invite',
+          title: '邀约',
+          description: '发一条找伴的邀请；也看看这一带谁正想走、她发出去的那几条有没有人接。',
+        },
+        /*
          * 2026-11-14 Mr.Q：「能不能像鱼鱼出行那样，两个按钮一格，点云端就只显示云端那几项？」
          *
          * 宿主的设置面板按 schema 自动渲染，**没有条件显示**（`ConfigProperty`
@@ -797,6 +809,18 @@ export const webUiMethods: Record<string, any> = {
       }
 
       throw new Error(`这一页不认识这个动作：${method}`);
+    }
+    if (panel === 'invite') {
+      /*
+       * 四个动作，全部只碰「邀约」这一件事：
+       * - `board` 公告栏（只读，**不许调 `myTakenInvites`** —— 那是认领一次的接口）
+       * - `plan`  填表时的实况：两段路怎么走、各有哪些交通方式
+       * - `post`  发布（内部走 `inviteSomeone`，判据和工具那条完全同一份）
+       */
+      if (method === 'board') return await this.inviteBoard();
+      if (method === 'plan') return this.invitePlan(String(args?.[0] ?? ''), String(args?.[1] ?? ''));
+      if (method === 'post') return await this.inviteFromPanel(args ?? []);
+      throw new Error(`邀约页不认识这个动作：${method}`);
     }
     if (panel === 'album') {
       if (method === 'list') {

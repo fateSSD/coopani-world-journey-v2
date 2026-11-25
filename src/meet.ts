@@ -667,6 +667,16 @@ export interface Invite {
    * 并说清原因。否则她会答应一桩永远兑现不了的约定。
    */
   readonly pace: number;
+  /**
+   * 发起方打算怎么去（2026-11-25）。**空 = 没挑，或老服务端 / 老数据。**
+   *
+   * 存的是对方那边的显示名（「火车」「自驾」），不是 id —— 载具表在客户端，
+   * 双方版本不同时 id 可能对不上，而显示名对方自己建的时候就挑好了。
+   *
+   * 它**不构成约定**：票各买各的，她怎么去由她自己定。
+   * 这条字段的作用只是让接的人在按下「接」之前知道「这一趟大概是什么走法」。
+   */
+  readonly mode: string;
 }
 
 /**
@@ -764,6 +774,8 @@ const toInvite = (x: unknown): Invite | null => {
     note: flat(o.note, 60),
     meetCity: meetOf(o.meet, to),
     pace: paceOf(o.pace),
+    /* 老服务端不回这一格 —— 解析成空串，界面上就是「没写怎么去」。 */
+    mode: flat(o.mode, 40),
   };
 };
 
@@ -874,6 +886,14 @@ export async function sendInvite(
     readonly meetCity?: string;
     /** 她那边的世界流速。传了别人才知道能不能赴约。 */
     readonly pace?: number;
+    /**
+     * 打算怎么去（2026-11-25）。空 = 没挑。
+     *
+     * 2026-11-25 之前这个方法把方式拼在 `note` 前面（`火车·一起去看…`）——
+     * 那是「协议里没这一格」时的临时办法，代价是对方的正文里混进了结构性数据。
+     * 现在协议有了真字段，正文就只存正文。
+     */
+    readonly mode?: string;
   },
 ): Promise<{ ok: true; id: string } | InviteFail> {
   const fromCityId = args.from;
@@ -884,6 +904,8 @@ export async function sendInvite(
   const meetCity = clean(args.meetCity ?? '');
   const meet = meetCity && meetCity !== toCityId ? meetCity : '';
   const pace = Math.min(240, Math.max(1, Math.round(Number(args.pace) || 1)));
+  /* 怎么去：跟 note 一样压成一行、限长。空串是合法的（就是没挑）。 */
+  const mode = flat(args.mode ?? '', 40);
   const url = clean(opt.url);
   if (!url || !clean(opt.uid) || !clean(opt.pet)) return { ok: false, reason: '没配碰面服务器' };
   try {
@@ -900,6 +922,7 @@ export async function sendInvite(
         note: flat(note, 60),
         meet,
         pace,
+        mode,
       }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -1035,6 +1058,8 @@ export async function acceptInvite(
   readonly meetCity: string;
   /** 对方的流速。0 = 没报。 */
   readonly pace: number;
+  /** 对方打算怎么去。空 = 没挑 / 老数据。**不是约定**，票各买各的。 */
+  readonly mode: string;
 } | InviteFail> {
   const url = clean(opt.url);
   if (!url || !okUidLike(clean(opt.uid))) return { ok: false, reason: '没配碰面服务器' };
@@ -1072,6 +1097,7 @@ export async function acceptInvite(
       note: flat(b.note, 60),
       meetCity: meetOf(b.meet, to),
       pace: paceOf(b.pace),
+      mode: flat(b.mode, 40),
     };
   } catch (e) {
     return { ok: false, reason: netFail(e) };

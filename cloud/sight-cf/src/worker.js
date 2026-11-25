@@ -1082,7 +1082,7 @@ async function inviteRoute(request, env, url, method) {
         const { results } = await db.prepare(
           `SELECT t.id AS id, t.pet AS pet, t.uid AS taker_uid,
                   i.to_city AS to_city, i.days AS days, i.note AS note,
-                  i.meet_city AS meet_city, i.pace AS pace
+                  i.meet_city AS meet_city, i.pace AS pace, i.mode AS mode
              FROM invite_takers t JOIN invites i ON i.id = t.id
             WHERE i.uid = ?1 AND t.seen = 0 AND i.expires_at > ?2
             ORDER BY t.at ASC LIMIT 12`,
@@ -1104,6 +1104,8 @@ async function inviteRoute(request, env, url, method) {
           /* 见面城。空 = 老数据（那时没有这一级），客户端按「就在 to 见」处理。 */
           meet: clean(r.meet_city, 40),
           pace: Number(r.pace) || 0,
+          /* 怎么去。空 = 没挑，或老数据。同样按用户可写内容过滤一遍再吐出去。 */
+          mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
         }));
         return reply(200, { ok: true, list });
       }
@@ -1115,7 +1117,7 @@ async function inviteRoute(request, env, url, method) {
          * 判据从 `taken_by = ''`（一个都没接）换成「已接人数 < MAX_PARTY - 1」——
          * 这样三个人一起走之后，第四只鱼仍然看得见这条邀约、还能加进来。
          */
-        `SELECT id, pet, to_city, days, note, at, meet_city, pace,
+        `SELECT id, pet, to_city, days, note, at, meet_city, pace, mode,
                 CASE WHEN from_city = ?1 THEN 1 ELSE 0 END AS near,
                 (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) AS joined
          FROM invites
@@ -1136,6 +1138,8 @@ async function inviteRoute(request, env, url, method) {
         note: looksBad(String(r.note || ''), extra) ? '' : clean(r.note, 60),
         meet: clean(r.meet_city, 40),
         pace: Number(r.pace) || 0,
+        /* 怎么去。空 = 没挑 / 老数据；和 note 一样按用户可写内容过滤。 */
+        mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
       }));
 
       return reply(200, { ok: true, list });
@@ -1176,6 +1180,18 @@ async function inviteRoute(request, env, url, method) {
       const noteRaw = clean(body?.note, 60);
       const note = looksBad(noteRaw, extra) ? '' : noteRaw;
 
+      /*
+       * 打算怎么去（2026-11-25）。
+       *
+       * 存的是客户端那边的显示名（「火车」「自驾」），服务端**不认识这些词** ——
+       * 载具表在客户端，这里跟 `meet` 一样只做长度与内容过滤就收下。
+       *
+       * 它和 `note` 一样是用户可写内容，所以走同一道 `looksBad`：
+       * 被判成广告就留空，不拒绝整条邀约 —— 方式本来就可有可无。
+       */
+      const modeRaw = clean(body?.mode, 40);
+      const mode = looksBad(modeRaw, extra) ? '' : modeRaw;
+
       if (!okUid(uid) || !okCity(from) || !okCity(to) || !pet) {
         return reply(400, { ok: false, error: 'bad fields' });
       }
@@ -1195,12 +1211,12 @@ async function inviteRoute(request, env, url, method) {
       const now = new Date();
       const id = newId();
       await db.prepare(
-        `INSERT INTO invites (id, uid, pet, from_city, to_city, days, note, date_key, at, expires_at, meet_city, pace)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+        `INSERT INTO invites (id, uid, pet, from_city, to_city, days, note, date_key, at, expires_at, meet_city, pace, mode)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)`,
       ).bind(
         id, uid, pet, from, to, days, note, day,
         now.toISOString(), new Date(now.getTime() + INVITE_TTL_MS).toISOString(),
-        meet, pace,
+        meet, pace, mode,
       ).run();
 
       await bumpRate(db, key, day);
@@ -2021,7 +2037,7 @@ async function statusRoute(request, env, url, ctx) {
       'SELECT COUNT(*) AS n FROM invites WHERE uid = ?1 AND taken_by <> ?2',
     ).bind(uid, '');
     const inviteStmt = db.prepare(
-      `SELECT id, pet, to_city, days, note, at, meet_city, pace,
+      `SELECT id, pet, to_city, days, note, at, meet_city, pace, mode,
               CASE WHEN from_city = ?1 THEN 1 ELSE 0 END AS near,
               (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) AS joined
        FROM invites
@@ -2055,6 +2071,8 @@ async function statusRoute(request, env, url, ctx) {
         note: looksBad(String(r.note || ''), extra) ? '' : clean(r.note, 60),
         meet: clean(r.meet_city, 40),
         pace: Number(r.pace) || 0,
+        /* 怎么去。空 = 没挑 / 老数据；和 note 一样按用户可写内容过滤。 */
+        mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
       })),
     }, { 'x-pool-cache': counts.cache ?? 'miss' });
   } catch (e) {
@@ -2095,7 +2113,7 @@ async function acceptRoute(request, env, url, method) {
     }
 
     const row = await db.prepare(
-      'SELECT id, uid, pet, to_city, days, note, expires_at, taken_by, meet_city, pace FROM invites WHERE id = ?1',
+      'SELECT id, uid, pet, to_city, days, note, expires_at, taken_by, meet_city, pace, mode FROM invites WHERE id = ?1',
     ).bind(id).first();
 
     if (!row) return reply(404, { ok: false, error: 'gone' });
@@ -2110,6 +2128,8 @@ async function acceptRoute(request, env, url, method) {
       note: looksBad(String(row.note || ''), extra) ? '' : clean(row.note, 60),
       meet: clean(row.meet_city, 40),
       pace: Number(row.pace) || 0,
+      /* 对方打算怎么去（2026-11-25）。接的人据此知道「要不要自己订票」。 */
+      mode: looksBad(String(row.mode || ''), extra) ? '' : clean(row.mode, 40),
       ...extraFields,
     });
 

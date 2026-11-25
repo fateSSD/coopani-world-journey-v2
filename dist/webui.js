@@ -226,6 +226,35 @@ const TEXT = {
     fbWhere: '想加的地点写成「城市 + 地方名 + 一句为什么」就够了。',
     fbGroupLead: 'QQ 群：',
     fbGroupTip: '复制群号',
+
+    /* ---- 邀约页 ---- */
+    inviteTitle: '邀约',
+    inviteHint: '发一条找伴的邀请：去哪、在哪汇合、待几天。发出去只挂 24 小时，同城这一带的鱼才看得见。',
+    inviteTo: '去哪',
+    inviteToHint: '城市名，例如 拉萨',
+    inviteMeet: '在哪汇合',
+    inviteMeetHint: '留空 = 她脚下这座城；填别的城就是先见面再一起走',
+    inviteDays: '待几天',
+    inviteHow: '怎么去',
+    inviteHowHint: '只列这条路上真有的方式。选中的会一起发出去，对方看得见她打算怎么走；票各买各的',
+    inviteNote: '一句话',
+    inviteNoteHint: '留空也行',
+    invitePost: '发布邀约',
+    invitePosting: '发布中…',
+    invitePlanTitle: '这一趟怎么走',
+    invitePlanIdle: '填个目的地，这边把两段路算出来。',
+    inviteNoModes: '没有能走的方式',
+    inviteKm: '公里',
+    inviteBoardTitle: '现在挂着的邀约',
+    inviteBoardHint: '同城这一带优先，最多三条。接不接由她自己判断 —— 这一页只给她看',
+    inviteBoardEmpty: '这会儿没有能接的邀约。自己走就行，这很正常。',
+    invitePool: '公共池 {n} 条鱼',
+    inviteMine: '她发出去被接过 {n} 次',
+    inviteTaken: '已经接过',
+    inviteMeetAt: '在 {n} 碰头',
+    inviteDaysUnit: '天',
+    inviteVia: '怎么去',
+    inviteGoSee: '去聊天里让她接',
   },
   en: {
     eyebrow: 'Right now',
@@ -418,6 +447,35 @@ const TEXT = {
     fbWhere: 'A place just needs city + name + one line on why.',
     fbGroupLead: 'QQ group: ',
     fbGroupTip: 'Copy number',
+
+    /* ---- invite tab ---- */
+    inviteTitle: 'Invites',
+    inviteHint: 'Post an invite: where to, where to meet, how many days. It stays up 24 hours and only pets around her city see it.',
+    inviteTo: 'Where to',
+    inviteToHint: 'A city name, e.g. Lhasa',
+    inviteMeet: 'Where to meet',
+    inviteMeetHint: 'Empty = the city she is in; another city means meet first, then go together',
+    inviteDays: 'Days together',
+    inviteHow: 'How to go',
+    inviteHowHint: 'Only the ways that really exist on this route. What you pick goes out with the invite, so they see how she plans to travel; tickets are each on their own',
+    inviteNote: 'One line',
+    inviteNoteHint: 'Optional',
+    invitePost: 'Post invite',
+    invitePosting: 'Posting…',
+    invitePlanTitle: 'How this trip goes',
+    invitePlanIdle: 'Pick a destination and this works out both legs.',
+    inviteNoModes: 'no way to travel',
+    inviteKm: 'km',
+    inviteBoardTitle: 'Invites up right now',
+    inviteBoardHint: 'Her area first, three at most. Whether she takes one is her call — this page only shows',
+    inviteBoardEmpty: 'Nothing to join right now. Going alone is normal.',
+    invitePool: '{n} pets in the pool',
+    inviteMine: 'hers taken {n} times',
+    inviteTaken: 'already joined',
+    inviteMeetAt: 'meet at {n}',
+    inviteDaysUnit: 'd',
+    inviteVia: 'via',
+    inviteGoSee: 'Ask her in chat to take it',
   },
 };
 
@@ -2162,6 +2220,246 @@ export default {
         } catch (e) {
           partiesBox.replaceChildren(el('p', 'jr-empty', T.err));
         }
+      },
+    },
+
+    /**
+     * 「邀约」页（2026-11-25，Mr.Q 定的：填去哪、怎么去、在哪汇合，列出可用的交通工具，
+     * 再加一块正在进行的邀约）。
+     *
+     * 三个设计点：
+     *
+     * 1. **交通方式不是写死的下拉。** 它由后端按「她现在 → 汇合城 → 目的地」现算
+     *    （`invitePlan`）：牛津没有机场这种事，填表时就该看见，而不是按了发布才被拒。
+     * 2. **「怎么去」不进协议。** `Invite` 只有 to / days / note / meetCity / pace ——
+     *    加字段要改服务端 schema，而它本来也不是契约（对方怎么去是他自己的事）。
+     *    所以选中的方式拼进正文前缀，对方看得见，票各买各的。
+     * 3. **公告栏不调 `myTakenInvites`。** 那条接口是「认领一次就没了」——
+     *    面板每刷一次就等于替她认下一桩约。只读数走 `fetchStatus`（无副作用）。
+     *    接不接也不在这一页点：那是她的判断。
+     */
+    invite: {
+      async mount(ctx) {
+        const T = text(ctx.language);
+        const app = el('div', 'jr-app');
+        const head = el('header', 'jr-head');
+        const left = el('div', 'jr-head-left');
+        left.append(el('p', 'jr-eyebrow', T.inviteTitle));
+        left.append(el('h1', 'jr-city', T.inviteTitle));
+        left.append(el('p', 'jr-sub', T.inviteHint));
+        head.append(left);
+        app.append(head);
+        ctx.root.append(app);
+
+        /* ---------------- 发一条 ---------------- */
+        const form = el('section', 'jr-inv');
+        const addRow = (label, node, hint) => {
+          const line = el('div', 'jr-inv-row');
+          line.append(el('span', 'jr-inv-k', label));
+          const body = el('div', 'jr-inv-body');
+          body.append(node);
+          if (hint) body.append(el('span', 'jr-inv-hint', hint));
+          line.append(body);
+          form.append(line);
+        };
+        const toInput = el('input', 'jr-set-v jr-inv-txt');
+        toInput.type = 'text';
+        toInput.placeholder = T.inviteToHint;
+        const meetInput = el('input', 'jr-set-v jr-inv-txt');
+        meetInput.type = 'text';
+        meetInput.placeholder = T.inviteMeetHint;
+        const noteInput = el('input', 'jr-set-v jr-inv-txt');
+        noteInput.type = 'text';
+        noteInput.maxLength = 60;
+        noteInput.placeholder = T.inviteNoteHint;
+
+        let days = 2;
+        let mode = '';
+        const dayBox = el('div', 'jr-inv-chips');
+        const modeBox = el('div', 'jr-inv-chips');
+        const planBox = el('div', 'jr-inv-plan');
+        const status = el('p', 'jr-inv-status');
+        const go = el('button', 'jr-btn jr-inv-go', T.invitePost);
+        go.type = 'button';
+
+        const chip = (label, on, pick) => {
+          const b = el('button', 'jr-inv-chip', label);
+          b.type = 'button';
+          b.dataset.on = on ? '1' : '0';
+          b.addEventListener('click', pick, { signal: ctx.signal });
+          return b;
+        };
+        const drawDays = () => {
+          dayBox.replaceChildren();
+          for (const n of [1, 2, 3, 5, 7, 10]) {
+            dayBox.append(chip(`${n}${T.inviteDaysUnit}`, n === days, () => { days = n; drawDays(); }));
+          }
+        };
+        drawDays();
+
+        /*
+         * 方式按钮由 `plan` 填。选中项变了不重算（重算会把「已选」清掉）——
+         * 所以 `drawModes` 只在路线变了的时候被调用。
+         */
+        const drawModes = (list) => {
+          modeBox.replaceChildren();
+          if (mode && !list.includes(mode)) mode = '';
+          for (const m of list) {
+            modeBox.append(chip(m, m === mode, () => { mode = mode === m ? '' : m; drawModes(list); }));
+          }
+        };
+
+        const drawPlan = (p) => {
+          planBox.replaceChildren();
+          if (!p || (!p.dest && !p.reason)) {
+            planBox.append(el('p', 'jr-inv-idle', T.invitePlanIdle));
+            drawModes([]);
+            go.disabled = true;
+            return;
+          }
+          const where = p.dest
+            ? el('p', 'jr-inv-where', p.meet
+              ? `${p.here.name} → ${p.meet.name} → ${p.dest.name}`
+              : `${p.here.name} → ${p.dest.name}`)
+            : null;
+          if (where) planBox.append(where);
+          for (const leg of p.legs || []) {
+            const line = el('p', 'jr-inv-leg');
+            line.append(el('b', null, leg.label));
+            line.append(document.createTextNode(`　${leg.km} ${T.inviteKm}　${leg.modes.length ? leg.modes.join(' / ') : T.inviteNoModes}`));
+            if (!leg.modes.length) line.dataset.bad = '1';
+            planBox.append(line);
+          }
+          if (p.reason) {
+            const bad = el('p', 'jr-inv-bad', p.reason);
+            planBox.append(bad);
+          }
+          /* 方式只列「真正在走」的那一段（碰头城就是她脚下时，第一段没有）。 */
+          const travel = (p.legs || []).find((l) => l.km > 0) || (p.legs || [])[0];
+          drawModes((travel && travel.modes) || []);
+          go.disabled = !p.ok;
+        };
+
+        /*
+         * 两次算之间可能隔着几次输入（「拉」→「拉萨」）。用一个序号兜住：
+         * 只认最后一次的结果，先回来的旧结果直接丢掉 —— 不然字已经改成拉萨，
+         * 屏幕上还挂着「城市表里没有拉」。
+         */
+        let planSeq = 0;
+        const val = (node) => String(node.value ?? '');
+        const refreshPlan = () => {
+          const seq = ++planSeq;
+          ctx.invoke('plan', [val(toInput).trim(), val(meetInput).trim()])
+            .then((p) => { if (seq === planSeq) drawPlan(p); })
+            .catch((e) => {
+              if (seq !== planSeq) return;
+              planBox.replaceChildren(el('p', 'jr-inv-bad', why(T, e)));
+              go.disabled = true;
+            });
+        };
+        /*
+         * 输入去抖：窗口内只排一个定时器，停手 350ms 才真去算。
+         * 用宿主管的 `ctx.timeout`（切页面时它一起清），不自己 setTimeout。
+         */
+        let planTimerOn = false;
+        for (const input of [toInput, meetInput]) {
+          input.addEventListener('input', () => {
+            if (planTimerOn) return;
+            planTimerOn = true;
+            ctx.timeout(() => { planTimerOn = false; refreshPlan(); }, 350);
+          }, { signal: ctx.signal });
+        }
+
+        addRow(T.inviteTo, toInput);
+        addRow(T.inviteMeet, meetInput);
+        addRow(T.inviteDays, dayBox);
+        addRow(T.inviteHow, modeBox, T.inviteHowHint);
+        addRow(T.inviteNote, noteInput);
+        planBox.append(el('p', 'jr-inv-idle', T.invitePlanIdle));
+        form.append(el('p', 'jr-inv-sub', T.invitePlanTitle), planBox, status, go);
+        app.append(form);
+
+        /* ---------------- 公告栏 ---------------- */
+        const boardBox = el('section', 'jr-inv');
+        boardBox.append(el('p', 'jr-inv-sub', T.inviteBoardTitle));
+        const boardMeta = el('p', 'jr-inv-idle');
+        const boardList = el('div', 'jr-inv-board');
+        boardBox.append(boardMeta, boardList);
+        boardBox.append(el('p', 'jr-inv-hint', T.inviteBoardHint));
+        app.append(boardBox);
+
+        const drawBoard = (b) => {
+          boardMeta.replaceChildren();
+          boardList.replaceChildren();
+          if (!b || !b.ready) {
+            boardList.append(el('p', 'jr-inv-bad', (b && b.reason) || T.err));
+            return;
+          }
+          boardMeta.textContent = [
+            fmt(T.invitePool, b.pool),
+            b.mineTaken > 0 ? fmt(T.inviteMine, b.mineTaken) : '',
+          ].filter(Boolean).join(' · ');
+          if (!b.list.length) {
+            boardList.append(el('p', 'jr-inv-idle', T.inviteBoardEmpty));
+            return;
+          }
+          for (const x of b.list) {
+            const card = el('article', 'jr-inv-card');
+            const top = el('div', 'jr-inv-card-top');
+            top.append(el('b', null, x.pet));
+            const meta = [`${T.inviteTo} ${x.toName}`];
+            /* 对方写的方式就照着显示，别翻译、别猜 —— 那是他自己挑的词。 */
+            if (x.mode) meta.push(`${T.inviteVia} ${x.mode}`);
+            meta.push(`${x.days}${T.inviteDaysUnit}`);
+            if (x.meetName) meta.push(fmt(T.inviteMeetAt, x.meetName));
+            if (x.taken) meta.push(T.inviteTaken);
+            top.append(el('span', 'jr-inv-hint', meta.filter(Boolean).join(' · ')));
+            card.append(top);
+            if (x.note) card.append(el('p', 'jr-inv-note', `「${x.note}」`));
+            boardList.append(card);
+          }
+          boardList.append(el('p', 'jr-inv-hint', T.inviteGoSee));
+        };
+
+        const loadBoard = () => ctx.invoke('board')
+          .then(drawBoard)
+          .catch((e) => drawBoard({ ready: false, reason: why(T, e) }));
+
+        const post = async () => {
+          const was = go.textContent;
+          go.disabled = true;
+          go.textContent = T.invitePosting;
+          status.dataset.tone = '';
+          try {
+            const r = await ctx.invoke('post', [
+              val(toInput).trim(), val(meetInput).trim(), days, val(noteInput).trim(), mode,
+            ]);
+            status.textContent = (r && r.text) || '';
+            status.dataset.tone = r && r.ok ? 'ok' : 'bad';
+            if (r && r.ok) {
+              toInput.value = '';
+              noteInput.value = '';
+              mode = '';
+              refreshPlan();
+              await loadBoard();
+            }
+          } catch (e) {
+            status.textContent = why(T, e);
+            status.dataset.tone = 'bad';
+          } finally {
+            go.textContent = was;
+            go.disabled = false;
+          }
+        };
+        go.addEventListener('click', () => { void post(); }, { signal: ctx.signal });
+
+        /*
+         * 开机那一下：先算「她现在在哪、默认碰头是哪儿」，再拉公告栏。
+         * 顺序有讲究 —— 两件事都打网络（board 那一条），并发发出去没必要，
+         * 而且 plan 是本地算的，先出字更像「已经在用」。
+         */
+        refreshPlan();
+        void loadBoard();
       },
     },
 
