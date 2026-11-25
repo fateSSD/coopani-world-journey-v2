@@ -129,6 +129,33 @@ test('plan：城市表里没有的名字、以及「她现在就在这儿」，�
   } finally { cleanup(); }
 });
 
+test('plan：填景点名按它所在的那座城算（涠洲岛 → 北海）', async () => {
+  /*
+   * 读者来信：「鲸鲸想去涠洲岛，但是被买船票拦住了」。
+   * 涠洲岛是北海 `SPOTS` 里的一个地方。面板要是只认城市名，
+   * 他在这一格填「涠洲岛」就永远得不到结果 —— 而工具那边已经认了，
+   * 两边口径不一致比两边都不认更糟。
+   */
+  const { world, cleanup } = await boot();
+  try {
+    const p = await world.panelInvoke('invite', 'plan', ['涠洲岛', '']);
+    assert.equal(p.ok, true, p.reason);
+    assert.equal(p.dest?.id, 'beihai', `该按北海算，实际 ${p.dest?.id}`);
+    assert.equal(p.spotOf, '涠洲岛', '要记住他填的是景点名，面板才好说明一句');
+    assert.ok(p.legs.length > 0, '路都没算出来');
+    assert.ok(p.legs.every((l) => l.modes.length > 0), `有走不通的段：${JSON.stringify(p.legs)}`);
+  } finally { cleanup(); }
+});
+
+test('plan：填城名时 spotOf 是空的 —— 别把正常输入也说成景点', async () => {
+  const { world, cleanup } = await boot();
+  try {
+    const p = await world.panelInvoke('invite', 'plan', ['拉萨', '']);
+    assert.equal(p.dest?.id, 'lasa');
+    assert.equal(p.spotOf, '');
+  } finally { cleanup(); }
+});
+
 test('post：按填的表发出去，「怎么去」走协议真字段，碰头城照填的发', async () => {
   const { world, calls, cleanup } = await boot();
   try {

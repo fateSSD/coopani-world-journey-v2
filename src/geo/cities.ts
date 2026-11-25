@@ -2906,6 +2906,38 @@ export function cityById(id: string): City | null {
   return null;
 }
 
+/**
+ * 这个名字是不是某座城里的一个地方？是就返回那座城。
+ *
+ * ## 为什么要有这一条（2026-11-25 读者来信）
+ *
+ * 「鲸鲸想去涠洲岛，但是被买船票拦住了」。查下来涠洲岛**根本不是一座城** ——
+ * 它在 `beihai` 的 `SPOTS` 里，是北海的一个地方。`journey_go_to('涠洲岛')`
+ * 走 `cityByName` 直接判「城市表里没有」，而她那边正在说「去买张船票」，
+ * 于是用户看到的是「想上岛，被船票拦住」—— 一个不存在的问题。
+ *
+ * 景点名当目的地这件事不会少（「去迪士尼」「去西湖」「去兵马俑」都是这么说的），
+ * 所以这里做一条反查：**景点 → 它所属的城**。
+ *
+ * 匹配只认两种：完全相同，或者输入里包含景点名（「北海涠洲岛」）。
+ * **反过来不做**（景点名包含输入）—— 那样「老街」「古城」会命中一大片，
+ * 把「哪个城都能去」这种错误答案伪装成正确答案。
+ */
+export function cityOfSpot(name: string): City | null {
+  const want = String(name || '').trim();
+  if (want.length < 2) return null;
+  let best: { id: string; spot: string } | null = null;
+  for (const [id, spots] of Object.entries(SPOTS)) {
+    for (const spot of spots) {
+      if (spot.length < 2) continue;
+      if (want !== spot && !want.includes(spot)) continue;
+      /* 命中多个就取更长的那个：「西湖」和「西湖音乐喷泉」同时命中时，后者更具体。 */
+      if (!best || spot.length > best.spot.length) best = { id, spot };
+    }
+  }
+  return best ? cityById(best.id) : null;
+}
+
 /** 按名字找。中文名优先，其次英文 id。找不到返回 null。 */
 export function cityByName(name: string): City | null {
   const key = name.trim();

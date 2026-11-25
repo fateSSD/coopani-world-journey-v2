@@ -11,7 +11,7 @@ import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, TriggerMode, BlobInput, EventEnvelope, WorldLamp,
 } from 'cortico/core/types.ts';
 import { JOURNEY_ID, journeyConfigGroups, type JourneyConfigSection } from './config.ts';
-import { cityByName, cityById, CITIES, terrainOf, type City } from './geo/cities.ts';
+import { cityByName, cityById, cityOfSpot, CITIES, terrainOf, type City } from './geo/cities.ts';
 import { spotKindLine } from './geo/spot-profile.ts';
 import { distanceKm } from './geo/distance.ts';
 import { modeById, hoursFor, type ModeId, type TravelMode, type SeatGrade } from './geo/modes.ts';
@@ -889,8 +889,22 @@ export const socialMethods: Record<string, any> = {
       };
     }
     const here = this.cityOrNull(this.st.hereId);
-    const c = cityByName(toName.trim());
+    let c = cityByName(toName.trim());
     if (!here) return { text: '连自己在哪都不知道，先不发。', isError: true };
+    /*
+     * **景点名当目的地**（2026-11-25，和 `journey_go_to` 同一条路）：
+     * 「约人去涠洲岛」里的涠洲岛是北海的一个地方，不是一座城。
+     * 改约那座城，并在回执里说清 —— 直接判「不存在」只会让他在
+     * 「涠洲岛明明存在」和「插件说没有」之间反复。
+     */
+    let spotAlias = '';
+    if (!c) {
+      const owner = cityOfSpot(toName.trim());
+      if (owner) {
+        c = owner;
+        spotAlias = toName.trim();
+      }
+    }
     if (!c) {
       return {
         text: `内置城市表里没有「${toName.trim()}」。换个说法，或者挑个近一点的大城市 —— 邀一个不存在的地方没意义。`,
@@ -990,7 +1004,8 @@ export const socialMethods: Record<string, any> = {
      * 明天就会问「小满怎么还没来」。这不是她记错，是没人告诉过她这件事没有回音。
      */
     return {
-      text: `发出去了：${meetCity ? `先在${meetCity.name}见面，再` : ''}${here.name} → ${c.name}，`
+      text: (spotAlias ? `「${spotAlias}」在${c.name}，所以约的是${c.name} —— 到了各自再安排去那儿。\n` : '')
+        + `发出去了：${meetCity ? `先在${meetCity.name}见面，再` : ''}${here.name} → ${c.name}，`
         + `在那儿一起待 ${d} 天${note ? `，留了一句「${note}」` : ''}。`
         + '谁能看见是**全服**的鱼 —— 不只同一座城，路过哪儿都能看见；没有人接是常事，那条 24 小时后自己过期，不会有回音。'
         + '别把它当成约好了，该怎么走还怎么走。',
@@ -1104,11 +1119,21 @@ export const socialMethods: Record<string, any> = {
     legs: Array<{ label: string; km: number; modes: string[] }>;
     ok: boolean;
     reason: string;
+    /** 他填的是某个景点名（「涠洲岛」）时，这里放原始输入、`dest` 放它所属的城。空 = 没这回事。 */
+    spotOf: string;
   } {
     const here = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
     const toName = String(toNameRaw ?? '').trim();
     const meetName = String(meetNameRaw ?? '').trim();
-    const dest = toName ? cityByName(toName) : null;
+    /*
+     * 景点名当目的地（2026-11-25）：填「涠洲岛」按北海算 ——
+     * 面板和 `journey_go_to` 必须是同一个口径，否则他在面板上填得进去、
+     * 发布时又被拒，比一开始就说不行更糟。
+     */
+    const direct = toName ? cityByName(toName) : null;
+    const spotOwner = !direct && toName ? cityOfSpot(toName) : null;
+    const dest = direct ?? spotOwner;
+    const spotOf = spotOwner ? toName : '';
     /*
      * 空 = 就在她脚下这座城碰头（老口径）。填了别的城才算多一级；
      * 填的正好是目的地就等于没有这一级 —— 和 `sendInvite` 里那条判定一致。
@@ -1164,6 +1189,7 @@ export const socialMethods: Record<string, any> = {
         : null,
       dest: dest ? { id: dest.id, name: dest.name } : null,
       nameProblem,
+      spotOf,
       meetProblem,
       meetReady,
       legs,

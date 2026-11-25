@@ -243,6 +243,7 @@ const TEXT = {
     invitePosting: '发布中…',
     invitePlanTitle: '这一趟怎么走',
     invitePlanIdle: '填个目的地，这边把两段路算出来。',
+    inviteSpotAt: '「{v}」是{n}的一个地方',
     inviteNoModes: '没有能走的方式',
     inviteKm: '公里',
     inviteBoardTitle: '现在挂着的邀约',
@@ -466,6 +467,7 @@ const TEXT = {
     invitePosting: 'Posting…',
     invitePlanTitle: 'How this trip goes',
     invitePlanIdle: 'Pick a destination and this works out both legs.',
+    inviteSpotAt: '{v} is a place in {n}',
     inviteNoModes: 'no way to travel',
     inviteKm: 'km',
     inviteBoardTitle: 'Invites up right now',
@@ -2327,6 +2329,11 @@ export default {
               : `${p.here.name} → ${p.dest.name}`)
             : null;
           if (where) planBox.append(where);
+          /*
+           * 他填的是景点名（「涠洲岛」）—— 说明一句「按哪座城算的」。
+           * 不写的话上面那行会突然变成「兰州 → 北海」，他以为自己填错了。
+           */
+          if (p.spotOf && p.dest) planBox.append(el('p', 'jr-inv-idle', fmt2(T.inviteSpotAt, p.spotOf, p.dest.name)));
           for (const leg of p.legs || []) {
             const line = el('p', 'jr-inv-leg');
             line.append(el('b', null, leg.label));

@@ -11,7 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { CITIES, cityById, cityByName, nightIn, nightText, showsIn, VISTA } = await import('../src/geo/cities.ts');
+const { CITIES, cityById, cityByName, cityOfSpot, nightIn, nightText, showsIn, VISTA } = await import('../src/geo/cities.ts');
 const { planDay } = await import('../src/plan/dayplan.ts');
 const { rollLodging } = await import('../src/plan/lodging.ts');
 const { seasonLine } = await import('../src/geo/season.ts');
@@ -258,4 +258,39 @@ test('nightIn / nightText：字符串全年，对象只看月份', () => {
   /* nightText 收的是「那条去处」本身，不是城市 —— nightIn 才收城市 */
   assert.equal(nightText({ text: '极光', months: [12] }), '极光');
   assert.equal(nightText(null), null);
+});
+
+/* ---------------- 景点 → 所属城（2026-11-25） ---------------- */
+
+test('景点名能查出它在哪座城 —— 不查就会被人当成「去不了的地方」', () => {
+  /*
+   * 来信：「鲸鲸想去涠洲岛，但是被买船票拦住了」。
+   * 涠洲岛不是城，是北海 `SPOTS` 里的一个地方。`cityByName('涠洲岛')` 给 null，
+   * 于是整条路以「城市表里没有」结束，而用户那边听到的是「船票买不了」。
+   */
+  assert.equal(cityOfSpot('涠洲岛')?.id, 'beihai');
+  assert.equal(cityOfSpot('银滩')?.id, 'beihai', '同一座城的别的景点也要认');
+  assert.equal(cityOfSpot('西湖')?.id, 'hangzhou');
+  assert.equal(cityOfSpot('兵马俑')?.id, 'xian');
+  assert.equal(cityOfSpot('青城山')?.id, 'chengdu');
+});
+
+test('景点反查的边界：带城名的能认，模糊的和城市名的不抢', () => {
+  /* 「北海涠洲岛」这种把城名和景点连起来的说法很常见。 */
+  assert.equal(cityOfSpot('北海涠洲岛')?.id, 'beihai');
+
+  /*
+   * **不做反向匹配**（景点名包含输入）。做了的话「老街」会命中
+   * 「北海老街」「东门老街」…一大片，等于「哪座城都能去」——
+   * 那不是答案，是把错误伪装成答案。
+   */
+  assert.equal(cityOfSpot('老街'), null);
+  assert.equal(cityOfSpot('古城'), null);
+
+  /* 城市名归 `cityByName` 管，这里不该抢 —— 否则「兰州市」会被景点表里
+     某个含「兰州」的条目错配走。 */
+  assert.equal(cityOfSpot('兰州市'), null);
+  /* 太短的一律不认，避免「山」「湖」这种把半张表都命中的输入。 */
+  assert.equal(cityOfSpot('山'), null);
+  assert.equal(cityOfSpot(''), null);
 });

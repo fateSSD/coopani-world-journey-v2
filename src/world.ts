@@ -20,7 +20,7 @@ import type {
   Logger, ToolDef, World, WorldHost, WorldWebUiDecl, TriggerMode, BlobInput, EventEnvelope, WorldLamp, EventTag,
 } from 'cortico/core/types.ts';
 import { JOURNEY_ID, journeyConfigGroups, type JourneyConfigSection } from './config.ts';
-import { cityByName, cityById, CITIES, terrainOf, type City } from './geo/cities.ts';
+import { cityByName, cityById, cityOfSpot, CITIES, terrainOf, type City } from './geo/cities.ts';
 import { spotKindLine } from './geo/spot-profile.ts';
 import { distanceKm } from './geo/distance.ts';
 import { modeById, hoursFor, type ModeId, type TravelMode, type SeatGrade } from './geo/modes.ts';
@@ -3694,6 +3694,34 @@ export class JourneyWorld implements World {
 
     const dest = cityByName(name);
     if (!dest) {
+      /*
+       * **景点名当目的地**（2026-11-25 读者来信：「鲸鲸想去涠洲岛，被买船票拦住」）。
+       *
+       * 涠洲岛是北海 `SPOTS` 里的一个地方，不是一座城 —— 走 `cityByName`
+       * 只会得到一句「编一个不存在的地方没意义」，而她那边正在说去买船票。
+       * 用户看到的就是「想上岛，被票卡住」，而真正缺的是「岛在哪座城」这一步。
+       *
+       * 现在的处理：**改去它所属的城，并在回执第一行说清为什么**。
+       * 她能到的只有城，到了城里再安排去那个地方 —— 这也是现实里的走法。
+       */
+      const owner = cityOfSpot(name);
+      if (owner) {
+        if (this.st.hereId === owner.id) {
+          return {
+            text: `「${name}」就在${owner.name}城里，不用为它买票挪地方 —— 想去看，在城里安排一天过去就行。`,
+            isError: true,
+          };
+        }
+        const r = await this.goTo(owner.name, modeWord);
+        /*
+         * 措辞按两种输入分开：「涠洲岛」→「涠洲岛在北海」；
+         * 「北海涠洲岛」→ 不要写成「北海涠洲岛在北海」，那是自己绕自己。
+         */
+        const head = name.includes(owner.name)
+          ? `${name} —— 先到${owner.name}，到了再安排去那个地方。`
+          : `「${name}」在${owner.name}。先到${owner.name}，到了再安排去那儿。`;
+        return { ...r, text: `${head}\n${r.text}` };
+      }
       return {
         text: `内置城市表里没有「${name}」。换个说法，或者给个近一点的大城市 —— 编一个不存在的地方没意义。`,
         isError: true,

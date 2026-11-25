@@ -388,3 +388,51 @@ test('没去过的地方不许硬凑这句', async () => {
     assert.doesNotMatch(String(out.text), /以前到过/, `没去过却说去过：${out.text}`);
   } finally { restore(); }
 });
+
+/* ---------------- 景点名当目的地（2026-11-25 读者来信） ---------------- */
+
+test('说景点名就去它所在的那座城 —— 涠洲岛不是城，是北海的一个地方', async () => {
+  /*
+   * 来信原话：「鲸鲸想去涠洲岛，但是被买船票拦住了」。
+   * 涠洲岛在 beihai 的 SPOTS 里，走 cityByName 会判「城市表里没有」——
+   * 而她已经在那儿说「去买张船票」，用户看到的就是「想上岛，被票卡住」。
+   * 现在改成：认得出是哪个城的景点，就去那座城，并在回执第一行说清。
+   */
+  const { world, restore } = await boot(staying('lanzhou'), NOW);
+  try {
+    const out = await goTo(world)({ city: '涠洲岛' });
+    assert.ok(!out.isError, `没走成：${out.text}`);
+    assert.equal(world.st.leg?.toId, 'beihai', `该去北海，实际去了 ${world.st.leg?.toId}`);
+    assert.match(out.text, /涠洲岛/, '回执里要提到他说的那个地方');
+    assert.match(out.text, /北海/, '回执里要写清它属于哪座城');
+  } finally { restore(); }
+});
+
+test('景点名带上城名也认（北海涠洲岛），措辞不绕自己', async () => {
+  const { world, restore } = await boot(staying('lanzhou'), NOW);
+  try {
+    const out = await goTo(world)({ city: '北海涠洲岛' });
+    assert.ok(!out.isError, `没走成：${out.text}`);
+    assert.equal(world.st.leg?.toId, 'beihai');
+    assert.doesNotMatch(out.text, /北海涠洲岛.*在北海/, '不要写成「北海涠洲岛在北海」');
+  } finally { restore(); }
+});
+
+test('人已经在那座城里，说景点名不该让她为这个挪地方', async () => {
+  const { world, restore } = await boot(staying('beihai'), NOW);
+  try {
+    const out = await goTo(world)({ city: '涠洲岛' });
+    assert.equal(out.isError, true, '在城里说景点名，不该触发一次出发');
+    assert.equal(world.st.phase, 'staying', '她不该被挪走');
+    assert.match(out.text, /北海城里/, `说清是在城里：${out.text}`);
+  } finally { restore(); }
+});
+
+test('真不存在的名字还是拒 —— 不要为了「有个答案」乱指一座城', async () => {
+  const { world, restore } = await boot(staying('lanzhou'), NOW);
+  try {
+    const out = await goTo(world)({ city: '蓬莱仙山' });
+    assert.equal(out.isError, true);
+    assert.match(out.text, /城市表里没有/);
+  } finally { restore(); }
+});
