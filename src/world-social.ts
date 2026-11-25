@@ -45,7 +45,7 @@ import {
   reportFootprint, reportSignpost, fetchStatus, paceGap,
   putCard, fetchCards, EMPTY_BOARD,
   putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, normalizeMeetTargets, explainNet,
-  sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine,
+  sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine, agoText,
   type MeetOptions,
 } from './meet.ts';
 import { factsFor } from './geo/hotel-facts.ts';
@@ -1065,9 +1065,16 @@ export const socialMethods: Record<string, any> = {
           const where = from && x.meetCity
             ? `先在${cityById(x.meetCity)?.name ?? x.meetCity}碰头`
             : (from ? `从${from.name}出发` : '');
+          /*
+           * 「多久之前发的」必须写：邀约只挂 24 小时，
+           * 「刚发的」可以从容收拾，「23 小时前的」得现在就动身。
+           * 用真实时间算（`realNow`），世界时钟是乘过流速的。
+           */
+          const age = x.postedAt ? agoText(x.postedAt, this.realNow()) : '';
           return `- ${this.nameOf(x.pet)} 想去${dest?.name ?? x.to}，待 ${x.days} 天`
             + (where ? `，${where}` : '')
             + (x.mode ? `，坐${x.mode}` : '')
+            + (age ? `，${age}发的` : '')
             + (x.note ? `（「${x.note}」）` : '')
             + `　id=${x.id}`;
         }).join('\n')
@@ -1209,7 +1216,7 @@ export const socialMethods: Record<string, any> = {
     here: { id: string; name: string };
     pool: number;
     mineTaken: number;
-    list: Array<{ id: string; pet: string; from: string; fromName: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string; near: boolean }>;
+    list: Array<{ id: string; pet: string; from: string; fromName: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string; near: boolean; ageText: string }>;
     canPost: string;
   }> {
     const here = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
@@ -1228,7 +1235,7 @@ export const socialMethods: Record<string, any> = {
       here: { id: here.id, name: here.name },
       pool: 0,
       mineTaken: 0,
-      list: [] as Array<{ id: string; pet: string; from: string; fromName: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string; near: boolean }>,
+      list: [] as Array<{ id: string; pet: string; from: string; fromName: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string; near: boolean; ageText: string }>,
       canPost,
     };
     if (!meet) {
@@ -1266,6 +1273,12 @@ export const socialMethods: Record<string, any> = {
         taken: claimed.has(x.id) || x.to === here.id,
         /* 同城标记只用来加一句「就在这儿」，不代表「只看得见这个」——名单是全服的。 */
         near: x.near,
+        /*
+         * 「多久之前发的」。**用 `realNow()` 算，不能用 `worldNow()`** ——
+         * 服务端存的是真实时间（`new Date().toISOString()`），
+         * 而世界时钟是乘过流速的：24 倍速下「2 小时前」会被算成「2 天前」。
+         */
+        ageText: agoText(x.postedAt, this.realNow()),
       })),
       canPost,
     };

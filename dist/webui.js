@@ -2417,6 +2417,12 @@ export default {
              * 不写的话她不知道「要先去哪儿」，会以为目的地就在旁边。
              */
             if (x.fromName) meta.push(fmt(T.inviteFrom, x.fromName));
+            /*
+             * 「多久之前发的」。邀约只挂 24 小时：「刚发的」可以从容收拾，
+             * 「23 小时前的」得现在就动身 —— 这两件事对他要不要现在看，分量完全不同。
+             * 后端已经算好中文，前端不要再算一遍（否则两个地方的时间口径会漂）。
+             */
+            if (x.ageText) meta.push(x.ageText);
             if (x.mode) meta.push(`${T.inviteVia} ${x.mode}`);
             meta.push(`${x.days}${T.inviteDaysUnit}`);
             if (x.meetName) meta.push(fmt(T.inviteMeetAt, x.meetName));

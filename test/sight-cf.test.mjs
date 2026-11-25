@@ -790,6 +790,10 @@ test('「怎么去」是独立一列 —— 发文带上去，列表和接单都
   /* 接的人也得知道 —— 否则这个字段只是公告栏上的装饰。 */
   const acc = await (await worker.fetch(acceptReq({ uid: 'c'.repeat(24), id }), env)).json();
   assert.equal(acc.mode, '火车');
+  /* 发布时间（2026-11-25）：24 小时就过期，接的人得知道剩下多少。 */
+  assert.match(acc.at, /^\d{4}-\d{2}-\d{2}T/, `接单响应没有发布时间：${acc.at}`);
+  assert.match(pool.list[0].at, /^\d{4}-\d{2}-\d{2}T/, `列表没有发布时间：${pool.list[0].at}`);
+  assert.match(st.list[0].at, /^\d{4}-\d{2}-\d{2}T/, 'status 那条也要有');
 });
 
 test('「怎么去」和正文一样过内容过滤，长度也截', async () => {

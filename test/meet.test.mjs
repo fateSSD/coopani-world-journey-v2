@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 const {
   slotOf, neighborLine, reportPresence, findNeighbors, MEET_MAX,
-  sendInvite, listInvites, acceptInvite, inviteLine,
+  sendInvite, listInvites, acceptInvite, inviteLine, agoText,
 } = await import('../src/meet.ts');
 
 test('时段四档：按钟点切，边界不能漏', () => {
@@ -281,7 +281,7 @@ test('邀约：列表只留约定的字段（含见面城、出发城），脏�
      * 空串 = 就在目的地见（老口径）/ 没挑怎么去，0 = 对方没报流速。
      */
     assert.deepEqual(r.list[0],
-      { id: 'aaaaaaaaaaaaaaaa', pet: '小满', to: 'lhasa', days: 3, note: '想看雪山', meetCity: '', pace: 0, mode: '', fromCity: '', near: false },
+      { id: 'aaaaaaaaaaaaaaaa', pet: '小满', to: 'lhasa', days: 3, note: '想看雪山', meetCity: '', pace: 0, mode: '', fromCity: '', near: false, postedAt: '' },
       '多带了字段，或者少了字段');
     assert.equal(r.list[1].days, 2, '字符串天数没转成数字');
   } finally { globalThis.fetch = orig; }
@@ -720,4 +720,27 @@ test('上报失败要说清是哪一层：服务端回了 500 和请求没发出
     const ok = await reportPresence(opt, 'xian', '2026-11-04', 'evening', '吃面');
     assert.deepEqual(ok, { ok: true, why: '' });
   } finally { globalThis.fetch = orig; }
+});
+
+test('「多久之前发的」：四档边界与时钟差', () => {
+  /*
+   * 邀约只挂 24 小时，这一格直接影响「要不要现在动身」——
+   * 所以边界要钉死，别让人看到「0 分钟前」或者「-1 天」。
+   */
+  const now = new Date('2026-11-25T10:00:00Z');
+  const at = (iso) => agoText(iso, now);
+
+  assert.equal(at(''), '', '没有时间就不写，不是写「刚刚」');
+  assert.equal(at('不是时间'), '');
+  assert.equal(at('2026-11-25T09:59:30Z'), '刚刚', '半分钟内算刚刚');
+  assert.equal(at('2026-11-25T09:59:00Z'), '1 分钟前');
+  assert.equal(at('2026-11-25T09:55:00Z'), '5 分钟前');
+  assert.equal(at('2026-11-25T09:00:00Z'), '1 小时前');
+  assert.equal(at('2026-11-25T07:00:00Z'), '3 小时前');
+  assert.equal(at('2026-11-24T11:00:00Z'), '23 小时前', '23 小时还在「小时」档');
+  assert.equal(at('2026-11-24T09:00:00Z'), '1 天前');
+  /* 服务端比本机快几秒：说「刚刚」，不能说成负数。 */
+  assert.equal(at('2026-11-25T10:02:00Z'), '刚刚', '时钟差不能写「-2 分钟前」');
+  /* 时钟差很大也如实说 —— 不为了「看起来合理」掰回 24 小时内。 */
+  assert.equal(at('2026-11-20T10:00:00Z'), '5 天前');
 });

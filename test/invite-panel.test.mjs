@@ -181,8 +181,9 @@ test('board：只读一栏 —— 读得到池子与挂着的那几条，且**�
     pool: 641,
     mineTaken: 2,
     list: [
-      { id: 'aaaaaaaaaaaaaaaa', pet: '小雪', from: 'xian', to: 'lasa', days: 3, note: '一起去看布达拉宫', at: '2026-11-24T04:00:00Z', meet: 'xian', pace: 1, mode: '火车', near: true },
-      { id: 'bbbbbbbbbbbbbbbb', pet: '阿岸', from: 'haerbin', to: 'kunming', days: 2, note: '', at: '2026-11-24T03:00:00Z', meet: '', pace: 1, near: false },
+      { id: 'aaaaaaaaaaaaaaaa', pet: '小雪', from: 'xian', to: 'lasa', days: 3, note: '一起去看布达拉宫', at: '2026-11-24T03:00:00Z', meet: 'xian', pace: 1, mode: '火车', near: true },
+      /* 这一条故意不给 `at` —— 老服务端不回这一格时，界面不该编一个时间出来。 */
+      { id: 'bbbbbbbbbbbbbbbb', pet: '阿岸', from: 'haerbin', to: 'kunming', days: 2, note: '', meet: '', pace: 1, near: false },
     ],
   };
   const { world, calls, cleanup } = await boot({ status });
@@ -211,6 +212,9 @@ test('board：只读一栏 —— 读得到池子与挂着的那几条，且**�
     assert.equal(b.list[1].fromName, '哈尔滨');
     assert.equal(b.list[0].near, true, '同城那条要带 near');
     assert.equal(b.list[1].near, false, '外地的不是 near');
+    /* 多久之前（2026-11-25）：这个 world 的 now 固定 05:00，那条是 03:00 发的。 */
+    assert.equal(b.list[0].ageText, '2 小时前', `发布时间算错：${b.list[0].ageText}`);
+    assert.equal(b.list[1].ageText, '', '没给 at 的老服务端，这一格该是空串');
     /*
      * 这条是这一页的命门：`/invite?mine=1` 会让服务端把结果置成「已认领」，
      * 并在本地建一份约定 —— 面板刷新一次就等于替她认下一桩约。

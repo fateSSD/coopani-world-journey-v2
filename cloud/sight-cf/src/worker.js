@@ -1082,7 +1082,7 @@ async function inviteRoute(request, env, url, method) {
         const { results } = await db.prepare(
           `SELECT t.id AS id, t.pet AS pet, t.uid AS taker_uid,
                   i.to_city AS to_city, i.days AS days, i.note AS note,
-                  i.meet_city AS meet_city, i.pace AS pace, i.mode AS mode
+                  i.meet_city AS meet_city, i.pace AS pace, i.mode AS mode, i.at AS at
              FROM invite_takers t JOIN invites i ON i.id = t.id
             WHERE i.uid = ?1 AND t.seen = 0 AND i.expires_at > ?2
             ORDER BY t.at ASC LIMIT 12`,
@@ -1106,6 +1106,8 @@ async function inviteRoute(request, env, url, method) {
           pace: Number(r.pace) || 0,
           /* 怎么去。空 = 没挑，或老数据。同样按用户可写内容过滤一遍再吐出去。 */
           mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
+          /* 这条是什么时候发的（2026-11-25）。发起者认领时能看出「是刚才还是隔了一天」。 */
+          at: typeof r.at === 'string' ? r.at.slice(0, 40) : '',
         }));
         return reply(200, { ok: true, list });
       }
@@ -1155,6 +1157,8 @@ async function inviteRoute(request, env, url, method) {
         /* 怎么去。空 = 没挑 / 老数据；和 note 一样按用户可写内容过滤。 */
         mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
         near: Number(r.near) === 1,
+        /* 发布时间。原始 ISO 直接回去，相对时间由客户端算（服务端不做时区猜测）。 */
+        at: typeof r.at === 'string' ? r.at.slice(0, 40) : '',
       }));
 
       return reply(200, { ok: true, list });
@@ -2101,6 +2105,8 @@ async function statusRoute(request, env, url, ctx) {
         /* 怎么去。空 = 没挑 / 老数据；和 note 一样按用户可写内容过滤。 */
         mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
         near: Number(r.near) === 1,
+        /* 发布时间。原始 ISO 直接回去，相对时间由客户端算（服务端不做时区猜测）。 */
+        at: typeof r.at === 'string' ? r.at.slice(0, 40) : '',
       })),
     }, { 'x-pool-cache': counts.cache ?? 'miss' });
   } catch (e) {
@@ -2141,7 +2147,7 @@ async function acceptRoute(request, env, url, method) {
     }
 
     const row = await db.prepare(
-      'SELECT id, uid, pet, to_city, days, note, expires_at, taken_by, meet_city, pace, mode FROM invites WHERE id = ?1',
+      'SELECT id, uid, pet, to_city, days, note, at, expires_at, taken_by, meet_city, pace, mode FROM invites WHERE id = ?1',
     ).bind(id).first();
 
     if (!row) return reply(404, { ok: false, error: 'gone' });
@@ -2158,6 +2164,8 @@ async function acceptRoute(request, env, url, method) {
       pace: Number(row.pace) || 0,
       /* 对方打算怎么去（2026-11-25）。接的人据此知道「要不要自己订票」。 */
       mode: looksBad(String(row.mode || ''), extra) ? '' : clean(row.mode, 40),
+      /* 什么时候发的。24 小时就过期，接的人得知道这条还剩多少时间。 */
+      at: typeof row.at === 'string' ? row.at.slice(0, 40) : '',
       ...extraFields,
     });
 

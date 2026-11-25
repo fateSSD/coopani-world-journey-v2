@@ -689,6 +689,13 @@ export interface Invite {
    * 不参与可见性（全服都能看见，排序也不再按这个来）。
    */
   readonly near: boolean;
+  /**
+   * 这条是什么时候发的（ISO，2026-11-25）。**空 = 老服务端没回这一格。**
+   *
+   * 邀约只挂 24 小时，不写「多久之前发的」，接的人分不清「刚发的」和「快过期了」——
+   * 这两件事对他要不要现在动身的影响完全相反。
+   */
+  readonly postedAt: string;
 }
 
 /**
@@ -791,6 +798,7 @@ const toInvite = (x: unknown): Invite | null => {
     /* 出发城同理：老服务端不回就是空串，界面不显示那一行。 */
     fromCity: flat(o.from, 40),
     near: o.near === true,
+    postedAt: typeof o.at === 'string' ? o.at.slice(0, 40) : '',
   };
 };
 
@@ -804,6 +812,28 @@ const toInvites = (raw: unknown): Invite[] => {
   const list = Array.isArray(raw) ? raw : [];
   return list.map(toInvite).filter((x): x is Invite => x !== null).slice(0, 6);
 };
+
+/**
+ * 把发布时间说成「多久之前」。**纯函数，好测。**
+ *
+ * 为什么这件事要紧：邀约只挂 24 小时，「刚发的一条」和「23 小时前的一条」
+ * 对想接的人意味着完全不同的事 —— 一个可以从容收拾，一个得现在就动身。
+ *
+ * **不封顶、不美化**：万一服务端与本机时钟差了几个小时，也如实说成「N 天前」，
+ * 不要为了「看起来合理」把它掰回 23 小时以内。时钟差是事实，藏起来只会让人算错。
+ */
+export function agoText(iso: string, now: Date): string {
+  const t = Date.parse(String(iso || ''));
+  if (!Number.isFinite(t)) return '';
+  const ms = now.getTime() - t;
+  /* 负数 = 服务端比本机快了几秒（或刚发完时钟回跳）。说「刚刚」，不写「-3 分钟前」。 */
+  if (!Number.isFinite(ms) || ms < 60_000) return '刚刚';
+  const min = Math.floor(ms / 60_000);
+  if (min < 60) return `${min} 分钟前`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} 小时前`;
+  return `${Math.floor(h / 24)} 天前`;
+}
 
 /**
  * 服务端那边先说了什么，就按它说的来。
@@ -1080,6 +1110,8 @@ export async function acceptInvite(
   readonly pace: number;
   /** 对方打算怎么去。空 = 没挑 / 老数据。**不是约定**，票各买各的。 */
   readonly mode: string;
+  /** 这条邀约是什么时候发的（ISO）。空 = 老服务端没回。 */
+  readonly postedAt: string;
 } | InviteFail> {
   const url = clean(opt.url);
   if (!url || !okUidLike(clean(opt.uid))) return { ok: false, reason: '没配碰面服务器' };
@@ -1118,6 +1150,7 @@ export async function acceptInvite(
       meetCity: meetOf(b.meet, to),
       pace: paceOf(b.pace),
       mode: flat(b.mode, 40),
+      postedAt: typeof b.at === 'string' ? b.at.slice(0, 40) : '',
     };
   } catch (e) {
     return { ok: false, reason: netFail(e) };
