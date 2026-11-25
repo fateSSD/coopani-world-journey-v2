@@ -556,6 +556,58 @@ test('发一条，同城的人能收到', async () => {
   assert.equal(body.list[0].note, '走滇藏线，慢一点');
 });
 
+test('邀约是全服可见的 —— 同城不再把外地的挤出窗口', async () => {
+  const env = { DB: makeDB() };
+  /*
+   * 2026-11-25 之前是 `ORDER BY near DESC LIMIT 3`：同城三条一满，
+   * 外地的邀约**永远轮不进这个窗口**，用户看到的就是「只能同城看见」。
+   * 这条用例专门盯着那个回归 —— 造四条同城的，再放一条外地的。
+   */
+  /* uid 必须是 hex —— `okUid` 会挡掉 g/z 这种字母，POST 直接 400。 */
+  const uids = ['1', '2', '3', '4'];
+  for (let i = 0; i < uids.length; i++) {
+    const r = await worker.fetch(inviteReq('POST', mk({
+      uid: uids[i].repeat(24), pet: `同城${i + 1}`, from: 'xian', to: 'dali',
+    })), env);
+    assert.equal(r.status, 200, `同城那条没发出去：${await r.text()}`);
+    await new Promise((res) => setTimeout(res, 2));   // 让 `at` 分出先后
+  }
+  const farRes = await worker.fetch(inviteReq('POST', mk({
+    uid: 'e'.repeat(24), pet: '外地鱼', from: 'haerbin', to: 'sanya',
+  })), env);
+  assert.equal(farRes.status, 200, `外地那条没发出去：${await farRes.text()}`);
+
+  const body = await (await worker.fetch(new Request(
+    `${INV}?city=xian&uid=${'b'.repeat(24)}`,
+  ), env)).json();
+  assert.equal(body.ok, true);
+  const names = body.list.map((x) => x.pet);
+  assert.ok(names.includes('外地鱼'), `外地邀约被同城挤掉了：${names.join('/')}`);
+  assert.equal(body.list.length, 5, `五条都该在，实际 ${body.list.length}`);
+
+  const far = body.list.find((x) => x.pet === '外地鱼');
+  assert.equal(far.from, 'haerbin', '出发城要带出来 —— 接的人得知道先往哪儿去');
+  assert.equal(far.near, false, '外地的 near 应该是 false');
+  assert.equal(body.list.find((x) => x.pet === '同城1').near, true, '同城的 near 是 true');
+});
+
+test('邀约列表最多六条，按发布时间新的在前', async () => {
+  const env = { DB: makeDB() };
+  const hexes = ['a', 'b', 'c', 'd', 'e', 'f', '1', '2'];
+  for (let i = 0; i < hexes.length; i++) {
+    const r = await worker.fetch(inviteReq('POST', mk({
+      uid: hexes[i].repeat(24), pet: `鱼${i}`, from: 'xian', to: 'dali',
+    })), env);
+    assert.equal(r.status, 200, `第 ${i} 条没发出去：${await r.text()}`);
+    await new Promise((res) => setTimeout(res, 2));
+  }
+  const body = await (await worker.fetch(new Request(
+    `${INV}?city=xian&uid=${'b'.repeat(24)}`,
+  ), env)).json();
+  assert.equal(body.list.length, 6, `该截到六条，实际 ${body.list.length}`);
+  assert.equal(body.list[0].pet, '鱼7', `最新的该排最前：${body.list.map((x) => x.pet).join('/')}`);
+});
+
 test('邀约返回里没有发起者的 uid —— 和碰面同一条线：看得见，摸不着', async () => {
   const env = { DB: makeDB() };
   const mine = 'abcdef0123456789abcdef01';
@@ -787,17 +839,24 @@ test('邀请路径的尾斜杠也认', async () => {
 
 /* ---------- 2026-11-05：全球可见 + 发起者也认领（两条鱼一起去） ---------- */
 
-test('同城的排前面：先看这一带的', async () => {
+test('按发布时间排：后发的在前，同城只标一句、不插队', async () => {
   const env = { DB: makeDB() };
-  // 先在西安发一条，再在拉萨发一条（后发的更晚，按时间会被挤下去）
+  /*
+   * 2026-11-25 之前这条叫「同城的排前面」，断言的是 `ORDER BY near DESC`。
+   * 那个排序配 `LIMIT 3` 就是把外地的挤出窗口的原因（用户看到的现象是
+   * 「邀约只看得见同城的」）。现在按时间排，同城只剩一个标记。
+   */
   await worker.fetch(inviteReq('POST', mk({ uid: 'c'.repeat(24), pet: '同城鱼', from: 'xian' })), env);
+  await new Promise((res) => setTimeout(res, 3));
   await worker.fetch(inviteReq('POST', mk({ uid: 'd'.repeat(24), pet: '外地鱼', from: 'lasa' })), env);
 
   const body = await (await worker.fetch(new Request(
     `${INV}?city=xian&uid=${'b'.repeat(24)}`,
   ), env)).json();
   assert.equal(body.list.length, 2, '两个人发的都该在');
-  assert.equal(body.list[0].pet, '同城鱼', `同城那条该排第一，实际 ${body.list[0].pet}`);
+  assert.equal(body.list[0].pet, '外地鱼', `新的该在前（同城不插队），实际 ${body.list[0].pet}`);
+  assert.equal(body.list[0].near, false);
+  assert.equal(body.list[1].near, true, '同城那条仍然是 near');
 });
 
 test('接的人的名字要写下来 —— 发起者靠它知道「谁接了」', async () => {

@@ -992,13 +992,13 @@ export const socialMethods: Record<string, any> = {
     return {
       text: `发出去了：${meetCity ? `先在${meetCity.name}见面，再` : ''}${here.name} → ${c.name}，`
         + `在那儿一起待 ${d} 天${note ? `，留了一句「${note}」` : ''}。`
-        + '谁能看见全看那会儿谁也在这一带 —— 没有人接是常事，那条 24 小时后自己过期，不会有回音。'
+        + '谁能看见是**全服**的鱼 —— 不只同一座城，路过哪儿都能看见；没有人接是常事，那条 24 小时后自己过期，不会有回音。'
         + '别把它当成约好了，该怎么走还怎么走。',
     };
   },
 
 
-  /** 看看同城有谁在找伴。不改任何状态。 */
+  /** 看看谁在找伴。**全服的邀约都看得见**（2026-11-25 起），不改任何状态。 */
   async listNearbyInvites(): Promise<{ text: string; isError?: boolean }> {
     const meet = this.meetOptions();
     if (!meet) return { text: '碰面服务器没配，看不到有没有人找伴。', isError: true };
@@ -1011,7 +1011,7 @@ export const socialMethods: Record<string, any> = {
      * 现在在家也能看见，接不接另说（看下一段）。
      */
     if (this.st.phase === 'traveling') {
-      return { text: '她在路上，还没落地，看不到这一带谁在找伴。到了再说。', isError: true };
+      return { text: '她在路上，还没落地，这会儿看不了谁在找伴。到了再说。', isError: true };
     }
     const atHome = this.st.phase === 'home';
     const here = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
@@ -1036,14 +1036,18 @@ export const socialMethods: Record<string, any> = {
     if (!takeable.length) {
       return {
         text: atHome
-          ? `${here.name}这一带这会儿没有能接的邀约。自己走就行，这很正常。`
+          ? `这会儿全服没有能接的邀约。自己走就行，这很正常。`
           : `${here.name}这会儿没有能接的邀约。自己走就行，这很正常。`,
       };
     }
 
+    /*
+     * 全服可见（2026-11-25）之后，列表必须写清「对方从哪座城发的」——
+     * 不然她看不见「要先去哪儿」，会以为目的地就在旁边。
+     */
     const head = atHome
-      ? `她还在${here.name}，先看看这一带谁在找伴：\n`
-      : `${here.name}这会儿有人发了话：\n`;
+      ? `她还在${here.name}，先看看谁在找伴（全服）：\n`
+      : `${here.name}这会儿有人发了话（全服）：\n`;
     /*
      * 开了「出门等点头」时，接之前得先问他一句 —— 这句话得留在回执里。
      * 不写的话，模型会以为「接了 = 走定了」，而实际上面板上多了一张待批的卡片。
@@ -1057,7 +1061,13 @@ export const socialMethods: Record<string, any> = {
       text: head
         + takeable.map((x) => {
           const dest = cityById(x.to);
+          const from = x.fromCity ? cityById(x.fromCity) : null;
+          const where = from && x.meetCity
+            ? `先在${cityById(x.meetCity)?.name ?? x.meetCity}碰头`
+            : (from ? `从${from.name}出发` : '');
           return `- ${this.nameOf(x.pet)} 想去${dest?.name ?? x.to}，待 ${x.days} 天`
+            + (where ? `，${where}` : '')
+            + (x.mode ? `，坐${x.mode}` : '')
             + (x.note ? `（「${x.note}」）` : '')
             + `　id=${x.id}`;
         }).join('\n')
@@ -1199,7 +1209,7 @@ export const socialMethods: Record<string, any> = {
     here: { id: string; name: string };
     pool: number;
     mineTaken: number;
-    list: Array<{ id: string; pet: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string }>;
+    list: Array<{ id: string; pet: string; from: string; fromName: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string; near: boolean }>;
     canPost: string;
   }> {
     const here = this.cityOrNull(this.st.hereId) ?? this.resolveHome().city;
@@ -1218,7 +1228,7 @@ export const socialMethods: Record<string, any> = {
       here: { id: here.id, name: here.name },
       pool: 0,
       mineTaken: 0,
-      list: [] as Array<{ id: string; pet: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string }>,
+      list: [] as Array<{ id: string; pet: string; from: string; fromName: string; to: string; toName: string; days: number; note: string; meetName: string; taken: boolean; mode: string; near: boolean }>,
       canPost,
     };
     if (!meet) {
@@ -1242,6 +1252,9 @@ export const socialMethods: Record<string, any> = {
       list: st.invites.map((x) => ({
         id: x.id,
         pet: this.nameOf(x.pet),
+        /* 出发城（2026-11-25）：全服可见之后，接的人得知道要先往哪儿去。 */
+        from: x.fromCity,
+        fromName: x.fromCity ? (cityById(x.fromCity)?.name ?? x.fromCity) : '',
         to: x.to,
         toName: cityById(x.to)?.name ?? x.to,
         meetName: x.meetCity ? (cityById(x.meetCity)?.name ?? x.meetCity) : '',
@@ -1251,6 +1264,8 @@ export const socialMethods: Record<string, any> = {
         mode: x.mode,
         /* 「已经接过、或者去的就是她脚下这座」—— 面板上标一下，免得他奇怪为什么她没接。 */
         taken: claimed.has(x.id) || x.to === here.id,
+        /* 同城标记只用来加一句「就在这儿」，不代表「只看得见这个」——名单是全服的。 */
+        near: x.near,
       })),
       canPost,
     };

@@ -735,8 +735,8 @@ function inviteInvoke(sent) {
         pool: 641,
         mineTaken: 2,
         list: [{
-          id: 'a1b2c3d4e5f6a7b8', pet: '小雪', to: 'lasa', toName: '拉萨',
-          days: 3, note: '一起去看布达拉宫', meetName: '西安', taken: false, mode: '火车',
+          id: 'a1b2c3d4e5f6a7b8', pet: '小雪', from: 'haerbin', fromName: '哈尔滨', to: 'lasa', toName: '拉萨',
+          days: 3, note: '一起去看布达拉宫', meetName: '西安', taken: false, mode: '火车', near: false,
         }],
         canPost: '',
       };
@@ -780,6 +780,8 @@ test('前端产物：邀约页有填表三格、把可用交通方式列出来�
     assert.match(root.text, /西安/, '碰头城没显示');
     /* 对方挑的走法（2026-11-25 起是协议字段，不再是正文前缀）——公告栏上要看得见。 */
     assert.match(root.text, /怎么去 火车/, '对方怎么去没显示');
+    /* 出发城：全服可见之后，不写这一格就不知道要先往哪儿去。 */
+    assert.match(root.text, /从 哈尔滨 出发/, '出发城没显示');
 
     /* 宿主网关硬校验数组参数 —— plan 那两个值必须原样传过去。 */
     const plan = sent.find((s) => s.method === 'plan');

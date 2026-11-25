@@ -181,8 +181,8 @@ test('board：只读一栏 —— 读得到池子与挂着的那几条，且**�
     pool: 641,
     mineTaken: 2,
     list: [
-      { id: 'aaaaaaaaaaaaaaaa', pet: '小雪', to: 'lasa', days: 3, note: '一起去看布达拉宫', at: '2026-11-24T04:00:00Z', meet: 'xian', pace: 1, mode: '火车' },
-      { id: 'bbbbbbbbbbbbbbbb', pet: '阿岸', to: 'kunming', days: 2, note: '', at: '2026-11-24T03:00:00Z', meet: '', pace: 1 },
+      { id: 'aaaaaaaaaaaaaaaa', pet: '小雪', from: 'xian', to: 'lasa', days: 3, note: '一起去看布达拉宫', at: '2026-11-24T04:00:00Z', meet: 'xian', pace: 1, mode: '火车', near: true },
+      { id: 'bbbbbbbbbbbbbbbb', pet: '阿岸', from: 'haerbin', to: 'kunming', days: 2, note: '', at: '2026-11-24T03:00:00Z', meet: '', pace: 1, near: false },
     ],
   };
   const { world, calls, cleanup } = await boot({ status });
@@ -203,6 +203,14 @@ test('board：只读一栏 —— 读得到池子与挂着的那几条，且**�
     /* 对方挑的走法要能到前端 —— 公告栏上那一行就是靠它。空的就留空，别编。 */
     assert.equal(b.list[0].mode, '火车');
     assert.equal(b.list[1].mode, '', '对方没挑走法就应该是空串');
+    /*
+     * 出发城（2026-11-25）。全服可见之后这一格是必要的：
+     * 不写「她是从哪儿发的」，接的人不知道要先往哪儿去。
+     */
+    assert.equal(b.list[0].fromName, '西安');
+    assert.equal(b.list[1].fromName, '哈尔滨');
+    assert.equal(b.list[0].near, true, '同城那条要带 near');
+    assert.equal(b.list[1].near, false, '外地的不是 near');
     /*
      * 这条是这一页的命门：`/invite?mine=1` 会让服务端把结果置成「已认领」，
      * 并在本地建一份约定 —— 面板刷新一次就等于替她认下一桩约。

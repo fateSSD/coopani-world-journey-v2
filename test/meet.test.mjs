@@ -251,7 +251,7 @@ test('邀约：发太多（429）说「额度用完了」，不说「失败了�
   } finally { globalThis.fetch = orig; }
 });
 
-test('邀约：列表只留约定的字段（含见面城），脏条目剔掉，最多三条', async () => {
+test('邀约：列表只留约定的字段（含见面城、出发城），脏条目剔掉，最多六条', async () => {
   const orig = globalThis.fetch;
   globalThis.fetch = async () => ({
     ok: true,
@@ -264,20 +264,24 @@ test('邀约：列表只留约定的字段（含见面城），脏条目剔掉�
         { nope: 1 },                                                          // 形状不对
         { id: 'cccccccccccccccc', pet: '铁牛', to: 'xian', days: 1, note: '' },
         { id: 'dddddddddddddddd', pet: '多余', to: 'beijing', days: 1 },       // 第四个
+        { id: 'eeeeeeeeeeeeeeee', pet: '五号', to: 'kunming', days: 2 },
+        { id: 'ffffffffffffffff', pet: '六号', to: 'nanjing', days: 3 },
+        { id: '1111111111111111', pet: '七号', to: 'suzhou', days: 1 },        // 第七个，该被截掉
       ],
     }),
   });
   try {
     const r = await listInvites(OPT, 'xian');
     assert.equal(r.ok, true);
-    assert.equal(r.list.length, 3, `该截到三条，实际 ${r.list.length}`);
+    /* 2026-11-25 起窗口从三条放到六条：全服可见之后三条太窄。 */
+    assert.equal(r.list.length, 6, `该截到六条，实际 ${r.list.length}`);
     /*
      * 2026-11-07 起多了 `meetCity` / `pace`，11-25 又多了 `mode`。
      * 服务端这行一个都没给 —— 所以这里断言的是「没给也要有默认值」：
      * 空串 = 就在目的地见（老口径）/ 没挑怎么去，0 = 对方没报流速。
      */
     assert.deepEqual(r.list[0],
-      { id: 'aaaaaaaaaaaaaaaa', pet: '小满', to: 'lhasa', days: 3, note: '想看雪山', meetCity: '', pace: 0, mode: '' },
+      { id: 'aaaaaaaaaaaaaaaa', pet: '小满', to: 'lhasa', days: 3, note: '想看雪山', meetCity: '', pace: 0, mode: '', fromCity: '', near: false },
       '多带了字段，或者少了字段');
     assert.equal(r.list[1].days, 2, '字符串天数没转成数字');
   } finally { globalThis.fetch = orig; }

@@ -220,8 +220,8 @@
         "write"
       ],
       "summary": {
-        "zh": "向同城伙伴发起同行邀约：去哪、几天、一句话。",
-        "en": "Asks nearby pets to join a trip for a few days."
+        "zh": "向全服伙伴发起同行邀约：去哪、几天、一句话。",
+        "en": "Asks pets server-wide to join a trip for a few days."
       }
     },
     {
@@ -241,8 +241,8 @@
         "write"
       ],
       "summary": {
-        "zh": "查看附近同行邀约，或接下一条并按约定出发。",
-        "en": "Lists nearby invitations or accepts one."
+        "zh": "查看全服的同行邀约，或接下一条并按约定出发。",
+        "en": "Lists invitations server-wide, or accepts one."
       }
     },
     {

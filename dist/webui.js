@@ -229,7 +229,7 @@ const TEXT = {
 
     /* ---- 邀约页 ---- */
     inviteTitle: '邀约',
-    inviteHint: '发一条找伴的邀请：去哪、在哪汇合、待几天。发出去只挂 24 小时，同城这一带的鱼才看得见。',
+    inviteHint: '发一条找伴的邀请：去哪、在哪汇合、待几天。发出去只挂 24 小时，全服的鱼都看得见 —— 谁的鱼正好也想往那个方向，就可能来应。',
     inviteTo: '去哪',
     inviteToHint: '城市名，例如 拉萨',
     inviteMeet: '在哪汇合',
@@ -246,14 +246,16 @@ const TEXT = {
     inviteNoModes: '没有能走的方式',
     inviteKm: '公里',
     inviteBoardTitle: '现在挂着的邀约',
-    inviteBoardHint: '同城这一带优先，最多三条。接不接由她自己判断 —— 这一页只给她看',
-    inviteBoardEmpty: '这会儿没有能接的邀约。自己走就行，这很正常。',
+    inviteBoardHint: '全服都看得见，最新的在前，最多六条。接不接由她自己判断 —— 这一页只给她看',
+    inviteBoardEmpty: '这会儿全服没有能接的邀约。自己走就行，这很正常。',
     invitePool: '公共池 {n} 条鱼',
     inviteMine: '她发出去被接过 {n} 次',
     inviteTaken: '已经接过',
     inviteMeetAt: '在 {n} 碰头',
     inviteDaysUnit: '天',
     inviteVia: '怎么去',
+    inviteFrom: '从 {n} 出发',
+    inviteNear: '就在她这儿',
     inviteGoSee: '去聊天里让她接',
   },
   en: {
@@ -450,7 +452,7 @@ const TEXT = {
 
     /* ---- invite tab ---- */
     inviteTitle: 'Invites',
-    inviteHint: 'Post an invite: where to, where to meet, how many days. It stays up 24 hours and only pets around her city see it.',
+    inviteHint: 'Post an invite: where to, where to meet, how many days. It stays up 24 hours and pets anywhere on the server see it — whoever is heading that way may answer.',
     inviteTo: 'Where to',
     inviteToHint: 'A city name, e.g. Lhasa',
     inviteMeet: 'Where to meet',
@@ -467,14 +469,16 @@ const TEXT = {
     inviteNoModes: 'no way to travel',
     inviteKm: 'km',
     inviteBoardTitle: 'Invites up right now',
-    inviteBoardHint: 'Her area first, three at most. Whether she takes one is her call — this page only shows',
-    inviteBoardEmpty: 'Nothing to join right now. Going alone is normal.',
+    inviteBoardHint: 'Visible server-wide, newest first, six at most. Whether she takes one is her call — this page only shows',
+    inviteBoardEmpty: 'Nothing to join server-wide right now. Going alone is normal.',
     invitePool: '{n} pets in the pool',
     inviteMine: 'hers taken {n} times',
     inviteTaken: 'already joined',
     inviteMeetAt: 'meet at {n}',
     inviteDaysUnit: 'd',
     inviteVia: 'via',
+    inviteFrom: 'from {n}',
+    inviteNear: 'right here',
     inviteGoSee: 'Ask her in chat to take it',
   },
 };
@@ -2408,11 +2412,17 @@ export default {
             const top = el('div', 'jr-inv-card-top');
             top.append(el('b', null, x.pet));
             const meta = [`${T.inviteTo} ${x.toName}`];
-            /* 对方写的方式就照着显示，别翻译、别猜 —— 那是他自己挑的词。 */
+            /*
+             * 从哪座城发的（2026-11-25）。全服可见之后这一格是必要的：
+             * 不写的话她不知道「要先去哪儿」，会以为目的地就在旁边。
+             */
+            if (x.fromName) meta.push(fmt(T.inviteFrom, x.fromName));
             if (x.mode) meta.push(`${T.inviteVia} ${x.mode}`);
             meta.push(`${x.days}${T.inviteDaysUnit}`);
             if (x.meetName) meta.push(fmt(T.inviteMeetAt, x.meetName));
             if (x.taken) meta.push(T.inviteTaken);
+            /* 同城只是一个标记，不是筛选条件 —— 名单本来就是全服的。 */
+            if (x.near) meta.push(T.inviteNear);
             top.append(el('span', 'jr-inv-hint', meta.filter(Boolean).join(' · ')));
             card.append(top);
             if (x.note) card.append(el('p', 'jr-inv-note', `「${x.note}」`));

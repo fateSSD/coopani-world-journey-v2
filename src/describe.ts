@@ -140,7 +140,7 @@ export const TOOL_DECLS = [
       required: ['to'],
     },
     tags: ['write'] as const,
-    summary: { zh: '向同城伙伴发起同行邀约：去哪、几天、一句话。', en: 'Asks nearby pets to join a trip for a few days.' },
+    summary: { zh: '向全服伙伴发起同行邀约：去哪、几天、一句话。', en: 'Asks pets server-wide to join a trip for a few days.' },
   },
   {
     name: 'journey_accept',
@@ -154,7 +154,7 @@ export const TOOL_DECLS = [
       },
     },
     tags: ['write'] as const,
-    summary: { zh: '查看附近同行邀约，或接下一条并按约定出发。', en: 'Lists nearby invitations or accepts one.' },
+    summary: { zh: '查看全服的同行邀约，或接下一条并按约定出发。', en: 'Lists invitations server-wide, or accepts one.' },
   },
   {
     name: 'journey_go_to',

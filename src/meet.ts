@@ -677,6 +677,18 @@ export interface Invite {
    * 这条字段的作用只是让接的人在按下「接」之前知道「这一趟大概是什么走法」。
    */
   readonly mode: string;
+  /**
+   * 发起这条邀约时她在哪座城（2026-11-25）。**空 = 老服务端没回这一格。**
+   *
+   * 邀约从这一天起是全服可见的，接的人得知道「要先往哪儿去」——
+   * 碰头城在她脚下时，就是要先去这座城汇合。
+   */
+  readonly fromCity: string;
+  /**
+   * 发这条邀约的鱼，当时就在她脚下这座城。**只用于界面上标一句「同城」**，
+   * 不参与可见性（全服都能看见，排序也不再按这个来）。
+   */
+  readonly near: boolean;
 }
 
 /**
@@ -776,13 +788,21 @@ const toInvite = (x: unknown): Invite | null => {
     pace: paceOf(o.pace),
     /* 老服务端不回这一格 —— 解析成空串，界面上就是「没写怎么去」。 */
     mode: flat(o.mode, 40),
+    /* 出发城同理：老服务端不回就是空串，界面不显示那一行。 */
+    fromCity: flat(o.from, 40),
+    near: o.near === true,
   };
 };
 
-/** 一次最多看三条 —— 服务端也只会回这么多，这里再挡一道，防止老服务端回整池。 */
+/**
+ * 一次最多看六条 —— 服务端也只会回这么多，这里再挡一道，防止老服务端回整池。
+ *
+ * 2026-11-25：从三条放到六条。三条是同城优先时代的窗口大小，全服可见之后
+ * 三条太窄了 —— 一次只能看三条的话，她很难碰上「正好也要去那儿」的那条。
+ */
 const toInvites = (raw: unknown): Invite[] => {
   const list = Array.isArray(raw) ? raw : [];
-  return list.map(toInvite).filter((x): x is Invite => x !== null).slice(0, 3);
+  return list.map(toInvite).filter((x): x is Invite => x !== null).slice(0, 6);
 };
 
 /**
@@ -1145,7 +1165,7 @@ export function neighborLine(list: readonly Neighbor[]): string | null {
 }
 
 /**
- * 把同城的邀约揉成一句话。
+ * 把拉回来的邀约揉成一句话（全服的，不是同城的）。
  *
  * **纯函数。** 只报事实（谁、想去哪、几天），不写成命令（「快去接」）。
  * 接不接是她的事，这句话只负责让她知道有这么回事 —— 不然她永远不会想起去问。

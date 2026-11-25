@@ -1116,23 +1116,37 @@ async function inviteRoute(request, env, url, method) {
          *
          * 判据从 `taken_by = ''`（一个都没接）换成「已接人数 < MAX_PARTY - 1」——
          * 这样三个人一起走之后，第四只鱼仍然看得见这条邀约、还能加进来。
+         *
+         * ## 2026-11-25：不再给同城排前面
+         *
+         * 原来是 `ORDER BY near DESC, at DESC LIMIT 3` —— 「同城优先」这条排序
+         * 配上只出三条，等于同城一多，外地的邀约**永远轮不进这个窗口**。
+         * 用户看到的现象就是「邀约只看得见同城的」，而 SQL 里其实没有城市过滤。
+         *
+         * 现在按发布时间倒序、出六条：全服都能看见，赶不赶得过去由接的人自己判断
+         * （碰头城可以由发邀约那头设在自己脚下，对方先去她那儿再一起走）。
+         * `near` 仍然算出来，但**只用来给客户端标一句「同城」**，不参与排序。
          */
-        `SELECT id, pet, to_city, days, note, at, meet_city, pace, mode,
+        `SELECT id, pet, from_city, to_city, days, note, at, meet_city, pace, mode,
                 CASE WHEN from_city = ?1 THEN 1 ELSE 0 END AS near,
                 (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) AS joined
          FROM invites
          WHERE expires_at > ?2 AND uid <> ?3
            AND (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) < ?4
-         ORDER BY near DESC, at DESC LIMIT 3`,
+         ORDER BY at DESC LIMIT 6`,
       ).bind(city, nowIso, uid, MAX_PARTY - 1).all();
 
       /*
        * **不返回发起者的 uid。** 跟碰面同一条线：能看见，摸不着。
        * 名字和「想去哪」够她判断了，多一个标识就是多一条能拿去别处用的东西。
+       *
+       * `from` 是城市 id，不是身份 —— 和 `/sight?city=` 能看见「这座城有谁」是同一个公开程度，
+       * 多这一格是为了让接的人知道「要先往哪儿去」。
        */
       const list = (results ?? []).map((r) => ({
         id: r.id,
         pet: safePet(r.pet, extra).name,
+        from: clean(r.from_city, 40),
         to: r.to_city,
         days: Number(r.days) || 1,
         note: looksBad(String(r.note || ''), extra) ? '' : clean(r.note, 60),
@@ -1140,6 +1154,7 @@ async function inviteRoute(request, env, url, method) {
         pace: Number(r.pace) || 0,
         /* 怎么去。空 = 没挑 / 老数据；和 note 一样按用户可写内容过滤。 */
         mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
+        near: Number(r.near) === 1,
       }));
 
       return reply(200, { ok: true, list });
@@ -2036,14 +2051,18 @@ async function statusRoute(request, env, url, ctx) {
     const mineStmt = db.prepare(
       'SELECT COUNT(*) AS n FROM invites WHERE uid = ?1 AND taken_by <> ?2',
     ).bind(uid, '');
+    /*
+     * 和 `/invite?city=` 那条同口径（2026-11-25）：**全服按时间倒序，不再给同城插队**。
+     * 两处 SQL 必须一致，否则面板（走 /status）和工具（走 /invite）看到的是两份名单。
+     */
     const inviteStmt = db.prepare(
-      `SELECT id, pet, to_city, days, note, at, meet_city, pace, mode,
+      `SELECT id, pet, from_city, to_city, days, note, at, meet_city, pace, mode,
               CASE WHEN from_city = ?1 THEN 1 ELSE 0 END AS near,
               (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) AS joined
        FROM invites
        WHERE expires_at > ?2 AND uid <> ?3
          AND (SELECT COUNT(*) FROM invite_takers t WHERE t.id = invites.id) < ?4
-       ORDER BY near DESC, at DESC LIMIT 3`,
+       ORDER BY at DESC LIMIT 6`,
     ).bind(city, nowIso, uid, MAX_PARTY - 1);
 
     const [counts, mine, { results }] = await Promise.all([
@@ -2066,6 +2085,7 @@ async function statusRoute(request, env, url, ctx) {
       list: (results ?? []).map((r) => ({
         id: r.id,
         pet: safePet(r.pet, extra).name,
+        from: clean(r.from_city, 40),
         to: r.to_city,
         days: Number(r.days) || 1,
         note: looksBad(String(r.note || ''), extra) ? '' : clean(r.note, 60),
@@ -2073,6 +2093,7 @@ async function statusRoute(request, env, url, ctx) {
         pace: Number(r.pace) || 0,
         /* 怎么去。空 = 没挑 / 老数据；和 note 一样按用户可写内容过滤。 */
         mode: looksBad(String(r.mode || ''), extra) ? '' : clean(r.mode, 40),
+        near: Number(r.near) === 1,
       })),
     }, { 'x-pool-cache': counts.cache ?? 'miss' });
   } catch (e) {
