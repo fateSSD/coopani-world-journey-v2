@@ -43,6 +43,8 @@ test('Worker 能发出管鱼页：是 HTML，且涵盖 /pets /pets/all /pets/lif
   }), { DB: null });
   const body = await r.text();
   assert.ok(body.includes('ADMIN_KEY'), '发出来的不是管鱼页');
+  assert.ok(body.includes("fetch(base + '/flag'"), '封禁/改名请求必须发到 /admin/flag');
+  assert.ok(!body.includes('fetch(base, {'), '不得再向裸 /admin 发送 POST');
   assert.ok(body.includes('id="worldJourney"') && body.includes('id="worldLife"'), '缺少 Journey 与 Life 一级分区');
   assert.ok(body.includes("base + '/life'"), '缺少 /admin/life 请求以显示 Life 多少鱼');
   assert.ok(body.includes('id="addStreet"') && body.includes('id="addRule"'), '缺少添加街道/城规按钮');

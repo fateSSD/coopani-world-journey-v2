@@ -66,26 +66,27 @@ import petsPage from './pets-page.js';
 const MAX = 3;
 const MAX_NEIGHBOR_LIMIT = 20;
 
-/** 一个宠物一天的写入上限。正常人一天 4–8 次，50 是给反复调试留的余量。 */
-const UID_PER_DAY = 50;
+/** 一个宠物一天的写入上限。20 分钟心跳全天 72 次，120 留足行程变化与重试/调试余量。 */
+const UID_PER_DAY = 120;
 /** 一个出口 IP 一天的写入上限。公司 NAT 五十人一天也就一千二，取两千。 */
 const IP_PER_DAY = 2000;
 
 /*
  * ## 每日硬顶为什么按「行」算，不按「次」算
  *
- * D1 免费额度的单位是**行**（10 万行写入/天），不是请求数。
+ * Paid 套餐含每月 5,000 万行 D1 写入（约 167 万行/天）；免费版则是 10 万行/天。
  * 而一次上报要写 4 行：presence 一条 + rate 三条。
  *
  * 第一版直接拿「8 万次」当上限（那是旧版 `COUNT(*) FROM presence` 的口径，
  * 一次上报只写 1 行）。换成计数表之后每次写 4 行，同样 8 万次就是 **32 万行** ——
- * 超额度三倍。**阈值没变，但它的单位偷偷变了。**
+ * 算错单位就会把额度放大 4 倍。
  *
- * 现在按行算，再除以每次的行数，以后改写入行数会自动跟着变。
+ * 现在按 Paid 日均预算 80 万行（约 2,400 万行/月，为清理/市集/邀约留足 >50% 余量）
+ * 再除以每次的行数，以后改写入行数会自动跟着变。
  */
-const DAILY_ROW_BUDGET = 80_000;   // 10 万额度留 20% 给定时清理
+const DAILY_ROW_BUDGET = 800_000;  // Paid 月 5000 万行内，日留 >50% 余量给清理与其他表
 const ROWS_PER_POST = 4;           // presence 1 + rate 3
-const DAILY_WRITE_CAP = Math.floor(DAILY_ROW_BUDGET / ROWS_PER_POST);   // = 20000 次
+const DAILY_WRITE_CAP = Math.floor(DAILY_ROW_BUDGET / ROWS_PER_POST);   // = 200000 次
 
 /** 历史数据保留天数。查询只用到今天和昨天，四天足够宽松。 */
 const KEEP_DAYS = 4;
@@ -3296,14 +3297,24 @@ export default {
         `DELETE FROM rate WHERE rowid IN
            (SELECT rowid FROM rate WHERE exp < ?1 LIMIT ${PURGE_BATCH})`,
       ).bind(nowSec).run();
+      const partyCutoffIso = new Date(
+        Date.now() - Math.max(CARD_KEEP_DAYS, PROFILE_KEEP_DAYS) * 86_400_000,
+      ).toISOString();
       /*
        * 邀约按「过期」删，不按日期 —— 一条昨天发、今晚才过期的邀约，
        * 按日期删会提前把它拿走。
+       *
+       * 已成团的邀约不能在 24h 后立即物理删除：同行卡（30 天）与名片可见性
+       * （30 天）都靠 `invites` + `invite_takers` 判定成员身份，提前删掉会连带
+       * 把 30 天卡片当孤儿扫空。未成团的照旧 24h 清理；已成团的留到 30 天后一并回收。
        */
       const i = await db.prepare(
         `DELETE FROM invites WHERE rowid IN
-           (SELECT rowid FROM invites WHERE expires_at < ?1 LIMIT ${PURGE_BATCH})`,
-      ).bind(nowIso).run();
+           (SELECT rowid FROM invites
+             WHERE (expires_at < ?1 AND NOT EXISTS (SELECT 1 FROM invite_takers t WHERE t.id = invites.id))
+                OR expires_at < ?2
+             LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso, partyCutoffIso).run();
       /*
        * 接单记录要跟着邀约一起清 —— **清孤儿，不按时间**。
        *
@@ -3319,17 +3330,15 @@ export default {
              WHERE i.id IS NULL LIMIT ${PURGE_BATCH})`,
       ).run();
       /*
-       * 卡也跟着邀约一起清（2026-11-11）。同一条道理：邀约过期被删，
-       * `party_cards` 的行留着就是孤儿 —— 没人取得到（鉴权查的 `invites` 已经不在了），
-       * 但占着额度，而且里面可能存着别人给的号。
-       * **按 `id` 清孤儿，不按 `exp`**：30 天的卡不该被 4 天的 presence 窗口带走。
+       * 卡同时按自己的 30 天 exp 清理，也兜底清理孤儿行（对应邀约已满 30 天被删）。
+       * **保留 `LEFT JOIN invites` 结构**：既清理孤儿，也满足 schema 契约测试。
        */
       const c = await db.prepare(
         `DELETE FROM party_cards WHERE rowid IN
            (SELECT c.rowid FROM party_cards c
               LEFT JOIN invites i ON i.id = c.id
-             WHERE i.id IS NULL LIMIT ${PURGE_BATCH})`,
-      ).run();
+             WHERE c.exp < ?1 OR i.id IS NULL LIMIT ${PURGE_BATCH})`,
+      ).bind(nowIso).run();
       /*
        * 名片按自己的 exp 删（2026-11-11）。它不挂在任何一条邀约上 ——
        * 名片是「这个人」，不是「这一趟」，所以不能用孤儿清理那套。

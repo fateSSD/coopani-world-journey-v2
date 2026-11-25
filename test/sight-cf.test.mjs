@@ -88,22 +88,22 @@ test('exclude 能把自己排除掉', async () => {
   assert.equal(body.list.length, 0);
 });
 
-test('同一个 uid 一天报满 50 次之后才被挡 —— 不再卡 20 秒间隔', async () => {
+test('同一个 uid 一天报满 120 次之后才被挡 —— 不再卡 20 秒间隔，且覆盖全天 20 分钟心跳', async () => {
   /*
    * 第一版是「两次上报至少隔 20 秒」，跑起来发现粒度错了：
    * 她同一天换城市、换时段各报一次是**合法的**，但按 uid 算间隔会把这些
    * 正常上报一起挡掉，而客户端是 `void` 调用，挡了没人知道 —— 那一格静默就缺了。
    *
-   * 现在按「一天 50 次」算。重复报同一格本来就是 upsert，天然幂等，
-   * 不需要靠限速去防。
+   * 客户端心跳每 20 分钟一次（全天 72 次），上限放宽到「一天 120 次」留足变化与重试余量。
+   * 重复报同一格本来就是 upsert，天然幂等，不需要靠限速去防。
    */
   const env = { DB: makeDB() };
-  for (let i = 0; i < 50; i += 1) {
+  for (let i = 0; i < 120; i += 1) {
     const r = await worker.fetch(post(rec({ doing: `第${i}次` })), env);
     assert.equal(r.status, 200, `第 ${i + 1} 次应该放行`);
   }
-  const blocked = await worker.fetch(post(rec({ doing: '第51次' })), env);
-  assert.equal(blocked.status, 429, '第 51 次没被挡住');
+  const blocked = await worker.fetch(post(rec({ doing: '第121次' })), env);
+  assert.equal(blocked.status, 429, '第 121 次没被挡住');
   assert.equal((await blocked.json()).error, 'too many');
 });
 
@@ -158,7 +158,7 @@ test('全站每日硬顶到了就 503（应急开关）', async () => {
   const env = { DB: db.raw ?? db };
   const day = new Date().toISOString().slice(0, 10);
   const expSec = Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000) + 86_400;
-  db.exec(`INSERT INTO rate (key, n, exp) VALUES ('d:${day}', 20000, ${expSec})`);
+  db.exec(`INSERT INTO rate (key, n, exp) VALUES ('d:${day}', 200000, ${expSec})`);
 
   const r = await worker.fetch(post(rec()), env);
   assert.equal(r.status, 503, '硬顶没生效');
@@ -171,11 +171,11 @@ test('被挡下的请求不消耗配额 —— 不然刷子能靠「被拒」顶
   const day = new Date().toISOString().slice(0, 10);
   const expSec = Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000) + 86_400;
   const uid = '9'.repeat(32);
-  db.exec(`INSERT INTO rate (key, n, exp) VALUES ('u:${uid}:${day}', 50, ${expSec})`);
+  db.exec(`INSERT INTO rate (key, n, exp) VALUES ('u:${uid}:${day}', 120, ${expSec})`);
 
   for (let i = 0; i < 5; i += 1) await worker.fetch(post(rec({ uid })), env);
   const [row] = db.query('SELECT n FROM rate WHERE key = ?1', `u:${uid}:${day}`);
-  assert.equal(Number(row?.n), 50, `被拒的请求也计数了：n = ${row?.n}`);
+  assert.equal(Number(row?.n), 120, `被拒的请求也计数了：n = ${row?.n}`);
 });
 
 test('字段不合法当场拒，不写库', async () => {
@@ -311,27 +311,27 @@ test('预检请求放行，跨域头在', async () => {
 
 test('每日硬顶按「行」换算，不按「次」—— 单位搞错会超额度 4 倍', async () => {
   /*
-   * D1 免费额度的单位是**行**（10 万行写入/天），不是请求数。
+   * Paid 套餐含每月 5,000 万行 D1 写入（约 167 万行/天），免费版是 10 万行/天。
    * 一次上报要写 4 行：presence 一条 + rate 三条。
    *
    * 第一版直接拿「8 万次」当上限 —— 那是旧版 `COUNT(*) FROM presence` 的口径，
    * 一次只写 1 行。换成计数表后每次写 4 行，同样 8 万次就是 32 万行，超三倍。
    *
-   * 这条钉住换算结果：8 万行预算 ÷ 4 行/次 = 2 万次。
+   * Paid 日均预算 80 万行 ÷ 4 行/次 = 20 万次（日留 >50% 余量给清理与其它表）。
    */
   const db = makeDB();
   const env = { DB: db };
   const day = new Date().toISOString().slice(0, 10);
   const expSec = Math.floor(Date.parse(`${day}T00:00:00Z`) / 1000) + 86_400;
 
-  // 19999 次已用 → 还能再写一次
-  db.exec(`INSERT INTO rate (key, n, exp) VALUES ('d:${day}', 19999, ${expSec})`);
+  // 199999 次已用 → 还能再写一次
+  db.exec(`INSERT INTO rate (key, n, exp) VALUES ('d:${day}', 199999, ${expSec})`);
   assert.equal((await worker.fetch(post(rec({ uid: '1'.repeat(32) })), env)).status, 200,
-    '第 20000 次该放行');
+    '第 200000 次该放行');
 
-  // 到了 2 万 → 挡住
+  // 到了 20 万 → 挡住
   assert.equal((await worker.fetch(post(rec({ uid: '2'.repeat(32) })), env)).status, 503,
-    '第 20001 次该被硬顶挡住');
+    '第 200001 次该被硬顶挡住');
 });
 
 test('没绑 D1 时给 500，而不是崩', async () => {
@@ -1517,4 +1517,56 @@ test('24h 窗口按 uid 去重：倍速鱼跨多个 date_key 不占满同城名�
     `倍速鱼占了多个坑把潮信挤掉了：${JSON.stringify(body.list)}`,
   );
   assert.equal(body.list.find((x) => x.pet === '倍速鱼')?.doing, '第2026-11-23天', '按 uid 去重应保留最新那条 doing');
+});
+
+test('成团邀约过期 25 小时后清理不得误删同行卡与同伴名片，满 30 天后再一并回收', async () => {
+  const db = makeDB();
+  const env = { DB: db };
+  const uidA = 'a'.repeat(24);
+  const uidB = 'b'.repeat(24);
+  const uidC = 'c'.repeat(24);
+  const id = await party(env, uidA, uidB);
+
+  const pA = await worker.fetch(profReq('POST', { uid: uidA, pet: '发起的那只', text: '常驻成都' }), env);
+  const pB = await worker.fetch(profReq('POST', { uid: uidB, pet: '接的那只', text: '花语乡 id: xb' }), env);
+  assert.equal(pA.status, 200);
+  assert.equal(pB.status, 200);
+
+  const cB = await worker.fetch(cardReq('POST', {
+    uid: uidB, id, pet: '接的那只', note: '谢谢带路', contact: '微信号 dali_xb',
+  }), env);
+  assert.equal(cB.status, 200);
+
+  // 1) 拨回到 25 小时前过期，跑定时清理：成团记录、同行卡和名片可见性必须全部留着
+  const at25h = new Date(Date.now() - 25 * 3600_000).toISOString();
+  db.exec(`UPDATE invites SET expires_at = '${at25h}' WHERE id = '${id}'`);
+  await worker.scheduled({}, env);
+
+  assert.equal(db.query('SELECT id FROM invites WHERE id = ?1', id).length, 1, '已成团邀约不应在 25 小时被清');
+  assert.equal(db.query('SELECT id FROM invite_takers WHERE id = ?1', id).length, 1, '接单记录不应在 25 小时被误删');
+  assert.equal(db.query('SELECT id FROM party_cards WHERE id = ?1', id).length, 1, '30 天同行卡不应在 25 小时被孤儿清理误删');
+
+  const cardRes = await worker.fetch(cardReq('GET', null, `id=${id}&uid=${uidA}`), env);
+  assert.equal(cardRes.status, 200);
+  const cardBody = await cardRes.json();
+  assert.equal(cardBody.cards.length, 1);
+  assert.equal(cardBody.cards[0].contact, '微信号 dali_xb');
+
+  const profRes = await worker.fetch(profReq('GET', null, `uid=${uidA}`), env);
+  const profBody = await profRes.json();
+  assert.equal(profBody.others.length, 1, '25 小时后同伴名片应仍可见');
+  assert.equal(profBody.others[0].pet, '接的那只');
+
+  const lateAccept = await worker.fetch(acceptReq({ uid: uidC, id, pet: '晚来鱼' }), env);
+  assert.equal(lateAccept.status, 410, '已过期邀约仍应拒绝新接单');
+  assert.equal((await lateAccept.json()).error, 'expired');
+
+  // 2) 拨回到 31 天前过期，跑定时清理：满 30 天后连同接单记录与同行卡一并回收
+  const at31d = new Date(Date.now() - 31 * 86_400_000).toISOString();
+  db.exec(`UPDATE invites SET expires_at = '${at31d}' WHERE id = '${id}'`);
+  await worker.scheduled({}, env);
+
+  assert.equal(db.query('SELECT id FROM invites WHERE id = ?1', id).length, 0, '满 30 天后邀约应回收');
+  assert.equal(db.query('SELECT id FROM invite_takers WHERE id = ?1', id).length, 0, '满 30 天后接单记录应随邀约清理');
+  assert.equal(db.query('SELECT id FROM party_cards WHERE id = ?1', id).length, 0, '满 30 天后同行卡应随邀约清理');
 });

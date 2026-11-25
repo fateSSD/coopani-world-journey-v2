@@ -1295,7 +1295,7 @@
         : '给「' + (pet || uid) + '」挂一条改名提醒？下次上报会带上 notice。';
     if (!window.confirm(why)) return;
     var note = window.prompt('备注（会记在标记里，方便以后对账）', '') || '';
-    fetch(base, {
+    fetch(base + '/flag', {
       method: 'POST',
       headers: Object.assign({ 'content-type': 'application/json' }, hdr),
       body: JSON.stringify({ uid: uid, pet: pet, kind: kind, note: note })
