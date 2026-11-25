@@ -2938,6 +2938,92 @@ export function cityOfSpot(name: string): City | null {
   return best ? cityById(best.id) : null;
 }
 
+/**
+ * 只能坐船去的地方（2026-11-25）。
+ *
+ * ## 为什么要有这张表
+ *
+ * 市内交通是按**距离**挑方式的（`inCityMode`：一公里走路、三公里骑车、九公里以上公交或打车）。
+ * 而 `act()` 里的距离是**种子生成的假数**（1.2–12 公里）—— 于是「去涠洲岛」会变成
+ * 「坐地铁去涠洲岛」，去鼓浪屿也可能「骑共享单车去」。岛和陆之间没有桥的时候，
+ * 这句话一眼就是假的。读者来信问的就是这个：「要坐船去但是没有船」。
+ *
+ * ## 为什么不按名字猜
+ *
+ * 「名字带岛就要坐船」会大面积误判：橘子洲有桥、太阳岛有桥有缆车、江心屿有桥、
+ * 养马岛有跨海大桥、东海岛有海堤、淇澳岛有桥、棕榈岛有地铁 —— 这些都写在表里的
+ * `SPOTS` 里，全都会被猜错。所以这里**一条条列**，只收真正没有陆路的那种。
+ *
+ * ## 价格
+ *
+ * 往返票，按航程分三档（查的是常见价位区间，取中位）：
+ * `short` 35 元 / 15 分钟（鼓浪屿、刘公岛、旗津、南丫岛这类城市近岛）；
+ * `mid` 80 元 / 55 分钟（涠洲岛、长岛、东澳岛这类要出海的）；
+ * `long` 140 元 / 100 分钟（东极岛、嵊泗、外伶仃这类远岛）。
+ *
+ * **船票不按「今天舍不舍得花钱」打折** —— 没有别的走法，省不下来。
+ */
+export type FerryTier = 'short' | 'mid' | 'long';
+
+export const FERRY_PLAN: Record<FerryTier, { price: number; min: number }> = {
+  short: { price: 35, min: 15 },
+  mid: { price: 80, min: 55 },
+  long: { price: 140, min: 100 },
+};
+
+/**
+ * 景点 → 它在哪座城、要多远的船。
+ *
+ * 匹配用「景点名包含这里写的名字」—— 数据里的景点名有时带后缀
+ * （「海驴岛（4—10 月海上游，冬季停航）」「观音湖（孝昌小悟）：…」），
+ * 所以这里只写名字本体。
+ */
+const FERRY_SPOTS: ReadonlyArray<readonly [string, string, FerryTier]> = [
+  ['beihai', '涠洲岛', 'mid'],
+  ['xiamen', '鼓浪屿', 'short'],
+  ['zhoushan', '东极岛', 'long'],
+  ['zhoushan', '桃花岛', 'mid'],
+  ['zhoushan', '嵊泗列岛', 'long'],
+  ['yantai', '长岛', 'mid'],
+  ['weihai', '刘公岛', 'short'],
+  ['weihai', '海驴岛', 'mid'],
+  ['zhuhai', '外伶仃岛', 'long'],
+  ['zhuhai', '东澳岛', 'mid'],
+  ['zhanjiang', '硇洲岛', 'mid'],
+  ['zhanjiang', '特呈岛', 'short'],
+  ['sanya', '蜈支洲岛', 'short'],
+  ['sanya', '西岛', 'short'],
+  ['xianggang', '南丫岛', 'short'],
+  ['gaoxiong', '旗津岛', 'short'],
+  ['shanwei', '龟龄岛', 'mid'],
+  ['xiaogan', '观音湖', 'short'],
+  ['sanfrancisco', '恶魔岛', 'short'],
+  ['cancun', '女人岛', 'mid'],
+  ['auckland', '火山岛', 'short'],
+  ['auckland', '怀赫科岛', 'mid'],
+  ['toronto', '湖心岛', 'short'],
+  ['ushuaia', '企鹅岛', 'mid'],
+  ['marseille', '伊夫堡', 'mid'],
+  ['avignon', '巴尔特拉斯岛', 'short'],
+];
+
+/**
+ * 去这个地方是不是只能坐船。是就返回票价与航程，不是返回 null。
+ *
+ * 传进来的是**景点名**（`act()` 里那个 `spot`），不是城市 ——
+ * 同一座城里有的地方要船、有的不要（厦门：鼓浪屿要，环岛路不要）。
+ */
+export function ferryTo(cityId: string, spot: string): { price: number; min: number; tier: FerryTier } | null {
+  const name = String(spot || '');
+  if (!cityId || !name) return null;
+  for (const [id, key, tier] of FERRY_SPOTS) {
+    if (id !== cityId) continue;
+    if (!name.includes(key)) continue;
+    return { ...FERRY_PLAN[tier], tier };
+  }
+  return null;
+}
+
 /** 按名字找。中文名优先，其次英文 id。找不到返回 null。 */
 export function cityByName(name: string): City | null {
   const key = name.trim();

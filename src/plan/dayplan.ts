@@ -10,7 +10,7 @@
  *   2. 晚 8 点后，**没有「只有夜里才能做的事」就回酒店**。
  *   3. 日出只能排在日出前 1-1.5 小时起（黄山夜爬就是这么来的），而且天亮得太晚的地方不排。
  */
-import { featureOf, nightIn, showsIn, type City } from '../geo/cities.ts';
+import { featureOf, nightIn, showsIn, type City, ferryTo } from '../geo/cities.ts';
 import { pilgrimAt, type Pilgrim } from '../geo/pilgrim.ts';
 import { localHour } from '../clock.ts';
 import { sunTimes, sunriseWorthIt } from '../geo/sky.ts';
@@ -1348,7 +1348,24 @@ export function planDay(args: {
      * 时长按自驾那套算（`km * 1.6 + 5` 分钟）：包车也是四个轮子走城市道路，
      * 跟公交地铁的时刻表无关。**费用不记** —— 已经在订单里付过了。
      */
-    if (args.charter) {
+    /*
+     * **只能坐船去的地方**（2026-11-25，读者来信「要坐船去但是没有船」）。
+     *
+     * 这一支必须排在包车和自驾**前面**：有车也开不上岛，问「开什么车去」本身就不对。
+     * 距离那一套（`km` 是种子生成的假数）在这条路上完全用不上 —— 航程由档位给。
+     * 船票也不看「今天舍不舍得花钱」：没有别的走法，省不下来。
+     */
+    const ferry = ferryTo(city.id, spot);
+    if (ferry) {
+      trips += 1;
+      tripCost += ferry.price;
+      modes.add('渡船');
+      push(
+        Math.max(0, at - ferry.min / 60),
+        'commute',
+        `坐渡船去${spot}（往返 ${ferry.price} 元，单程约 ${ferry.min} 分钟）`,
+      );
+    } else if (args.charter) {
       trips += 1;
       modes.add('包车');
       push(Math.max(0, at - (km * 1.6 + 5) / 60), 'commute', `坐包车去${spot}`);
