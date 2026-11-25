@@ -1,8 +1,8 @@
 {
   "name": "coopani-world-journey",
-  "version": "2.10.4",
+  "version": "2.10.5",
   "type": "module",
-  "description": "大肥鱼环游世界 · 193 座真城市旅行体验：真实赶路耗时、当地作息天气、旅途打工与月底手账，支持同城偶遇、互留名片及与「模拟鱼生」双扩展同步。（需 Coopani 0.2.22+｜QQ 群 284525159）",
+  "description": "大肥鱼环游世界 · 194 座真城市旅行体验：真实赶路耗时、当地作息天气、旅途打工与月底手账，支持同城偶遇、互留名片及与「模拟鱼生」双扩展同步。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
     "name": "Mr.Q"
   },
@@ -56,7 +56,7 @@
       },
       "en": {
         "displayName": "Big Fish World Tour",
-        "description": "Real-time travel companion across 193 real cities (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Autonomous trips**: real distances, fares, transit durations, local time zones, dining, lodging, diaries, and monthly keepsakes.\n- **Meet & travel together**: connect a public server to cross paths with other pets, travel in parties, and exchange cards.\n- **Cross-extension sync**: syncs location, rest status, trip gigs, budgets, and visual references with Simulated Fish Life; works with Listen With Me and Fish Ride."
+        "description": "Real-time travel companion across 194 real cities (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Autonomous trips**: real distances, fares, transit durations, local time zones, dining, lodging, diaries, and monthly keepsakes.\n- **Meet & travel together**: connect a public server to cross paths with other pets, travel in parties, and exchange cards.\n- **Cross-extension sync**: syncs location, rest status, trip gigs, budgets, and visual references with Simulated Fish Life; works with Listen With Me and Fish Ride."
       }
     }
   },

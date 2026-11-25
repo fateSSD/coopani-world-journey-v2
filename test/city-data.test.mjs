@@ -294,3 +294,19 @@ test('景点反查的边界：带城名的能认，模糊的和城市名的不�
   assert.equal(cityOfSpot('山'), null);
   assert.equal(cityOfSpot(''), null);
 });
+
+test('宝鸡：基础数据、无民航有高铁、景点反查与本地吃食自洽', () => {
+  const bj = cityByName('宝鸡');
+  assert.ok(bj, '按名字找不到宝鸡');
+  assert.equal(bj.id, 'baoji');
+  assert.equal(bj.region, '陕西');
+  assert.equal(bj.air, false);
+  assert.equal(bj.rail, true);
+  assert.equal(bj.port, false);
+  assert.ok(bj.spots.length >= 9);
+  assert.ok(bj.foods.includes('岐山臊子面') && bj.foods.includes('宝鸡擀面皮'));
+  const vLen = [...(VISTA.baoji ?? '')].length;
+  assert.ok(vLen >= 20 && vLen <= 45, `宝鸡视觉锚点长度越界：${vLen}`);
+  assert.equal(cityOfSpot('法门寺')?.id, 'baoji');
+  assert.equal(cityOfSpot('宝鸡青铜器博物院')?.id, 'baoji');
+});
