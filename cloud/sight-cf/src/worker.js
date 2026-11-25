@@ -1396,14 +1396,17 @@ const STALLS_PER_USER_MAX = 3;
 const STALLS_CACHE_MS = 15 * 60_000;
 const DEAL_KEEP_DAYS = 7;
 
-const stallsCacheKey = () =>
-  new Request(`https://town-stalls.internal/v1/${Math.floor(Date.now() / STALLS_CACHE_MS)}`);
+const stallsCacheKey = (includeErrands = false) =>
+  new Request(`https://town-stalls.internal/v1/${includeErrands ? 'all' : 'goods'}/${Math.floor(Date.now() / STALLS_CACHE_MS)}`);
 
 async function invalidateStallsCache(ctx) {
   const cache = typeof caches === 'object' && caches.default ? caches.default : null;
   if (!cache) return;
   try {
-    const task = Promise.resolve().then(() => cache.delete(stallsCacheKey())).catch(() => {});
+    const task = Promise.all([
+      cache.delete(stallsCacheKey(false)),
+      cache.delete(stallsCacheKey(true)),
+    ]).catch(() => {});
     if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(task);
     else await task;
   } catch { /* ignore */ }
@@ -1637,8 +1640,9 @@ async function townStallsRoute(request, env, method, ctx) {
 
   if (method !== 'GET') return reply(405, { ok: false, error: 'method not allowed' });
 
+  const includeErrands = new URL(request.url).searchParams.get('include_errands') === '1';
   const cache = typeof caches === 'object' && caches.default ? caches.default : null;
-  const cKey = stallsCacheKey();
+  const cKey = stallsCacheKey(includeErrands);
   if (cache) {
     try {
       const hit = await cache.match(cKey);
@@ -1680,7 +1684,7 @@ async function townStallsRoute(request, env, method, ctx) {
       ).bind(since24h, nowIso).first(),
     ]);
 
-    const stalls = (stallsRes?.results ?? [])
+    const allStalls = (stallsRes?.results ?? [])
       .map((r) => {
         const price = Math.max(1, Math.round(Number(r.price) || 0));
         const decoded = decodeStallNote(r.note, price, extra);
@@ -1698,6 +1702,8 @@ async function townStallsRoute(request, env, method, ctx) {
         };
       })
       .filter((x) => x.item && x.stock > 0);
+    const stalls = includeErrands ? allStalls : allStalls.filter((x) => x.kind !== 'errand');
+    const goodsOnly = allStalls.filter((x) => x.kind !== 'errand');
 
     const bulletin = [];
     const totalDeals = Number(dealsSumRes?.total_qty ?? 0) || 0;
@@ -1714,9 +1720,9 @@ async function townStallsRoute(request, env, method, ctx) {
         ? `${town.name}眼下住着 ${residents} 户人家，这阵子新搬来 ${newResidents} 户。`
         : `${town.name}眼下在册住着 ${residents} 户人家。`);
     }
-    if (stalls.length > 0) {
-      const head = stalls[0];
-      bulletin.push(`鱼市街此刻摆着 ${stalls.length} 个摊子，${head.seller}刚挂出「${head.item}」。`);
+    if (goodsOnly.length > 0) {
+      const head = goodsOnly[0];
+      bulletin.push(`鱼市街此刻摆着 ${goodsOnly.length} 个摊子，${head.seller}刚挂出「${head.item}」。`);
     }
 
     const body = { ok: true, town: town.id, name: town.name, stalls, bulletin };
@@ -1819,6 +1825,7 @@ async function townBuyRoute(request, env, method, ctx) {
     return reply(200, {
       ok: true,
       id: dealId,
+      kind: row.kind === 'errand' ? 'errand' : 'goods',
       item: String(row.item),
       price,
       seller: safePet(row.seller, extra).name || '街坊',
