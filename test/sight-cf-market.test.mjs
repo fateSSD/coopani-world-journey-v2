@@ -566,3 +566,50 @@ test('零迁移赛道 category 透传、同买卖方每日限 buy 2 单（429 pa
   assert.equal(dealsRes.json.deals.length, 3);
   assert.equal(dealsRes.json.deals[0].unitPrice, 12);
 });
+
+test('黑板报剔除农牧代管(errand)成交，且普通商品平票时按最近成交(MAX(at) DESC)取最抢手', async () => {
+  const db = makeDB();
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  const tEarly = new Date(Date.now() - 3_600_000).toISOString();
+  const tLate = new Date(Date.now() - 600_000).toISOString();
+  const UID_C = 'c'.repeat(32);
+
+  // 1 个商品摊位「烤红薯」（较早成交 1 份）与 1 个商品摊位「回锅肉饭」（较晚成交 1 份）
+  db.rawDb.prepare(
+    `INSERT INTO stalls (id, uid, seller, kind, item, price, stock, note, at, expires_at)
+     VALUES ('st-g1', ?, '鱼鱼', 'goods', '烤红薯', 30, 5, '', ?, ?)`,
+  ).run(UID_A, tEarly, future);
+  db.rawDb.prepare(
+    `INSERT INTO stalls (id, uid, seller, kind, item, price, stock, note, at, expires_at)
+     VALUES ('st-g2', ?, '爱丽丝', 'goods', '回锅肉饭', 16, 5, '', ?, ?)`,
+  ).run(UID_A, tLate, future);
+  db.rawDb.prepare(
+    `INSERT INTO deals (id, stall_id, seller_uid, buyer_uid, buyer_pet, item, qty, note, seen, at, expires_at)
+     VALUES ('dg-1', 'st-g1', ?, ?, '大肥鱼', '烤红薯', 1, '', 0, ?, ?)`,
+  ).run(UID_A, UID_B, tEarly, future);
+  db.rawDb.prepare(
+    `INSERT INTO deals (id, stall_id, seller_uid, buyer_uid, buyer_pet, item, qty, note, seen, at, expires_at)
+     VALUES ('dg-2', 'st-g2', ?, ?, '星汐', '回锅肉饭', 1, '', 0, ?, ?)`,
+  ).run(UID_A, UID_C, tLate, future);
+
+  // 3 笔同名的农牧代管委托成交（总量 3 份，高于普通商品的 1 份）
+  for (let i = 1; i <= 3; i++) {
+    const eid = `st-e${i}`;
+    db.rawDb.prepare(
+      `INSERT INTO stalls (id, uid, seller, kind, item, price, stock, note, at, expires_at)
+       VALUES (?, ?, '寻镛の鱼', 'errand', '农牧代管·全托(12菜10牧/90分)', 15, 0, '', ?, ?)`,
+    ).run(eid, UID_A, tLate, future);
+    db.rawDb.prepare(
+      `INSERT INTO deals (id, stall_id, seller_uid, buyer_uid, buyer_pet, item, qty, note, seen, at, expires_at)
+       VALUES (?, ?, ?, ?, '大肥鱼', '农牧代管·全托(12菜10牧/90分)', 1, '', 0, ?, ?)`,
+    ).run(`de-${i}`, eid, UID_A, UID_B, tLate, future);
+  }
+
+  const res = await req('/town/stalls?include_errands=1', { db });
+  assert.equal(res.status, 200);
+  const line = res.json.bulletin.find((x) => x.includes('成交了'));
+  assert.ok(line, '应返回成交汇总黑板报');
+  assert.match(line, /成交了 2 份摊货/);
+  assert.match(line, /最抢手的是「回锅肉饭」/);
+  assert.doesNotMatch(line, /农牧代管/);
+});

@@ -1402,7 +1402,7 @@ const STALLS_CACHE_MS = 15 * 60_000;
 const DEAL_KEEP_DAYS = 7;
 
 const stallsCacheKey = (includeErrands = false) =>
-  new Request(`https://town-stalls.internal/v1/${includeErrands ? 'all' : 'goods'}/${Math.floor(Date.now() / STALLS_CACHE_MS)}`);
+  new Request(`https://town-stalls.internal/v2/${includeErrands ? 'all' : 'goods'}/${Math.floor(Date.now() / STALLS_CACHE_MS)}`);
 
 async function invalidateStallsCache(ctx) {
   const cache = typeof caches === 'object' && caches.default ? caches.default : null;
@@ -1670,16 +1670,22 @@ async function townStallsRoute(request, env, method, ctx) {
           ORDER BY at DESC LIMIT ${STALLS_MAX}`,
       ).bind(nowIso).all(),
       db.prepare(
-        `SELECT item, SUM(qty) AS n
-           FROM deals
-          WHERE at >= ?1
-          GROUP BY item
-          ORDER BY n DESC LIMIT 2`,
+        `SELECT d.item, SUM(d.qty) AS n
+           FROM deals d
+           LEFT JOIN stalls s ON s.id = d.stall_id
+          WHERE d.at >= ?1
+            AND COALESCE(s.kind, 'goods') != 'errand'
+            AND d.item NOT LIKE '农牧代管%'
+          GROUP BY d.item
+          ORDER BY n DESC, MAX(d.at) DESC LIMIT 2`,
       ).bind(since24h).all(),
       db.prepare(
-        `SELECT COALESCE(SUM(qty), 0) AS total_qty
-           FROM deals
-          WHERE at >= ?1`,
+        `SELECT COALESCE(SUM(d.qty), 0) AS total_qty
+           FROM deals d
+           LEFT JOIN stalls s ON s.id = d.stall_id
+          WHERE d.at >= ?1
+            AND COALESCE(s.kind, 'goods') != 'errand'
+            AND d.item NOT LIKE '农牧代管%'`,
       ).bind(since24h).first(),
       db.prepare(
         `SELECT COUNT(*) AS total,
