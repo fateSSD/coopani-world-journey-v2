@@ -621,6 +621,19 @@ export class JourneyWorld implements World {
     }
   }
 
+  /** 读取生活层当前生病静养状态（cold / overwork）。未生病或已到期返回 untilMs = 0。 */
+  private sickUntil(): { untilMs: number; reason: string } {
+    try {
+      const raw = JSON.parse(readFileSync(join(this.opts.dataDir, 'life-public.json'), 'utf8'));
+      const t = Date.parse(String(raw?.sickUntil ?? ''));
+      if (!Number.isFinite(t)) return { untilMs: 0, reason: '' };
+      const reason = String(raw?.sickReason ?? '生病静养中').trim() || '生病静养中';
+      return { untilMs: t, reason };
+    } catch {
+      return { untilMs: 0, reason: '' };
+    }
+  }
+
 
   /**
    * 世界时刻。**所有旅行相关的判断都用它**：现在几点、到没到站、待了几天。
@@ -1489,8 +1502,9 @@ export class JourneyWorld implements World {
 
       if (this.st.phase === 'home') {
         if (this.stillResting(now)) return;
-        /* 她在睡或正忙着生活动作 —— 在家也不出门（也不弹「让我出门吧」），等忙完再说。 */
+        /* 她在睡、在病中静养或正忙着生活动作 —— 在家也不出门（也不弹「让我出门吧」），等忙完恢复再说。 */
         const nowMs = this.realNow().getTime();
+        if (this.sickUntil().untilMs > nowMs) return;
         if (this.asleepUntil() > nowMs || this.lifeBusyUntilMs() > nowMs) return;
         /*
          * 他开了「出门等点头」：她**不许自己走，但要开口问**。
@@ -1630,6 +1644,13 @@ export class JourneyWorld implements World {
      */
     opts: { to?: City; mode?: TravelMode; modeWord?: string } = {},
   ): Promise<void> {
+    if (this.st.phase === 'home') {
+      const sick = this.sickUntil();
+      if (sick.untilMs > this.realNow().getTime()) {
+        this.log?.info(`她这会儿在家生病静养（${sick.reason}），不能出家门。`);
+        return;
+      }
+    }
     if (!manual) {
       // **刚加载完先待一会儿。**
       //
@@ -1836,6 +1857,7 @@ export class JourneyWorld implements World {
    * 3. **被回绝之后要冷一天。** 否则下一轮巡检立刻重问，还问同一座城。
    */
   private async askToDepart(now: Date): Promise<void> {
+    if (this.st.phase === 'home' && this.sickUntil().untilMs > this.realNow().getTime()) return;
     const cur = this.st.ask;
     if (cur) {
       const age = now.getTime() - Date.parse(cur.askedAt);
@@ -2290,7 +2312,12 @@ export class JourneyWorld implements World {
       this.persist();
       return;
     }
-    const moment = localMoment(now, to.tz);
+    const legArriveMs = Date.parse(leg.arriveAt);
+    const arrivedAt = Number.isFinite(legArriveMs) && legArriveMs < now.getTime()
+      ? new Date(legArriveMs)
+      : now;
+    const arriveMoment = localMoment(arrivedAt, to.tz);
+    const nowMoment = localMoment(now, to.tz);
     this.applyLegArrivalToLife(leg, to.tz);
     const speed = this.speedNow();
     // 必须在更新 state 之前判「以前来过没有」—— 更新之后 everVisited 里一定有它。
@@ -2323,8 +2350,8 @@ export class JourneyWorld implements World {
       hereId: to.id,
       leg: null,
       ...(leg.modeId !== 'car' && this.st.car?.camper ? { car: null } : {}),
-      stayStartedAt: now.toISOString(),
-      stayDateKey: moment.dateKey,
+      stayStartedAt: arrivedAt.toISOString(),
+      stayDateKey: arriveMoment.dateKey,
       lastBeatKey: null,
       // 方向在**到站时**结算，不是出发时 —— 出发时 to 已经定了，但这一段的走向
       // 要等走完才算「上一段」。下一段选点就是靠这两个值决定往哪边继续。
@@ -2337,9 +2364,9 @@ export class JourneyWorld implements World {
        * 在成都等的那三天不该被算进「在稻城待的三天」。
        */
       pledge: atDest
-        ? { ...atDest, arrivedAt: atDest.arrivedAt ?? now.toISOString() }
+        ? { ...atDest, arrivedAt: atDest.arrivedAt ?? arrivedAt.toISOString() }
         : atMeet
-          ? { ...atMeet, meetArrivedAt: atMeet.meetArrivedAt ?? now.toISOString() }
+          ? { ...atMeet, meetArrivedAt: atMeet.meetArrivedAt ?? arrivedAt.toISOString() }
           : null,
     };
     /*
@@ -2373,7 +2400,13 @@ export class JourneyWorld implements World {
         'debounce',
       );
     }
-    await this.rebuildPlan(now, 'arrival', moment.decimal, to);
+    if (nowMoment.dateKey !== arriveMoment.dateKey) {
+      this.st = { ...this.st, stayDateKey: nowMoment.dateKey };
+      this.persist();
+      await this.rebuildPlan(now, 'full', 0, to);
+    } else {
+      await this.rebuildPlan(arrivedAt, 'arrival', arriveMoment.decimal, to);
+    }
     /*
      * 票钱**在出发时已经付了**（`buyTicket`，2026-11-16）。
      *
@@ -2430,10 +2463,17 @@ export class JourneyWorld implements World {
       inviteLine(this.plan?.invites ?? []),
     ].filter(Boolean).join('\n');
 
+    const crossDayArrive = nowMoment.dateKey !== arriveMoment.dateKey;
+    const delayedCatchup = now.getTime() - arrivedAt.getTime() > 90 * 60_000;
+    const arriveTimeLine = crossDayArrive
+      ? `已于 ${arriveMoment.dateKey} 当地 ${fmtHour(arriveMoment.decimal)} 抵达${to.name}并办好入住安顿（现在已是 ${nowMoment.dateKey} 当地 ${fmtHour(nowMoment.decimal)}）。`
+      : delayedCatchup && arriveMoment.decimal < 6
+        ? `当地 ${fmtHour(arriveMoment.decimal)} 到的${to.name}，已先去办好入住补觉（现在当地 ${fmtHour(nowMoment.decimal)}）。`
+        : `到了。${to.name}，当地 ${fmtHour(arriveMoment.decimal)}。`;
     await this.push(
       'journey.arrive',
       `arrive-${leg.id}`,
-      `到了。${to.name}，当地 ${fmtHour(moment.decimal)}。`
+      arriveTimeLine
       + `这一趟 ${leg.km} 公里走了 ${humanHours(leg.durationWorldHours)}。`
       + `${beenBefore ? '这地方以前来过，' : ''}${bodyFeeling(to, this.resolveHome().city)}`
       /*
@@ -3046,7 +3086,7 @@ export class JourneyWorld implements World {
       opts.flyRegardless
         ? undefined
         : this.affordMode(km, 0.8, from.country !== home.country, { from, to: home }),
-      !this.cfg.hasLicense,
+      !this.effectiveHasLicense(),
       this.effectiveLifeEnergy(),
     ));
     /*
@@ -4043,6 +4083,15 @@ export class JourneyWorld implements World {
         isError: true,
       };
     }
+    if (this.st.phase === 'home') {
+      const sick = this.sickUntil();
+      if (sick.untilMs > this.realNow().getTime()) {
+        return {
+          text: `她这会儿在家生病静养（${sick.reason}），最多只能在家照料菜园动植物，出不了家门 —— 等病好透了再出发。`,
+          isError: true,
+        };
+      }
+    }
     /*
      * **正在往回走：不开新的一趟。**
      *
@@ -4189,8 +4238,11 @@ export class JourneyWorld implements World {
       }
       mode = usable.find((m) => m.id === id) ?? null;
       if (mode?.id === 'car' && !this.effectiveHasLicense()) {
+        const vehicle = /房车|旅居车/i.test(wanted) ? '开房车' : '自驾';
         return {
-          text: `还没考下驾照，没法${/房车|旅居车/i.test(wanted) ? '开房车' : '自驾'}——先在生活那边考下驾照（或在设置里开启有驾照），或者换别的交通方式。`,
+          text: this.hasLifeInstalled()
+            ? `她在「模拟鱼生」里还没考下驾照，没法${vehicle}——得先去把驾照考出来，或者换别的交通方式。`
+            : `还没考下驾照，没法${vehicle}——先在设置里开启有驾照，或者换别的交通方式。`,
           isError: true,
         };
       }
@@ -4319,8 +4371,11 @@ export class JourneyWorld implements World {
     const usable = usableModesFor(from, dest, leg.km);
     const mode = usable.find((m) => m.id === id);
     if (mode?.id === 'car' && !this.effectiveHasLicense()) {
+      const vehicle = /房车|旅居车/i.test(wanted) ? '房车' : '自驾';
       return {
-        text: `还没考下驾照，改签不了${/房车|旅居车/i.test(wanted) ? '房车' : '自驾'}——先考下驾照再开，这一程换别的走法。`,
+        text: this.hasLifeInstalled()
+          ? `她在「模拟鱼生」里还没考下驾照，改签不了${vehicle}——先考下驾照再开，这一程换别的走法。`
+          : `还没考下驾照，改签不了${vehicle}——先考下驾照再开，这一程换别的走法。`,
         isError: true,
       };
     }
@@ -4399,8 +4454,11 @@ export class JourneyWorld implements World {
     const usable = usableModesFor(from, dest, km);
     const mode = usable.find((m) => m.id === id);
     if (mode?.id === 'car' && !this.effectiveHasLicense()) {
+      const vehicle = /房车|旅居车/i.test(modeWord) ? '房车' : '自驾';
       return {
-        text: `还没考下驾照，去${dest.name}定不了${/房车|旅居车/i.test(modeWord) ? '房车' : '自驾'}——先考下驾照再定，或者换别的走法。`,
+        text: this.hasLifeInstalled()
+          ? `她在「模拟鱼生」里还没考下驾照，去${dest.name}定不了${vehicle}——先考下驾照再定，或者换别的走法。`
+          : `还没考下驾照，去${dest.name}定不了${vehicle}——先考下驾照再定，或者换别的走法。`,
         isError: true,
       };
     }

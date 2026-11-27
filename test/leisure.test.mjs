@@ -8,7 +8,7 @@ const base = '../src/';
 const { cityById } = await import(base + 'geo/cities.ts');
 const { pickFood, planDay } = await import(base + 'plan/dayplan.ts');
 const {
-  pickSpotExtra, beachPlay, hotelEvening, idleSpots,
+  spotRideOptions, pickSpotExtra, beachPlay, hotelNightOptions, hotelEvening, idleSpots,
 } = await import(base + 'plan/leisure.ts');
 const { photoPrompt } = await import(base + 'photo.ts');
 const {
@@ -276,4 +276,111 @@ test('太长的那句截断，提示词不是叙事的地方', () => {
   const t = photoPrompt({ city: '三亚', cityId: 'sanya', hour: 15, month: 11, day: 15, subject: 'ground', doing: long });
   const line = t.split('。').find((x) => x.startsWith('正在发生的事'));
   assert.ok(line && line.length <= 50, `没截断：${line?.length}`);
+});
+
+test('三期：景区新增高空热气球、敞篷双层缆车、登山齿轨小火车及高空热气球拍照俯拍提示', () => {
+  const guilin = cityById('guilin');
+  const hailaer = cityById('hailaer');
+  const zhangye = cityById('zhangye');
+  const lijiang = cityById('lijiang');
+  const zjj = cityById('zhangjiajie');
+  const sh = cityById('shanghai');
+
+  // 1) 高空热气球：喀斯特/丹霞/草原晴天可选、雨天屏蔽、城里街巷与鸣沙山屏蔽
+  const glDry = spotRideOptions('漓江', { city: guilin, wet: false });
+  assert.ok(glDry.some((o) => o.how === 'balloon' && o.price === 280), '桂林漓江晴天应可选高空热气球');
+  const glWet = spotRideOptions('漓江', { city: guilin, wet: true });
+  assert.equal(glWet.some((o) => o.how === 'balloon'), false, '雨天应屏蔽热气球');
+  assert.equal(spotRideOptions('西街', { city: guilin, wet: false }).some((o) => o.how === 'balloon'), false, '老街街区不出热气球');
+  assert.equal(spotRideOptions('鸣沙山', { wet: false }).some((o) => o.how === 'balloon'), false, '沙丘不出热气球');
+  assert.ok(spotRideOptions('呼伦贝尔草原', { city: hailaer, wet: false }).some((o) => o.how === 'balloon'));
+  assert.ok(spotRideOptions('七彩丹霞', { city: zhangye, wet: false }).some((o) => o.how === 'balloon'));
+
+  const balloonShot = photoPrompt({
+    city: '桂林', cityId: 'guilin', spot: '漓江', hour: 7, month: 11, day: 27,
+    subject: 'ground', doing: '清晨乘着高空热气球随风缓缓升空',
+  });
+  assert.match(balloonShot, /高空热气球吊篮俯拍视角/);
+
+  // 2) 敞篷双层缆车：高海拔/雪山景区触发
+  assert.ok(spotRideOptions('玉龙雪山', { city: lijiang, wet: false }).some((o) => o.how === 'cabrio-cableway' && o.price === 180));
+  assert.equal(spotRideOptions('城南公园', { city: sh, wet: false }).some((o) => o.how === 'cabrio-cableway'), false);
+
+  // 3) 登山齿轨小火车：森林/古道/高山特色山地景区触发，普通公园不触发
+  assert.ok(spotRideOptions('国家森林公园', { city: zjj, wet: false }).some((o) => o.how === 'mountain-train' && o.price === 120));
+  assert.ok(spotRideOptions('阿里山森林游乐区', { wet: false }).some((o) => o.how === 'mountain-train'));
+  assert.equal(spotRideOptions('城南公园', { wet: false }).some((o) => o.how === 'mountain-train'), false);
+
+  // 4) 红线：文案不含鱼/海鲜词
+  const allTexts = [
+    ...spotRideOptions('玉龙雪山', { city: lijiang, wet: false }),
+    ...spotRideOptions('漓江', { city: guilin, wet: false }),
+    ...spotRideOptions('国家森林公园', { city: zjj, wet: false }),
+  ].map((o) => o.text).join('\n');
+  assert.doesNotMatch(allTexts, /鱼|虾|蟹|生鱼/);
+});
+
+test('三期：城市夜游新增夜游船、摇橹乌篷船、复古有轨叮叮车及城市特征边界', () => {
+  const sh = cityById('shanghai');
+  const sx = cityById('shaoxing');
+  const hk = cityById('xianggang');
+  const ams = cityById('amsterdam');
+  const cd = cityById('chengdu');
+
+  const shNight = hotelNightOptions('budget', [], [], '', '', sh).map((o) => o.what);
+  assert.ok(shNight.includes('night-cruise'), '上海应有城市夜游船');
+  assert.equal(shNight.includes('rowboat'), false);
+
+  const sxNight = hotelNightOptions('budget', [], [], '', '', sx).map((o) => o.what);
+  assert.ok(sxNight.includes('rowboat'), '绍兴水乡应有摇橹乌篷船');
+
+  const amsNight = hotelNightOptions('budget', [], [], '', '', ams).map((o) => o.what);
+  assert.equal(amsNight.includes('rowboat'), false, '阿姆斯特丹不应出现中式乌篷船');
+  assert.ok(amsNight.includes('night-cruise') && amsNight.includes('tram'));
+
+  const hkNight = hotelNightOptions('budget', [], [], '', '', hk).map((o) => o.what);
+  assert.ok(hkNight.includes('tram') && hkNight.includes('night-cruise'), '香港应有复古叮叮车与夜游船');
+
+  const cdNight = hotelNightOptions('budget', [], [], '', '', cd).map((o) => o.what);
+  assert.equal(cdNight.includes('night-cruise'), false);
+  assert.equal(cdNight.includes('rowboat'), false);
+  assert.equal(cdNight.includes('tram'), false);
+});
+
+test('P2 #11/#12 回归：雅丹解封热气球、溶洞/塔/港不误出、大理不出夜游船、非ground生图不插热气球俯拍', () => {
+  const dh = cityById('dunhuang');
+  const gl = cityById('guilin');
+  const dl = cityById('dali');
+
+  assert.ok(spotRideOptions('雅丹魔鬼城', { city: dh, wet: false }).some((o) => o.how === 'balloon'), '雅丹魔鬼城应可选热气球');
+  assert.equal(spotRideOptions('芦笛岩', { city: gl, wet: false }).some((o) => o.how === 'balloon'), false, '地下溶洞不得出热气球');
+  assert.equal(
+    spotRideOptions('天空塔', { city: { id: 'test-auck', name: '奥克兰', country: 'NZ', tz: 'Pacific/Auckland', lat: -36.8, lon: 174.7, tags: ['火山', '海港'], climate: 'oceanic', spots: ['天空塔'], foods: [] }, wet: false })
+      .some((o) => o.how === 'balloon'),
+    false,
+    '带港/塔城市地标不得误出热气球',
+  );
+  if (dl) {
+    const dlNight = hotelNightOptions('budget', [], [], '', '', dl).map((o) => o.what);
+    assert.equal(dlNight.includes('night-cruise'), false, '大理古城不应强挂城市江海夜游船');
+  }
+
+  const foodShot = photoPrompt({
+    city: '桂林', cityId: 'guilin', spot: '漓江', hour: 12, month: 6,
+    weather: '晴', subject: 'food', doing: '看着刚拍下的热气球照片吃桂林米粉',
+  });
+  assert.doesNotMatch(foodShot, /高空热气球吊篮俯拍视角/);
+
+  // 194 城漏网景点排除回归：阳朔西街走 BALLOON_SPOT 也必须被街巷排除，其余 6 处非升空地标同步屏蔽
+  const hhht = cityById('huhehaote');
+  const sg = cityById('shaoguan');
+  const alt = cityById('aletai');
+  assert.equal(spotRideOptions('阳朔西街', { city: gl, wet: false }).some((o) => o.how === 'balloon'), false, '阳朔西街不得出热气球');
+  assert.ok(spotRideOptions('阳朔热气球', { city: gl, wet: false }).some((o) => o.how === 'balloon'), '字面热气球仍可选');
+  assert.equal(spotRideOptions('昭君墓', { city: hhht, wet: false }).some((o) => o.how === 'balloon'), false);
+  assert.equal(spotRideOptions('席力图召', { city: hhht, wet: false }).some((o) => o.how === 'balloon'), false);
+  assert.equal(spotRideOptions('靖江王府', { city: gl, wet: false }).some((o) => o.how === 'balloon'), false);
+  assert.equal(spotRideOptions('满堂客家大围', { city: sg, wet: false }).some((o) => o.how === 'balloon'), false);
+  assert.equal(spotRideOptions('将军山滑雪场', { city: alt, wet: false }).some((o) => o.how === 'balloon'), false);
+  assert.equal(spotRideOptions('敦德布拉克岩画', { city: alt, wet: false }).some((o) => o.how === 'balloon'), false);
 });

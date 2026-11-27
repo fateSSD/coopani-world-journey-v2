@@ -1,5 +1,16 @@
 # 更新日志
 
+## 2.13.0 — 2026-11-28（游轮与景区特色体验扩容 + 凌晨到站当晚入住 + 双开驾照与生病静养真时钟联动 + 审计全量修复）
+
+- **景区特色体验与城市夜游扩容**（`src/plan/leisure.ts`、`src/photo.ts`、`test/leisure.test.mjs`、`test/night-ride.test.mjs`）：
+  - 新增高空热气球、敞篷双层缆车、登山齿轨小火车及城市夜游船 / 摇橹乌篷船 / 复古有轨叮叮车体验（含热气球吊篮俯拍拍照提示），移除 10 个无效城市 ID 并在 194 城全表校验下收紧 `BALLOON_EXCLUDE_SPOT`（补全墓/陵/召/王府/大围/滑雪场/岩画与非升空街巷，消除溶洞/城市地标/阳朔西街误触发）。
+  - 在途行程与 `nowSummary` 优化游轮/特色体验感知与触发可见性。
+- **凌晨下车当晚直接入住酒店并统一离线到站口径**（`src/world.ts`、`src/plan/dayplan.ts`、`test/night-ride.test.mjs`、`test/meet-city.test.mjs`）：
+  - 修复凌晨到达站点拖到次日白天才出站的问题：到站后按实际到站时刻 `arrivedAt` 当晚即安排入住酒店休息；同步将 `pledge.arrivedAt` 与 `pledge.meetArrivedAt` 统一对齐 `arrivedAt.toISOString()`（与 `stayStartedAt` 一致），消除离线跨日赴约时差漂移。
+- **与「模拟鱼生」双开驾照门禁 & 生病静养真实时钟联动**（`src/world-purse.ts`、`src/world-plan.ts`、`src/world-social.ts`、`src/world-webui.ts`、`src/world.ts`、`src/config.ts`、`test/rent-car.test.mjs`、`test/seat.test.mjs`）：
+  - `hasLifeInstalled()` 新增 `life-public.json.updatedAt` 24 小时新鲜度校验，避免禁用/卸载 `life` 后残留文件永久锁死自驾配置；双开且未在 `life` 考取驾照时禁止租车/自驾与自驾返程，同时保留单开 `journey` 手动配置自由。
+  - 修复跨扩展读取 `sickUntil` 误拿倍速时钟 `worldNow()` 比较的 P0 漏洞：`tick` / `depart` / `askToDepart` / `journey_go_to` / 面板发车 / `takeInvite` 全部统一以 `this.realNow().getTime()` 校验生病静养期（`takeInvite` 前置到入口最顶端），并在 `seat.test.mjs` 新增 4x 倍速回归测试。
+
 ## 2.12.0 — 2026-11-27（整合 frost77r 多模型提示词编辑器 + 旅费双开关持久化与在途可见性 + 生图密钥与昼夜光线修复）
 
 - **整合多模型生图提示词编辑器（`原作者：frost77r`）**（`src/prompt-editor.ts`、`src/config.ts`、`src/describe.ts`、`describe.json`、`src/world.ts`、`src/world-webui.ts`、`src/world-purse.ts`、`dist/webui.js`、`dist/webui.css`、`ENV_PROMPT.md`）：

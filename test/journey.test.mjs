@@ -3272,3 +3272,87 @@ test('回访老地方：没有由头的要压过方向系数', () => {
   assert.ok(fest > unfin, `节日该比「没逛完」更值钱：节 ${fest} vs 没逛完 ${unfin}`);
   assert.ok(unfin > been, `「没逛完」这一条理由被回访降权一起压没了：${unfin} vs ${been}`);
 });
+
+test('凌晨到站（00:00–05:59）：作息表当晚办入住补觉、不排早饭/白天出门，离线次日开机仍认真实到站时刻', async () => {
+  const { rmSync } = await import('node:fs');
+  const { StateStore, initialState } = await import('../src/state.ts');
+  const zs = cityById('zhoushan');
+
+  // 1) planDay 00:30 凌晨到站：01:00 入住、01:30 补觉、15:00 醒、18:30 晚饭，绝不排 09:00 早饭或白天景点
+  const p05 = planDay({
+    city: zs, dateKey: '2026-11-27', shape: 'arrival', startHour: 0.5, lodging: rollLodging(() => 0.2),
+  });
+  assert.equal(p05.beats[0].kind, 'arrive');
+  assert.equal(p05.beats[0].at, 0.5);
+  assert.equal(p05.beats[1].kind, 'hotel');
+  assert.equal(p05.beats[1].at, 1);
+  assert.match(p05.beats[1].what, /凌晨到，先去办入住/);
+  assert.equal(p05.beats[2].kind, 'sleep');
+  assert.equal(p05.beats[2].at, 1.5);
+  assert.equal(p05.beats.some((b) => b.kind === 'breakfast'), false, '凌晨补觉不该排九点早饭');
+  assert.equal(p05.beats.some((b) => b.kind === 'activity' && b.at < 18.5), false, '凌晨到站白天补觉不应排白天景点');
+
+  // 2) planDay 05:30 凌晨压线到站：节点时刻严格单调递增
+  const p55 = planDay({
+    city: zs, dateKey: '2026-11-27', shape: 'arrival', startHour: 5.5, lodging: rollLodging(() => 0.2),
+  });
+  for (let i = 1; i < p55.beats.length; i++) {
+    assert.ok(p55.beats[i].at >= p55.beats[i - 1].at, `节点时间倒流：${p55.beats[i - 1].at} → ${p55.beats[i].at}`);
+  }
+
+  // 3) 离线过夜到站补记：leg.arriveAt 为 00:31，早上 09:30 开机触发 arrive()，到站时间必须是 00:31 而非 09:30
+  const dir = mkdtempSync(join(tmpdir(), 'journey-early-arrive-'));
+  try {
+    const arriveIso = '2026-11-27T00:31:00.000+08:00';
+    const bootNow = new Date('2026-11-27T09:30:00.000+08:00');
+    const st = {
+      ...initialState('lanzhou'),
+      phase: 'traveling',
+      hereId: 'lanzhou',
+      clockAnchorReal: bootNow.toISOString(),
+      clockAnchorWorld: bootNow.toISOString(),
+      leg: {
+        id: 'leg-zs-0031',
+        fromId: 'lanzhou',
+        toId: 'zhoushan',
+        modeId: 'train',
+        seatId: 'hard-sleeper',
+        seat: '硬卧',
+        seatMult: 1.5,
+        km: 1838,
+        durationWorldHours: 18,
+        departedAt: '2026-11-26T06:31:00.000+08:00',
+        arriveAt: arriveIso,
+        viaIds: [],
+        roadText: '',
+        fare: 386,
+      },
+    };
+    new StateStore(dir).save(st);
+
+    const events = [];
+    const w = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, amapKey: '' },
+      dataDir: dir,
+      now: () => bootNow,
+    });
+    w.st = st;
+    w.host = {
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => { events.push(e); return e; },
+      store: {},
+      drainPendingEvents: async () => [],
+    };
+    await w.arrive(bootNow, st.leg);
+
+    assert.equal(w.st.phase, 'staying');
+    assert.equal(w.st.stayStartedAt, new Date(arriveIso).toISOString());
+    assert.ok(w.plan && w.plan.beats[0].at < 1, `arrive beat 应落在凌晨 0:31（实际 ${w.plan?.beats[0].at}）`);
+    assert.equal(w.plan.beats[1].kind, 'hotel');
+    assert.ok(w.plan.beats[1].at < 1.5, `凌晨入住应排在约 01:01（实际 ${w.plan.beats[1].at}）`);
+    const arrEv = events.find((e) => e.type === 'journey.arrive');
+    assert.ok(arrEv && /零点三十一分|00:31|凌晨/.test(arrEv.text), `到站事件应反映真实凌晨到站时间：${arrEv?.text}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

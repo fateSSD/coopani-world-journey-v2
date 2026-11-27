@@ -60,7 +60,12 @@ export interface RideOption {
   readonly text: string;
 }
 
-export function spotRideOptions(spot: string): readonly RideOption[] {
+export interface SpotRideContext {
+  readonly city?: Pick<City, 'id' | 'name' | 'tags' | 'country'>;
+  readonly wet?: boolean;
+}
+
+export function spotRideOptions(spot: string, ctx?: SpotRideContext): readonly RideOption[] {
   const out: RideOption[] = [];
   /*
    * 「博物馆」和「博物院」是两个词 —— 2026-11-09 测试里栽在「四川博物院」上，
@@ -140,6 +145,38 @@ export function spotRideOptions(spot: string): readonly RideOption[] {
     });
   }
 
+  if (!dune && (HIGH_ALT_MOUNTAIN.test(spot) || (MOUNTAIN.test(spot) && Boolean(ctx?.city) && /雪山|冰川|高原|阿尔卑斯|少女峰/.test(ctx!.city!.tags.join(','))))) {
+    out.push({
+      how: 'cabrio-cableway',
+      label: '敞篷双层缆车',
+      price: 180,
+      text: '踏上敞篷双层缆车的二层露天观景甲板，清冽山风迎面拂过，脚下云海与山脊缓缓铺开',
+    });
+  }
+
+  if (!dune && MOUNTAIN_TRAIN_SPOT.test(spot)) {
+    out.push({
+      how: 'mountain-train',
+      label: '登山齿轨小火车',
+      price: 120,
+      text: '坐进登山齿轨小火车的木窗车厢，伴着轮轨咔嗒声慢悠悠穿过林海与弯道往山上爬升',
+    });
+  }
+
+  if (
+    !ctx?.wet &&
+    (/热气球/.test(spot) ||
+      (!BALLOON_EXCLUDE_SPOT.test(spot) &&
+        (BALLOON_SPOT.test(spot) || (!dune && Boolean(ctx?.city) && BALLOON_CITY_TAGS.test(ctx!.city!.tags.join(','))))))
+  ) {
+    out.push({
+      how: 'balloon',
+      label: '高空热气球',
+      price: 280,
+      text: '乘着高空热气球随风缓缓升空，俯瞰脚下的%s与远处天际，整片地貌一下子铺展在眼前',
+    });
+  }
+
   if (/湖|公园|古镇|老街|街区|绿道|堤/.test(spot)) {
     out.push({
       how: 'bike',
@@ -197,6 +234,11 @@ const MOUNTAIN = /山|峰|雪山|峡谷|石柱|崖|天梯|栈道|索道/;
  * 「沙」单字不收：长沙、沙面、沙坪坝都是地名，跟地貌无关。
  */
 const DUNE = /沙丘|沙漠|鸣沙|沙山|沙坡头|戈壁|雅丹/;
+const HIGH_ALT_MOUNTAIN = /雪山|冰川|高山|玉龙|梅里|哈巴|四姑娘|贡嘎|天山|长白山|少女峰|铁力士|石丹峰|阿尔卑斯|富士山|乞力马扎罗|帕米尔|哈德昆/;
+const MOUNTAIN_TRAIN_SPOT = /森林|古道|高山|樱花|铁路|小火车|阿里山|少女峰|长白山|神农架|武夷山|庐山|张家界|箱根|岚山|铁力士|因特拉肯/;
+const BALLOON_SPOT = /喀斯特|峰林|火山|草原|丹霞|雅丹|地貌|阳朔|漓江|象鼻山|遇龙河|腾冲|热气球|卡帕多奇亚|格雷梅|蒲甘|纳帕/;
+const BALLOON_CITY_TAGS = /喀斯特|峰林|草原|丹霞|雅丹|漓江/;
+const BALLOON_EXCLUDE_SPOT = /博物馆|博物院|美术馆|展览馆|纪念馆|寺|庙|祠|巷|街|夜市|广场|大厦|书店|商城|商场|市场|故居|公园|溶洞|岩洞|芦笛岩|银子岩|石窟|洞|塔|港|海滩|沙滩|湾|城堡|古城|老城|大桥|桥|码头|机场|站|墓|陵|召|王府|大围|滑雪场|岩画/;
 
 /**
  * 景点里额外花的那一笔（2026-11-06 起，2026-11-08 扩到五类）。
@@ -219,32 +261,11 @@ const DUNE = /沙丘|沙漠|鸣沙|沙山|沙坡头|戈壁|雅丹/;
  * - 索道/滑竿/滑道三者**按种子挑一个**，不是都买 —— 同一座山，这次坐索道上去，
  *   下次可能是坐了滑竿，重算要稳，所以用哈希不用随机数。
  */
-export function pickSpotExtra(spot: string, seed: number, comfortable: boolean): Leisure | null {
+export function pickSpotExtra(spot: string, seed: number, comfortable: boolean, ctx?: SpotRideContext): Leisure | null {
   if (!comfortable) return null;
-  /*
-   * 宽裕的日子也不是每个景点都花钱 —— 但**别掉得太随意**。
-   *
-   * 原来是六成买、四成自己走。对有讲解的地方（石窟、博物馆、陵、俑）来说，
-   * 四成不听讲解等于白去一趟 —— 2026-11-12 Mr.Q 就是拿莫高窟问的。
-   *
-   * 现在八成五。留那一成半不是偷懒，是**她今天也可能不想听**：
-   * 跟团讲解要跟着走、要站着听，累的时候自己溜达反而舒服。
-   * 全买就成了「每次必打卡」，那不叫旅行。
-   *
-   * 钱紧（`comfortable` 为假）仍然一律不买 —— 那是穷游的真实状态，不该美化成「照样请讲解」。
-   */
   if (Math.abs(Math.round(seed)) % 100 >= 85) return null;
 
-  /*
-   * **候选只有一份来源：`spotRideOptions`。**
-   *
-   * 原来这里自己写了一套正则和价格表，`journey_spot_ride` 工具又写一套 ——
-   * 两套迟早分叉，出现「自动排程说能坐索道、她想坐时工具说没有」。
-   * 2026-11-09 合并：这里只负责「挑哪一个」，规则全在 `spotRideOptions` 里。
-   *
-   * 「自己走」不参与挑选（那不是消费项）。
-   */
-  const opts = spotRideOptions(spot).filter((o) => o.how !== 'walk');
+  const opts = spotRideOptions(spot, ctx).filter((o) => o.how !== 'walk');
   if (!opts.length) return null;
 
   /*
@@ -360,6 +381,20 @@ export interface NightOption {
  * ② `journey_hotel_night` 工具用它校验「她说要在酒店游泳」到底行不行。
  * 同一份数据两处引用，才不会出现「排程说能游、工具说不能游」。
  */
+export type NightCityHint = Pick<City, 'id' | 'name' | 'tags' | 'night'> & { readonly country?: string };
+
+const NIGHT_CRUISE_CITIES = new Set([
+  'guangzhou', 'shanghai', 'wuhan', 'chongqing', 'lanzhou', 'guilin', 'xianggang',
+  'nanjing', 'hangzhou', 'tianjin', 'paris', 'istanbul', 'london', 'budapest',
+  'prague', 'amsterdam', 'petersburg', 'seoul', 'tokyo', 'osaka', 'bangkok', 'singapore', 'sydney',
+]);
+const ROWBOAT_CITIES = new Set(['shaoxing', 'suzhou', 'yangzhou', 'hangzhou']);
+const TRAM_CITIES = new Set([
+  'xianggang', 'dalian', 'changchun', 'shenyang', 'sanfrancisco',
+  'prague', 'vienna', 'zurich', 'amsterdam', 'budapest', 'toronto',
+  'istanbul',
+]);
+
 export function hotelNightOptions(
   tier: LodgingTier,
   amen: readonly string[] = [],
@@ -368,6 +403,7 @@ export function hotelNightOptions(
   nightText = '',
   /** 住处类别（如「房车营地露营过夜」），用于兼容缺 amen 的已落盘房车存档。 */
   kind = '',
+  city?: NightCityHint,
 ): readonly NightOption[] {
   const out: NightOption[] = [];
   const has = (k: string): boolean => amen.includes(k);
@@ -456,6 +492,34 @@ export function hotelNightOptions(
     out.push({ what: 'around', label: '出门走走', price: 0, text: AROUND_PLAIN });
   }
 
+  if (city) {
+    const hasNight = Boolean(city.night) || Boolean(nightText);
+    if (hasNight && (NIGHT_CRUISE_CITIES.has(city.id) || city.tags.some((t) => /外滩|海港|江景|夜游/.test(t)))) {
+      out.push({
+        what: 'night-cruise',
+        label: '城市夜游船',
+        price: 80,
+        text: '买票上了城市夜游船，吹着江海晚风看两岸霓虹和铁桥灯影，船上旅人低声闲聊，气氛格外松快',
+      });
+    }
+    if ((!city.country || city.country === 'CN') && (city.tags.some((t) => /古镇|水乡|运河/.test(t)) || ROWBOAT_CITIES.has(city.id))) {
+      out.push({
+        what: 'rowboat',
+        label: '水乡摇橹乌篷船',
+        price: 60,
+        text: '夜里坐上摇橹乌篷船，木桨吱呀划开水面灯影，听着岸边茶馆的细碎说笑声慢慢飘过去',
+      });
+    }
+    if (TRAM_CITIES.has(city.id) || city.tags.some((t) => /叮叮车|有轨电车/.test(t))) {
+      out.push({
+        what: 'tram',
+        label: '复古有轨叮叮车',
+        price: 10,
+        text: '跳上一辆复古有轨叮叮车，坐进温润的木座椅里听着「叮叮」摇铃，慢悠悠晃过半座老城的灯火',
+      });
+    }
+  }
+
   /* 通用项：任何一家店都成立，也是没设施数据时的兜底。 */
   if (tier === 'luxury' || tier === 'view') {
     out.push({ what: 'bath', label: '泡澡', price: 0, text: '放了一缸热水慢慢泡澡，窗留了条小缝，透进一点清凉夜风' });
@@ -480,8 +544,9 @@ export function hotelEvening(
   around: readonly { readonly n: string; readonly km: number }[] = [],
   nightText = '',
   kind = '',
+  city?: NightCityHint,
 ): Leisure | null {
-  const all = hotelNightOptions(tier, amen, around, nightText, kind);
+  const all = hotelNightOptions(tier, amen, around, nightText, kind, city);
   const free = all.filter((x) => x.price === 0 || comfortable);
   if (!free.length) return null;
   const pickd = free[Math.abs(seed) % free.length];

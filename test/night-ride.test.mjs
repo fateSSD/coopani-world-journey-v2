@@ -313,3 +313,56 @@ test('一起玩的时候，坐索道和酒店夜间也要带上人', async () =>
   const beats = p.beats.map((b) => b.what).join(' / ');
   assert.match(beats, /小满也在/, `带同伴爬山那天，额外项目里没有同伴：${beats}`);
 });
+
+test('三期端到端：journey_spot_ride（热气球/敞篷缆车/齿轨）与 journey_hotel_night（夜游船/乌篷船/叮叮车）扣费、写时间轴并反哺 life', async () => {
+  const { readdirSync, readFileSync, writeFileSync } = await import('node:fs');
+  const readPendingMoodlets = (dataDir) => {
+    const pdir = join(dataDir, 'life-spend');
+    return readdirSync(pdir).filter((f) => f.endsWith('.json')).map((f) => JSON.parse(readFileSync(join(pdir, f), 'utf8')));
+  };
+  const installLifeBridge = (world) => {
+    writeFileSync(join(world.opts.dataDir, 'life-state.json'), JSON.stringify({ version: 1 }), 'utf8');
+    writeFileSync(join(world.opts.dataDir, 'life-public.json'), JSON.stringify({
+      schema: 2, updatedAt: world.worldNow().toISOString(), asleepUntil: '', ledger: { cash: 3000, travelAllowance: 2100 },
+    }), 'utf8');
+  };
+
+  // 1) 桂林漓江坐高空热气球（¥280）+ 反哺 life moodlet
+  {
+    const { world, restore } = await boot({ hereId: 'guilin', localHour: 9, cfg: { moneyEnabled: true, budget: 3000 } });
+    try {
+      installLifeBridge(world);
+      setPlan(world, [{ at: 8.5, kind: 'activity', what: '上午，漓江', spot: '漓江' }]);
+      world.plan.cityId = 'guilin';
+      world.plan.weather = { dayWeather: '晴', nightWeather: '晴', wet: false };
+      const before = world.st.spent;
+      const out = await tool(world, 'journey_spot_ride').handler({ how: 'balloon' });
+      assert.ok(!out.isError, out.text);
+      assert.equal(world.st.spent - before, 280);
+      assert.ok(world.plan.beats.some((b) => /热气球/.test(b.what)));
+      const effects = readPendingMoodlets(world.opts.dataDir);
+      assert.ok(effects.some((x) => x.amount === 0 && /热气球/.test(x.moodlet?.text || '') && x.vitalsDelta?.fun === 24));
+    } finally { restore(); }
+  }
+
+  // 2) 上海夜游船（¥80）& 绍兴乌篷船（¥60）& 香港叮叮车（¥10）
+  for (const [cityId, what, cost, kw] of [
+    ['shanghai', 'night-cruise', 80, '夜游船'],
+    ['shaoxing', 'rowboat', 60, '乌篷船'],
+    ['xianggang', 'tram', 10, '叮叮车'],
+  ]) {
+    const { world, restore } = await boot({ hereId: cityId, localHour: 20, cfg: { moneyEnabled: true, budget: 3000 } });
+    try {
+      installLifeBridge(world);
+      setPlan(world, [{ at: 19, kind: 'hotel', what: '回酒店了' }], { tier: 'budget', name: '某宾馆', amen: [], price: 180 });
+      world.plan.cityId = cityId;
+      const before = world.st.spent;
+      const out = await tool(world, 'journey_hotel_night').handler({ what });
+      assert.ok(!out.isError, `${cityId}/${what} 失败：${out.text}`);
+      assert.equal(world.st.spent - before, cost);
+      assert.ok(world.plan.beats.some((b) => b.what.includes(kw)));
+      const effects = readPendingMoodlets(world.opts.dataDir);
+      assert.ok(effects.some((x) => x.amount === 0 && x.moodlet?.kind === 'good' && (x.moodlet?.text || '').includes(kw)));
+    } finally { restore(); }
+  }
+});

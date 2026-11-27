@@ -1535,6 +1535,15 @@ export const socialMethods: Record<string, any> = {
    * 得在一个城里、手上不能已经有别的约定、那地方得真的去得了。
    */
   async takeInvite(id: string, approved = false): Promise<{ text: string; isError?: boolean }> {
+    if (this.st.phase === 'home') {
+      const sick = this.sickUntil();
+      if (sick.untilMs > this.realNow().getTime()) {
+        return {
+          text: `她这会儿在家生病静养（${sick.reason}），最多只能在家照料菜园动植物，出不了家门 —— 等病好透了再接同行邀约。`,
+          isError: true,
+        };
+      }
+    }
     const meet = await resolveMeetOpt(this);
     if (!meet) {
       return {

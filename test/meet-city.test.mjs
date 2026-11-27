@@ -118,7 +118,8 @@ test('到见面城：只记「到了会合点」，不算「一起待的三天�
 
     assert.equal(world.st.hereId, 'chengdu');
     assert.ok(world.st.pledge, `到会合点把约定弄丢了：${JSON.stringify(world.st.pledge)}`);
-    assert.equal(world.st.pledge.meetArrivedAt, arriveAt.toISOString(), '没记「到了会合点」');
+    assert.equal(world.st.pledge.meetArrivedAt, leg.arriveAt, '没按实际到站时刻 leg.arriveAt 记「到了会合点」');
+    assert.equal(world.st.pledge.meetArrivedAt, world.st.stayStartedAt, 'meetArrivedAt 应与 stayStartedAt 一致');
     assert.equal(world.st.pledge.arrivedAt, null,
       '把「到会合点」当成了「到了一起走的城」—— 那三天的账提前开始算了');
 
@@ -127,6 +128,26 @@ test('到见面城：只记「到了会合点」，不算「一起待的三天�
     const text = String(arrive[0].text);
     assert.match(text, /碰头|等/, `到会合点那句没说在等人：${text}`);
     assert.doesNotMatch(text, /待 3 天/, `人还没见着就说要在这儿待三天：${text}`);
+  } finally { restore(); }
+});
+
+test('离线跨日抵达赴约目的地：pledge.arrivedAt 与 stayStartedAt 统一按真实到站时刻 leg.arriveAt 落盘', async () => {
+  const arriveAt = new Date('2026-11-04T12:00:00Z');
+  const leg = buildJourney({
+    from: cityById('xian'), to: cityById('chengdu'),
+    mode: modeById('train'), km: Math.round(distanceKm(cityById('xian'), cityById('chengdu'))),
+    at: new Date('2026-11-03T20:00:00Z'), speed: 1,
+  });
+  const { world, restore } = await boot({
+    phase: 'traveling', hereId: 'xian', leg,
+    tripStartedAt: '2026-11-01T00:00:00Z',
+    pledge: meetPledge({ cityId: 'chengdu', cityName: '成都', meetCityId: undefined, meetCityName: undefined }),
+  }, arriveAt.toISOString());
+  try {
+    await world.arrive(arriveAt, leg);
+    assert.equal(world.st.hereId, 'chengdu');
+    assert.equal(world.st.stayStartedAt, leg.arriveAt);
+    assert.equal(world.st.pledge?.arrivedAt, leg.arriveAt, '离线跨日抵达目的地应按 arrivedAt 落盘 pledge.arrivedAt');
   } finally { restore(); }
 });
 

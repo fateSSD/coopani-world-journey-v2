@@ -572,8 +572,8 @@ export function journeyConfigGroups(): ConfigGroup[] {
           },
           'worlds.journey.hasLicense': {
             type: 'boolean',
-            title: '她有驾照',
-            description: '关掉之后她永远不会自驾，也不会租车 —— 城际和城里都只坐公共交通。',
+            title: '她有驾照（仅独立运行时生效）',
+            description: '仅在单独启用「大肥鱼环游世界」、未同开「模拟鱼生」时生效；同开「模拟鱼生」时自动以你在生活里是否考下「驾照」为准——考了就能自驾/租车/开房车，没考就会拦住。',
           },
           'worlds.journey.payFromLife': {
             type: 'boolean',

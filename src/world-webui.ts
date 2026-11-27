@@ -750,6 +750,10 @@ export const webUiMethods: Record<string, any> = {
         // 但真要绕过前端发这个请求也不该被静默吞掉：直接告诉他为什么不行。
         if (this.st.phase !== 'home') throw new Error('她已经在外面了');
         const now = this.worldNow();
+        const sick = this.sickUntil();
+        if (sick.untilMs > this.realNow().getTime()) {
+          throw new Error(`她这会儿在家生病静养（${sick.reason}），最多只能在家照料菜园动植物，出不了家门`);
+        }
         /*
          * **休息期里也放行。**
          *

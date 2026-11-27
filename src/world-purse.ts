@@ -515,10 +515,16 @@ export const purseMethods: Record<string, any> = {
       return (km <= 3000 ? km * per : base + (km - 3000) * tailPer) * seatMult;
     }
     /*
-     * 铁路分段算（2026-11-08）：短途高铁、长途卧铺，单价差一倍。
-     * 其余方式还是「单价 × 里程」，它们的单价不随距离变。
+     * 铁路与水路分段算：
+     * - 铁路（2026-11-08）：短途高铁、长途卧铺，单价差一倍。
+     * - 水路：300km 内短渡 0.7 元/km，超出部分按 0.35 元/km 递加，
+     *   避免中长途船票按平价翻倍后把主题远洋游轮（3.2x）挤出普通预算。
      */
     if (modeId === 'train') return km * trainUnit(km) * seatMult;
+    if (modeId === 'ship') {
+      const base = km <= 300 ? km * 0.7 : 210 + (km - 300) * 0.35;
+      return base * seatMult;
+    }
     return km * (FARE_PER_KM[modeId as ModeId] ?? 0) * seatMult;
   },
 
@@ -631,6 +637,19 @@ export const purseMethods: Record<string, any> = {
     return Boolean(v && v.fitness >= 60);
   },
 
+  /** 检查「模拟鱼生」是否正在同开：读 life-public.json（优先）或 life-state.json 的 updatedAt，超过 24 小时无心跳的残留旧档不锁死单机设置。 */
+  hasLifeInstalled(): boolean {
+    const nowMs = this.realNow().getTime();
+    for (const file of ['life-public.json', 'life-state.json', 'life-state.json.bak']) {
+      try {
+        const raw = JSON.parse(readFileSync(join(this.opts.dataDir, file), 'utf8')) as { updatedAt?: unknown };
+        const upd = Date.parse(String(raw?.updatedAt ?? ''));
+        if (Number.isFinite(upd) && Math.abs(nowMs - upd) <= 24 * 3_600_000) return true;
+      } catch { /* 继续检查下一个候选文件 */ }
+    }
+    return false;
+  },
+
   /** 读取生活层「驾照」持证情况：优先认 life-public.json.certs；旧版无 certs 字段时回退只读 life-state.json。 */
   readLifeHasLicense(): boolean {
     try {
@@ -646,9 +665,10 @@ export const purseMethods: Record<string, any> = {
     return false;
   },
 
-  /** 综合设置开关与生活层考取的驾照状态判断是否可自驾/开房车。 */
+  /** 综合判断是否可自驾/租车/开房车：同开「模拟鱼生」时严格认生活层考取的驾照，仅独立运行才走设置开关。 */
   effectiveHasLicense(): boolean {
-    return Boolean(this.cfg.hasLicense || this.readLifeHasLicense());
+    if (this.hasLifeInstalled()) return this.readLifeHasLicense();
+    return Boolean(this.cfg.hasLicense);
   },
 
 
@@ -1083,6 +1103,7 @@ export const purseMethods: Record<string, any> = {
         nextStop: this.nextStopForPublic(),
         onWay,
         atSpot,
+        wishes: this.st.wishes.map((id) => this.cityName(id)),
       });
       const file = join(this.opts.dataDir, PUBLIC_FILE);
       const tmp = `${file}.tmp`;
@@ -1376,6 +1397,7 @@ export const purseMethods: Record<string, any> = {
         been,
         typeof this.withUserLine === 'function' ? this.withUserLine() : '',
         `家里这样：${bodyFeeling(here, here)}`,
+        here.port ? '这座城有港口码头，下一站去别的港口城市可以选坐游轮或河轮。' : '',
         weatherLine(homeW),
         this.purseTravelLine(),
         /*
@@ -1434,6 +1456,7 @@ export const purseMethods: Record<string, any> = {
       // 体感以「家」为参照：她是从兰州出来的鱼，到湿热的南方和回西北，
       // 身体的第一反应不是一回事。这句话让她随时说得出「受不受得了」。
       `身体感觉：${bodyFeeling(here, this.resolveHome().city)}`,
+      here.port ? '这座城有港口码头，下一站去别的港口城市可以选坐游轮或河轮。' : '',
       /*
        * **店名要给她。**
        *

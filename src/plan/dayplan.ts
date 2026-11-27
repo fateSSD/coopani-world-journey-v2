@@ -1315,6 +1315,7 @@ export function planDay(args: {
         || nightIn(city, Number(dateKey.slice(5, 7)))
         || '',
       lodging.kind,
+      city,
     );
     if (!eve) return;
     if (eve.price > 0) extraItems.push(eve.item);
@@ -1426,7 +1427,12 @@ export function planDay(args: {
      * 挂在 `act` 里而不是 `commute` 里：讲解和观光车是**景点内**的消费，
      * 跟怎么来的没有关系。她也不是每次都买 —— 余钱紧就自己走。
      */
-    const extra = pickSpotExtra(spot, kmSeed, (args.spotRideOk ?? richThisDay) || Boolean(args.lowEnergy && (args.spotRideOk ?? true)));
+    const extra = pickSpotExtra(
+      spot,
+      kmSeed,
+      (args.spotRideOk ?? richThisDay) || Boolean(args.lowEnergy && (args.spotRideOk ?? true)),
+      { city, wet },
+    );
     if (extra) {
       extraItems.push(extra.item);
       extraCost += extra.price;
@@ -1455,7 +1461,7 @@ export function planDay(args: {
        * 没有代步选项时**什么都不写**：城里大半景点本来就只能走，
        * 每个景点补一句「车进不来」就是凑字数，一天两句，比不写还烦。
        */
-      const rideOpts = spotRideOptions(spot).filter((o) => o.how !== 'walk' && o.how !== 'guide');
+      const rideOpts = spotRideOptions(spot, { city, wet }).filter((o) => o.how !== 'walk' && o.how !== 'guide');
       if (rideOpts.length) {
         push(at + 0.2, 'beat', args.highFitness
           ? `这儿能坐${rideOpts.map((o) => o.label).join('、')}，想省点脚力可以坐一段。`
@@ -1520,7 +1526,20 @@ export function planDay(args: {
     const a1 = spotText(city, 1, dayIdx);
     // 到达这件事由 `journey.arrive` 事件负责说，这里的 beat 不再重复它。
     // （2026-10-31 模拟里发现：两句「到 天水 了」连着出现，就是这里撞的。）
-    push(start, 'arrive', `走出站，${shapeWord(city)}`);
+    push(start, 'arrive', start < 6 ? `凌晨走出站，${shapeWord(city)}` : `走出站，${shapeWord(city)}`);
+
+    if (start < 6) {
+      // 凌晨到站：先去办入住倒头补觉，睡过白天，傍晚缓过来再出门吃晚饭。
+      // 不能调 `stayIn()`（at < 21 会触发 hotelEvening 把健身房/夜生活排在凌晨）。
+      push(start + 0.5, 'hotel', `凌晨到，先去办入住。住进${lodgingLabel(lodging)}。${lodging.feel}`);
+      push(Math.min(6.5, start + 1), 'sleep', '倒头补觉');
+      push(15, 'wake', '睡醒，缓过劲来');
+      push(18.5, 'dinner', `晚饭，${foodOf(2)}`);
+      if (nightOption) push(20.25, 'night', nightLine(nightOption));
+      stayIn(nightOption ? 21.5 : 20, `回${lodgingLabel(lodging)}。`);
+      push(23, 'sleep', '睡');
+      return finish();
+    }
 
     if (start >= 20) {
       // 八点以后到，只够进房间。这一晚没有别的。

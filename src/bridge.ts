@@ -419,6 +419,7 @@ export interface PublicInput {
   readonly nextStop: { readonly name: string; readonly at: string } | null;
   readonly onWay?: { readonly what: string; readonly arriveAt: string; readonly leftMin: number } | null;
   readonly atSpot?: { readonly name: string; readonly until: string } | null;
+  readonly wishes?: readonly string[];
 }
 
 /**
@@ -483,6 +484,7 @@ export function publicSnapshot(input: PublicInput): Record<string, unknown> {
     plan: { nextStop: input.nextStop },
     onWay: input.onWay ?? null,
     atSpot: input.atSpot ?? null,
+    wishes: input.wishes ? [...input.wishes] : [],
     rides: {
       supported: true,
       spendEnabled: money.enabled,

@@ -109,7 +109,7 @@ test('没设过的时候回默认城，并且明说「这是默认」', async ()
    */
   assert.equal(r.json.custom, false, '没设过却说设过了');
   assert.equal(r.json.api, 1, '跨机接口没有版本号 —— 第一次改结构就会弄坏所有老客户端');
-  assert.deepEqual(r.json.streets, ['南滨河路', '张掖路', '皋兰路', '雁滩路']);
+  assert.deepEqual(r.json.streets, ['南滨河路', '张掖路', '皋兰路', '雁滩路', '正宁路', '庆阳路', '甘南路', '安宁西路']);
   assert.equal(r.json.rules.length, 4);
 });
 
@@ -251,7 +251,7 @@ test('库里存着坏 JSON 时读那侧兜住，不许整页崩', async () => {
   });
   const r = await call('/town/info', { envKey: null, db });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.json.streets, ['南滨河路', '张掖路', '皋兰路', '雁滩路'], '坏 JSON 没退默认');
+  assert.deepEqual(r.json.streets, ['南滨河路', '张掖路', '皋兰路', '雁滩路', '正宁路', '庆阳路', '甘南路', '安宁西路'], '坏 JSON 没退默认');
   assert.equal(r.json.rules.length, 4);
 });
 
@@ -303,10 +303,10 @@ test('街道介绍与属性增益/减益：默认返回完整四街档案，管�
   const def = await call('/town/info', { envKey: null });
   assert.equal(def.status, 200);
   assert.equal(Array.isArray(def.json.streetProfiles), true);
-  assert.equal(def.json.streetProfiles.length, 4);
+  assert.equal(def.json.streetProfiles.length, 8);
   assert.equal(def.json.streetProfiles[0].name, '南滨河路');
   assert.ok(def.json.streetProfiles[0].desc.length > 10);
-  assert.deepEqual(def.json.streetProfiles[0].mods, { energy: 10, fun: 10, clean: -10 });
+  assert.deepEqual(def.json.streetProfiles[0].mods, { fit: 15, energy: 5, clean: -10 });
 
   const db = fakeDB();
   const w = await call('/admin/town', {

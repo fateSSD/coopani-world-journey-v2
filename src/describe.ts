@@ -339,14 +339,14 @@ export const TOOL_DECLS = [
       properties: {
         what: {
           type: 'string',
-          enum: ['pool', 'onsen', 'gym', 'spa', 'bar', 'around', 'bath', 'room'],
-          description: 'Activity code: pool, onsen, gym, spa, bar, around (short walk), bath, or room.',
+          enum: ['pool', 'onsen', 'gym', 'spa', 'bar', 'around', 'bath', 'room', 'night-cruise', 'rowboat', 'tram'],
+          description: 'Activity code: pool, onsen, gym, spa, bar, around (short walk), bath, room, night-cruise (city night boat), rowboat (water-town wooden boat), or tram (vintage tram).',
         },
       },
       required: ['what'],
     },
     tags: ['write'] as const,
-    summary: { zh: '根据住宿真实设施决定今晚在店里的活动。', en: 'Picks tonight from what this hotel actually has.' },
+    summary: { zh: '根据住宿真实设施与所在城市特色决定今晚的活动（含夜游船/乌篷船/叮叮车）。', en: 'Picks tonight from verified hotel amenities or local city night tours.' },
   },
   {
     name: 'journey_spot_ride',
@@ -358,8 +358,8 @@ export const TOOL_DECLS = [
       properties: {
         how: {
           type: 'string',
-          enum: ['cableway', 'shuttle', 'sedan', 'slide', 'bike', 'guide', 'walk', 'camel'],
-          description: 'Mode inside spot: cableway, shuttle, sedan, slide, bike, guide, camel, or walk.',
+          enum: ['cableway', 'shuttle', 'sedan', 'slide', 'bike', 'guide', 'walk', 'camel', 'balloon', 'cabrio-cableway', 'mountain-train'],
+          description: 'Mode inside spot: cableway, cabrio-cableway, mountain-train, balloon, shuttle, sedan, slide, bike, guide, camel, or walk.',
         },
         spot: {
           type: 'string',
@@ -369,7 +369,7 @@ export const TOOL_DECLS = [
       required: ['how'],
     },
     tags: ['write'] as const,
-    summary: { zh: '在景区内选择交通/游览方式（索道/观光车/步行等）。', en: 'Pick transport or walking inside the scenic spot.' },
+    summary: { zh: '在景区内选择交通/游览方式（索道/敞篷缆车/齿轨小火车/热气球/观光车/步行等）。', en: 'Pick transport or walking inside the scenic spot.' },
   },
   {
     name: 'journey_set_slot',

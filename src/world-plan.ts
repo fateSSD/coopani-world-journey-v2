@@ -1219,6 +1219,12 @@ export const planMethods: Record<string, any> = {
     /** 车的档。不传按 `comfort` —— 就是原来那个 200/天的价。 */
     tier?: CarTier,
   ): Promise<{ text: string; isError?: boolean }> {
+    if (!this.effectiveHasLicense()) {
+      const why = this.hasLifeInstalled()
+        ? '她在「模拟鱼生」里还没考下驾照，租不了车 —— 先去把驾照考出来再开。'
+        : '她还没驾照，租不了车 —— 坐公交或者在设置里把「她有驾照」打开。';
+      return { text: why, isError: true };
+    }
     if (this.st.phase === 'traveling') {
       return { text: '她在路上，租不了车 —— 到了地方再说，那时候才叫「当地」。', isError: true };
     }
@@ -1584,7 +1590,7 @@ export const planMethods: Record<string, any> = {
      */
     const month = Number(localMoment(this.worldNow(), here.tz).dateKey.slice(5, 7));
     const nightLine = playLine(here.id) || (nightIn(here, month) ?? '');
-    const opts = hotelNightOptions(lod.tier, lod.amen, lod.around, nightLine, lod.kind);
+    const opts = hotelNightOptions(lod.tier, lod.amen, lod.around, nightLine, lod.kind, here);
     const want = whatRaw.trim();
     const hit = opts.find((o) => o.what === want) ?? opts.find((o) => o.label.includes(want));
     if (!hit) {
@@ -1632,6 +1638,21 @@ export const planMethods: Record<string, any> = {
       this.queueLifeEffect('房车煮面', { vitalsDelta: { food: 22, fun: 8 } });
     } else if (hit.what === 'campwalk') {
       this.queueLifeEffect('营地散步', { vitalsDelta: { fun: 12 }, fitnessDelta: 0.5 });
+    } else if (hit.what === 'night-cruise') {
+      this.queueLifeEffect('城市夜游船', {
+        vitalsDelta: { fun: 18, social: 10 },
+        moodlet: { text: '晚上坐城市夜游船吹着晚风看两岸灯火，心里亮堂又松快', kind: 'good', hours: 4 },
+      });
+    } else if (hit.what === 'rowboat') {
+      this.queueLifeEffect('水乡摇橹乌篷船', {
+        vitalsDelta: { fun: 16, social: 6 },
+        moodlet: { text: '坐摇橹乌篷船划开水面灯影，听着岸边茶声慢慢静下来', kind: 'good', hours: 4 },
+      });
+    } else if (hit.what === 'tram') {
+      this.queueLifeEffect('复古有轨叮叮车', {
+        vitalsDelta: { fun: 14, social: 6 },
+        moodlet: { text: '坐复古有轨叮叮车晃过半座老城，夜色格外有味道', kind: 'good', hours: 3 },
+      });
     } else {
       this.queueLifeEffect(`酒店夜间：${hit.label}`, { vitalsDelta: { fun: 12 } });
     }
@@ -1670,7 +1691,7 @@ export const planMethods: Record<string, any> = {
       return { text: `这会儿已经不在${spot}了（当地 ${fmtHour(now)}）。要坐哪儿的车，得说明是在哪个景点。`, isError: true };
     }
 
-    const opts = spotRideOptions(spot);
+    const opts = spotRideOptions(spot, { city: here, wet: Boolean(this.plan.weather?.wet) });
     const want = howRaw.trim();
     const hit = opts.find((o) => o.how === want) ?? opts.find((o) => o.label.includes(want));
     if (!hit) {
@@ -1687,6 +1708,22 @@ export const planMethods: Record<string, any> = {
     }
     const line = hit.text.includes('%s') ? hit.text.replace('%s', spot) : hit.text;
     this.pushBeat(Math.min(now + 0.15, 23.5), line);
+    if (hit.how === 'balloon') {
+      this.queueLifeEffect('景区高空热气球', {
+        vitalsDelta: { fun: 24, social: 8 },
+        moodlet: { text: '乘高空热气球俯瞰大地与云影，整个人都畅快了', kind: 'good', hours: 5 },
+      });
+    } else if (hit.how === 'cabrio-cableway') {
+      this.queueLifeEffect('敞篷双层缆车', {
+        vitalsDelta: { fun: 18 },
+        moodlet: { text: '站在敞篷双层缆车二层露天甲板看云海，山风透亮', kind: 'good', hours: 4 },
+      });
+    } else if (hit.how === 'mountain-train') {
+      this.queueLifeEffect('登山齿轨小火车', {
+        vitalsDelta: { fun: 16, energy: 4 },
+        moodlet: { text: '坐登山齿轨小火车慢慢穿过林海弯道，一路都很惬意', kind: 'good', hours: 4 },
+      });
+    }
     this.persist();
     return { text: line + (hit.price > 0 ? `（${hit.price} 块）` : '') };
   },

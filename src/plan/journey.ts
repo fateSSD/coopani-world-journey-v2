@@ -536,14 +536,14 @@ export function pickMode(
       else if (m.id === 'train') w = 3;
       else if (m.id === 'motorcycle') w = 1.5;
       else if (m.id === 'plane') w = 0.15;
-      else if (m.id === 'ship') w = km >= 60 ? 1.2 : 0.2;
+      else if (m.id === 'ship') w = km >= 60 ? 2.0 : 0.25;
     } else if (haul === 'medium') {
       if (m.id === 'train') w = 8;
       else if (m.id === 'car') w = 4;
       else if (m.id === 'bus') w = 2;
       else if (m.id === 'motorcycle') w = 1.5;
       else if (m.id === 'plane') w = 0.8;
-      else if (m.id === 'ship') w = poor ? 1.5 : 2.4;
+      else if (m.id === 'ship') w = poor ? 2.2 : 3.8;
       else w = 0.05;
     } else if (haul === 'long') {
       if (m.id === 'train') w = 5;
@@ -560,12 +560,12 @@ export function pickMode(
        *   1500 公里以上  0.08（基本只剩「专门自驾游」这一种动机）
        */
       else if (m.id === 'car') w = km >= 1500 ? 0.08 : 0.6;
-      else if (m.id === 'ship') w = poor ? 1.4 : 2.2;
+      else if (m.id === 'ship') w = poor ? 2.0 : 3.6;
       else w = 0.02;
     } else {
-      // 跨洲：飞机是唯一像话的。船留给「有游轮航线」的浪漫，概率很低。
+      // 跨洲：飞机是唯一像话的。双港口走水路/远洋游轮保留可发现性。
       if (m.id === 'plane') w = 20;
-      else if (m.id === 'ship') w = 0.4;
+      else if (m.id === 'ship') w = 1.2;
       else w = 0;
     }
     // 手头紧：飞机压到原来的一成。不是禁掉 —— 跨洲还是只能飞，
@@ -580,8 +580,9 @@ export function pickMode(
       else if (m.id === 'motorcycle') w *= 0.5;
       else if (m.id === 'car' || m.id === 'train' || m.id === 'plane') w *= 1.4;
     }
-    // 慢得离谱的再压一道，防止短途段里出现「摩托车横穿八百公里」。
-    return w * (1 - slowness * 0.35);
+    // 慢得离谱的陆路交通再压一道，防止短途段里出现「摩托车横穿八百公里」；
+    // 水路/游轮本身就是慢游，不套用速度惩罚以免双港口选船概率被压低。
+    return m.id === 'ship' ? w : w * (1 - slowness * 0.35);
   };
 
   const weighted = usable.map((m) => ({ m, w: score(m) })).filter((x) => x.w > 0);
@@ -680,8 +681,9 @@ export function pickGrade(
    */
   const long = mode.id === 'ship' || mode.id === 'car' ? km >= 300 : km >= 600;
 
-  // 没记账当成「手头有四张票的钱」—— 不上不下，该省的时候还是会省。
-  const p = Number.isFinite(purse) && purse !== null ? (purse as number) : 4;
+  // 未开记账（purse === null）时按中性预算处理，但不能把主题游轮与观光专列卡死成 0%
+  const hasPurse = Number.isFinite(purse) && purse !== null;
+  const p = hasPurse ? (purse as number) : 4;
 
   if (p < 1.6 || !second) return base;
 
@@ -699,14 +701,21 @@ export function pickGrade(
   }
 
   /*
-   * 主题游轮（3.2x）账面测算：
-   * 长途船票基准 120–180 元，3.2x 溢价约 260–400 元；航程内可免单吃正餐(40×2) + 演出(88) + 泳池(35) + 游艺(35) ≈ 240–360 元，账面基本持平。
-   * 门槛定在 p >= 4.5（余钱至少够 4.5 张内舱票），即一次花掉余钱不超过 ~71% 时以 35% 概率入选。
+   * 主题游轮（3.2x）：未开记账给 22% 概率体验，开启记账后余钱达 3.4 张基票即可入选。
    */
-  if (mode.id === 'ship' && long && third && p >= 4.5) {
+  if (mode.id === 'ship' && long && third && (!hasPurse || p >= 3.4)) {
     const r = rnd();
-    if (r < 0.35) return third;
-    if (r < 0.85) return second;
+    const themeProb = !hasPurse ? 0.22 : (p >= 6 ? 0.45 : 0.32);
+    if (r < themeProb) return third;
+    if (r < themeProb + 0.5) return second;
+    return base;
+  }
+
+  if (!hasPurse && mode.id === 'train' && long && fourth) {
+    const r = rnd();
+    if (r < 0.15) return fourth;
+    if (r < 0.35 && third) return third;
+    if (r < 0.78) return second;
     return base;
   }
 

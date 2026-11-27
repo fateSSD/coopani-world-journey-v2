@@ -413,3 +413,254 @@ test('二期（P2）：内河游轮（river-cruise）与远洋海港航线区分
   });
   assert.match(prompt, /两岸山影.*灯火|江面/);
 });
+
+test('游轮/专列未开记账（purse=null）不再 0% 锁死，双港口选船与长途船票分档合理，港口提示透出', async () => {
+  const { pickMode } = await import('../src/plan/journey.ts');
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { StateStore, initialState } = await import('../src/state.ts');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  // 1) purse=null 时，theme-cruise 与 scenic-train 均不再被 0% 锁死
+  const shipNullGrades = new Set();
+  const trainNullGrades = new Set();
+  for (let i = 0; i < 200; i++) {
+    shipNullGrades.add(pickGrade(ship, 800, null, () => (i + 0.5) / 200).id);
+    trainNullGrades.add(pickGrade(train, 1200, null, () => (i + 0.5) / 200).id);
+  }
+  assert.ok(shipNullGrades.has('theme-cruise'), `purse=null 时长途船应能随出 theme-cruise：${[...shipNullGrades].join('/')}`);
+  assert.ok(trainNullGrades.has('scenic-train'), `purse=null 时长途火车应能随出 scenic-train：${[...trainNullGrades].join('/')}`);
+
+  // 2) 开启记账门槛降至 p >= 3.4
+  const ship36 = new Set();
+  for (let i = 0; i < 100; i++) ship36.add(pickGrade(ship, 800, 3.6, () => (i + 0.5) / 100).id);
+  assert.ok(ship36.has('theme-cruise'), 'p=3.6 应能买到主题远洋游轮');
+
+  // 3) 正常预算双港口选船不受 slowness 错杀
+  const sh = cityById('shanghai');
+  const qd = cityById('qingdao');
+  let shipPicked = 0;
+  for (let i = 0; i < 1000; i++) {
+    const m = pickMode(sh, qd, 600, () => (i + 0.5) / 1000, false);
+    if (m?.id === 'ship') shipPicked++;
+  }
+  assert.ok(shipPicked >= 120, `正常预算上海↔青岛双港口选船频次应显著提升（实测 ${shipPicked}/1000）`);
+
+  // 4) 长途船票分段定价（300km 内 0.7/km，超出部分 0.35/km）、wishes 广播与港口提示
+  const dir = mkdtempSync(join(tmpdir(), 'journey-ship-tier-'));
+  try {
+    const st = { ...initialState('shanghai'), wishes: ['zhoushan'] };
+    new StateStore(dir).save(st);
+    const w = new JourneyWorld({ cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeId: 'shanghai' }, dataDir: dir });
+    w.st = st;
+    assert.equal(w.fareOf('ship', 200, false, 1), 140);
+    assert.equal(w.fareOf('ship', 1000, false, 1), 455);
+    assert.match(w.nowSummary(), /港口码头.*游轮或河轮/);
+    const pub = publicSnapshot({
+      worldNow: Date.now(), speed: 1, phase: 'home', city: sh, leg: null,
+      money: { enabled: true, budget: 2000, spent: 0, earned: 0, unsettledRideFare: 0 },
+      diary: { enabled: true, dir }, applied: [], nextStop: null, wishes: ['舟山'],
+    });
+    assert.deepEqual(pub.wishes, ['舟山']);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('同开模拟鱼生时严格认生活驾照（忽略 hasLicense=true），生病静养期间禁止从家出发', async () => {
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'jr-life-gate-'));
+  const fixedNow = new Date('2026-11-28T10:00:00+08:00');
+  try {
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: fixedNow.toISOString(),
+      certs: [],
+      sickUntil: new Date(fixedNow.getTime() + 18 * 3_600_000).toISOString(),
+      sickReason: '过劳静养。需要闭门休息。',
+    }), 'utf8');
+
+    const w = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', hasLicense: true, moneyEnabled: false },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => fixedNow,
+    });
+    await w.start({
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => ({ ...e, blobs: [] }),
+      pushDeferred() {},
+      store: {},
+      drainPendingEvents: async () => [],
+    });
+
+    assert.equal(w.effectiveHasLicense(), false, '同开 life 且未持驾照时必须忽略 cfg.hasLicense=true');
+
+    const goTo = w.tools().find((t) => t.name === 'journey_go_to').handler;
+    const sickGo = await goTo({ city: '成都', mode: 'train' });
+    assert.equal(sickGo.isError, true, '生病静养期应禁止从家出发');
+    assert.match(String(sickGo.text), /生病静养/);
+
+    await w.depart(fixedNow);
+    assert.equal(w.st.phase, 'home', 'tick/depart 自动出发在生病静养期也应留在家里');
+    await assert.rejects(() => w.panelInvoke('now', 'depart', []), /生病静养/);
+
+    // 病愈到期但仍未考驾照：允许坐火车出门，但禁止自驾/开房车
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: fixedNow.toISOString(),
+      certs: [],
+      sickUntil: '',
+      sickReason: '',
+    }), 'utf8');
+
+    const noLicDrive = await goTo({ city: '成都', mode: '房车' });
+    assert.equal(noLicDrive.isError, true, '病愈但无驾照应仍拦住自驾/房车');
+    assert.match(String(noLicDrive.text), /没考下驾照/);
+
+    // 考下驾照后立即放行自驾
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: fixedNow.toISOString(),
+      certs: ['驾照'],
+      sickUntil: '',
+      sickReason: '',
+    }), 'utf8');
+    assert.equal(w.effectiveHasLicense(), true);
+    const driveOk = await goTo({ city: '成都', mode: 'car' });
+    assert.notEqual(driveOk.isError, true, String(driveOk.text));
+    assert.equal(w.st.leg?.modeId, 'car');
+
+    await w.stop();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('4x倍速 worldNow 超前下 sickUntil 仍拦截全部出门与 takeInvite，超过24h旧 life-public 不锁死单机驾照', async () => {
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'jr-p0-clock-'));
+  const fixedReal = new Date('2026-11-28T10:00:00+08:00');
+  try {
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: fixedReal.toISOString(),
+      certs: [],
+      sickUntil: new Date(fixedReal.getTime() + 24 * 3_600_000).toISOString(),
+      sickReason: '过劳静养中',
+    }), 'utf8');
+
+    const w = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', speed: 4, hasLicense: true, moneyEnabled: false },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => fixedReal,
+    });
+    await w.start({
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => ({ ...e, blobs: [] }),
+      pushDeferred() {},
+      store: {},
+      drainPendingEvents: async () => [],
+    });
+
+    w.st = {
+      ...w.st,
+      clock: {
+        realEpoch: new Date(fixedReal.getTime() - 2 * 86_400_000).toISOString(),
+        worldEpoch: new Date(fixedReal.getTime() + 5 * 86_400_000).toISOString(),
+        speed: 4,
+      },
+    };
+    const goTo = w.tools().find((t) => t.name === 'journey_go_to').handler;
+    const goRes = await goTo({ city: '成都', mode: 'train' });
+    assert.equal(goRes.isError, true, '倍速世界时钟超前时，sickUntil 仍须拦住从家出发');
+    assert.match(String(goRes.text), /生病静养/);
+
+    const takeRes = await w.takeInvite('inv-fake', true);
+    assert.equal(takeRes.isError, true, '在家生病静养期 takeInvite 必须直接拒单');
+    assert.match(String(takeRes.text), /生病静养/);
+
+    writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: new Date(fixedReal.getTime() - 26 * 3_600_000).toISOString(),
+      certs: [],
+      sickUntil: '',
+      sickReason: '',
+    }), 'utf8');
+    assert.equal(w.hasLifeInstalled(), false);
+    assert.equal(w.effectiveHasLicense(), true, '超过 24h 无心跳的旧档不得锁死单机 hasLicense=true');
+
+    await w.stop();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('跨日离线 arrive() 只排一次新日期日程且不误说上午十点正在补觉', async () => {
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { buildJourney } = await import('../src/plan/journey.ts');
+  const { cityById } = await import('../src/geo/cities.ts');
+  const { modeById } = await import('../src/geo/modes.ts');
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+
+  const dir = mkdtempSync(join(tmpdir(), 'jr-crossday-arr-'));
+  const arrivedIso = '2026-11-27T00:31:00+08:00';
+  const wakeNow = new Date('2026-11-28T10:00:00+08:00');
+  try {
+    const pushed = [];
+    const w = new JourneyWorld({
+      cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', moneyEnabled: false },
+      dataDir: dir,
+      botName: '大肥鱼',
+      now: () => wakeNow,
+    });
+    await w.start({
+      log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+      pushEvent: async (e) => { pushed.push(e); return { ...e, blobs: [] }; },
+      pushDeferred() {},
+      store: {},
+      drainPendingEvents: async () => [],
+    });
+    const from = cityById('lanzhou');
+    const to = cityById('zhoushan');
+    const leg = buildJourney({
+      from, to, mode: modeById('train'), km: 1800,
+      at: new Date('2026-11-26T05:00:00+08:00'), speed: 1,
+    });
+    leg.arriveAt = arrivedIso;
+
+    let rebuildCount = 0;
+    const origRebuild = w.rebuildPlan.bind(w);
+    w.rebuildPlan = async (...args) => {
+      rebuildCount += 1;
+      return origRebuild(...args);
+    };
+    await w.arrive(wakeNow, leg);
+    assert.equal(rebuildCount, 1, '跨日离线到站应只排一次次日 full 日程，不重排旧日');
+    const arrEv = pushed.find((e) => e.type === 'journey.arrive');
+    assert.ok(arrEv);
+    assert.match(arrEv.text, /2026-11-27/);
+    assert.match(arrEv.text, /2026-11-28/);
+    assert.doesNotMatch(arrEv.text, /办好入住补觉/);
+
+    await w.stop();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

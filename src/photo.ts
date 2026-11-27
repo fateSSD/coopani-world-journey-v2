@@ -2040,7 +2040,10 @@ function minimalPrompt(scene: PhotoScene): string {
     core = own ? `${place}，${own}，${light}。` : `${place}，${light}。`;
   }
 
-  const doingLine = doing && subject !== 'sky' && !describe.includes(doing) ? `${doing}。` : '';
+  const balloonAerial = subject === 'ground' && /热气球/.test(doing) && !/俯拍|吊篮/.test(describe)
+    ? '高空热气球吊篮俯拍视角，脚下地貌与晨雾辽阔展开。'
+    : '';
+  const doingLine = doing && subject !== 'sky' && !describe.includes(doing) ? `${doing}。${balloonAerial}` : balloonAerial;
   const tail = cast
     ? `画面里有一个人：${cast}。不要出现可读的文字。`
     : scene.castFromRef
@@ -2277,7 +2280,10 @@ export function photoPrompt(scene: PhotoScene): string {
   const withDoing = (base: string): string => {
     if (!doingNow) return base;
     const at = hardAnchorAt(base);
-    const line = `正在发生的事：${doingNow.replace(/。+$/, '')}。`;
+    const balloonAerial = subject === 'ground' && /热气球/.test(doingNow) && !/俯拍|吊篮/.test(describeNow)
+      ? '高空热气球吊篮俯拍视角，脚下地貌与晨雾辽阔展开。'
+      : '';
+    const line = `正在发生的事：${doingNow.replace(/。+$/, '')}。${balloonAerial}`;
     return at < 0 ? `${base}${line}` : base.slice(0, at) + line + base.slice(at);
   };
   const libHintNow = (scene.libraryHint ?? '').trim().replace(/。+$/, '');
@@ -2660,7 +2666,9 @@ export function photoPrompt(scene: PhotoScene): string {
      */
     sun.precip && !spotIndoor ? `${weatherLine(sun.precip, sun.phase)}。` : '',
     /* 她正在做的事（2026-11-08）。先定场景，再说人。 */
-    doingNow ? `正在发生的事：${doingNow.replace(/。+$/, '')}。` : '',
+    doingNow
+      ? `正在发生的事：${doingNow.replace(/。+$/, '')}。${subject === 'ground' && /热气球/.test(doingNow) && !/俯拍|吊篮/.test(describeNow) ? '高空热气球吊篮俯拍视角，脚下地貌与晨雾辽阔展开。' : ''}`
+      : '',
     cast ? `${CAST_ONE}${cast}。` : '',
     /* 服装不锁（2026-11-20）：理由见 `CAST_REF_LINE`。 */
     scene.castFromRef ? CAST_REF_LINE : '',

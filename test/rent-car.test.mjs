@@ -122,3 +122,33 @@ test('已有的车要说清是哪一档，别只说「有车了」', async () =>
   assert.equal(r.isError, true);
   assert.match(r.text, /SUV|大一点/, `没说清现在这辆是什么：${r.text}`);
 });
+
+test('同开模拟鱼生时：未考驾照即使 cfg.hasLicense=true 也拦住租车，考下即放行', async () => {
+  const { writeFileSync, rmSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const w = staying({ moneyEnabled: true, budget: 5000, hasLicense: true });
+  try {
+    writeFileSync(join(w.opts.dataDir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: '2026-11-06T13:00:00Z',
+      certs: [],
+    }), 'utf8');
+    const denied = await w.rentCar(2, false);
+    assert.equal(denied.isError, true, '同开 life 且无驾照时应拒绝租车');
+    assert.match(denied.text, /没考下驾照/);
+    assert.equal(w.st.car, null);
+    assert.equal(w.st.spent, 0);
+
+    writeFileSync(join(w.opts.dataDir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: '2026-11-06T13:00:00Z',
+      certs: ['驾照'],
+    }), 'utf8');
+    const okRes = await w.rentCar(2, false);
+    assert.equal(okRes.isError, undefined, `考下驾照后应允许租车：${okRes.text}`);
+    assert.equal(w.st.car?.days, 2);
+    assert.equal(w.st.spent, 400);
+  } finally {
+    rmSync(w.opts.dataDir, { recursive: true, force: true });
+  }
+});
