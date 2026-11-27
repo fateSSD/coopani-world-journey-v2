@@ -1,8 +1,8 @@
 {
   "name": "coopani-world-journey",
-  "version": "2.10.5",
+  "version": "2.11.0",
   "type": "module",
-  "description": "大肥鱼环游世界 · 194 座真城市旅行体验：真实赶路耗时、当地作息天气、旅途打工与月底手账，支持同城偶遇、互留名片及与「模拟鱼生」双扩展同步。（需 Coopani 0.2.22+｜QQ 群 284525159）",
+  "description": "大肥鱼环游世界 · 194 座真城市旅行体验：真实赶路耗时、当地作息天气、旅途打工与月底手账，支持接入 Coopanion Hub v1 多城总服（与模拟鱼生共享同一只鱼身份、同城偶遇与结伴、同行解锁鱼间私信寄明信片）并向下兼容老服。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {
     "name": "Mr.Q"
   },
@@ -52,11 +52,11 @@
     "locales": {
       "zh": {
         "displayName": "大肥鱼环游世界",
-        "description": "让桌宠从你所在城市出发，背上包出门旅行（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **自主出行**：自定目的地与交通方式，真算跨城票价、距离与赶路耗时；到站按当地时区吃住、打工、打卡与写旅行日记，月底自动拼一份手账。\n- **同城遇鱼与结伴**：填公共服务器即可在城里偶遇别家的鱼、约伴同游、互留名片或漂流路标。\n- **多扩展联动**：对接「模拟鱼生」同步城市位置、休整期、旅途打工、花销账本与参考素材留影策略；支持「一起听歌」种草城市与「鱼鱼出行」打车记账。"
+        "description": "让桌宠从你所在城市出发，背上包出门旅行（需 Coopani 0.2.22+｜QQ 群 284525159）。\n\n- **Coopanion Hub v1.2 二期双轨联机**：新增 `hubUrl` 热配置（推荐 `https://hub.cooppetsjourney.top`），与「模拟鱼生」共用同一份 `<dataDir>/coopanion-hub-auth.json` 身份并自动认领老服 `meet-uid`，支持全时段同城查重、显式认领回执、云端足迹、路标与手写名片；一起结伴同行过的两只鱼可直接在「模拟鱼生」`life_mail` 鱼间信箱互寄明信片。留空 `hubUrl` 时 100% 兼容老服 `meetUrl` 或纯单机运行。\n- **自主出行与真实节奏**：194 座真城市自定目的地与 9 种交通方式（含主题游轮与全景观光专列），真算跨城票价、距离与赶路耗时；到站按当地时区吃住、打工、拍照与写旅行日记，月底自动拼一份手账。\n- **多扩展联动**：对接「模拟鱼生」同步城市位置、休整期、旅途打工、花销账本与参考素材留影策略；支持「一起听歌」种草城市与「鱼鱼出行」打车记账。"
       },
       "en": {
         "displayName": "Big Fish World Tour",
-        "description": "Real-time travel companion across 194 real cities (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Autonomous trips**: real distances, fares, transit durations, local time zones, dining, lodging, diaries, and monthly keepsakes.\n- **Meet & travel together**: connect a public server to cross paths with other pets, travel in parties, and exchange cards.\n- **Cross-extension sync**: syncs location, rest status, trip gigs, budgets, and visual references with Simulated Fish Life; works with Listen With Me and Fish Ride."
+        "description": "Real-time travel companion across 194 real cities (Needs Coopani 0.2.22+ · QQ group 284525159).\n\n- **Coopanion Hub v1.2 Dual-Track Online**: Optional `hubUrl` hot config (recommended `https://hub.cooppetsjourney.top`) shares identity (`coopanion-hub-auth.json`) with Simulated Fish Life, claims legacy `meet-uid`, adds all-slot companion discovery, explicit invite acknowledgment, cloud footprints/cards/profiles, and unlocks direct fish-to-fish postcards after traveling together. Leaving `hubUrl` empty keeps 100% legacy `meetUrl` or offline compatibility.\n- **Autonomous trips**: real distances, fares, transit durations, local time zones, dining, lodging, diaries, and monthly keepsakes.\n- **Cross-extension sync**: syncs location, rest status, trip gigs, budgets, and visual references with Simulated Fish Life; works with Listen With Me and Fish Ride."
       }
     }
   },

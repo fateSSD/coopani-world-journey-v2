@@ -569,7 +569,7 @@ export const planMethods: Record<string, any> = {
      *
      * 拉不到就是空数组，plan 里也就没有那一句。**不硬凑。**
      */
-    const meet = this.meetOptions();
+    const meet = typeof this.meetOptionsAsync === 'function' ? await this.meetOptionsAsync() : this.meetOptions();
     const slot = slotOf(startHour || 8);
     /*
      * 邻居和邀约**一起拉**，不串行。

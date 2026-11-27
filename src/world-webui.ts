@@ -48,6 +48,7 @@ import {
   sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine,
   type MeetOptions,
 } from './meet.ts';
+import { normalizeHubUrl, readHubAuth } from './hub-client.ts';
 import { factsFor } from './geo/hotel-facts.ts';
 import { nightIn } from './geo/cities.ts';
 import { playLine } from './geo/city-play.ts';
@@ -376,7 +377,22 @@ export const webUiMethods: Record<string, any> = {
       ? { label: '听歌', state: 'online', hint: `在放《${np.title}》` }
       : { label: '听歌', state: 'offline', hint: '没在放歌，或者没装「一起听歌」。没放歌时灰的是正常的，不用管', };
 
-    return [weather, diary, photo, music];
+    const lamps: WorldLamp[] = [weather, diary, photo, music];
+    const hubRaw = String(this.cfg.hubUrl ?? '').trim();
+    if (hubRaw) {
+      const hubFix = normalizeHubUrl(hubRaw);
+      const hubLamp: WorldLamp = hubFix.error
+        ? { label: '总服', state: 'error', hint: hubFix.error }
+        : this.hubAuthError
+          ? { label: '总服', state: 'error', hint: this.hubAuthError }
+          : this.lastMeetOk === false
+            ? { label: '总服', state: 'error', hint: 'Hub 总服连不上（会在后台退避重连）' }
+            : this.hubAuth?.petId
+              ? { label: '总服', state: 'online', hint: 'Hub 总服已连上' }
+              : { label: '总服', state: 'offline', hint: 'Hub 总服连接中…' };
+      lamps.push(hubLamp);
+    }
+    return lamps;
   },
 
 
@@ -724,7 +740,7 @@ export const webUiMethods: Record<string, any> = {
        * 拉不到就把空板交出去（`EMPTY_BOARD`），界面上「没人留」和「没连上」长一样。
        */
       if (method === 'parties') {
-        const meet = this.meetOptions();
+        const meet = typeof this.meetOptionsAsync === 'function' ? await this.meetOptionsAsync() : this.meetOptions();
         const recent = this.partyLog.list().slice(0, 3);
         const parties = [];
         for (const pt of recent) {
@@ -752,8 +768,10 @@ export const webUiMethods: Record<string, any> = {
         const id = String(args[0] ?? '').trim();
         const note = String(args[1] ?? '').trim();
         const contact = String(args[2] ?? '').trim();
-        const meet = this.meetOptions();
-        if (!meet) throw new Error('还没配碰面服务器 —— 卡是留在服务器上的，本机留不了');
+        const meet = typeof this.meetOptionsAsync === 'function' ? await this.meetOptionsAsync() : this.meetOptions();
+        if (!meet) {
+          throw new Error(this.hubAuthError || '还没配碰面服务器或 Hub 总服 —— 卡是留在服务器上的，本机留不了');
+        }
         if (!/^[a-f0-9]{16}$/.test(id)) throw new Error('没说是哪一趟。');
         if (!note && !contact) throw new Error('写一句，或者留个号 —— 两样都空，那只是一张空白。');
         const ok = await putCard(meet, id, note, contact);
@@ -769,7 +787,7 @@ export const webUiMethods: Record<string, any> = {
        * 比不给更让人难受。理由写在 `cloud/sight-cf/schema.sql` 那张表的注释上。
        */
       if (method === 'profile') {
-        const meet = this.meetOptions();
+        const meet = typeof this.meetOptionsAsync === 'function' ? await this.meetOptionsAsync() : this.meetOptions();
         const board = meet ? await fetchProfiles(meet) : EMPTY_PROFILE_BOARD;
         /*
          * 2026-11-13：`ready:false` 有两种来路，必须分开说。
@@ -781,6 +799,7 @@ export const webUiMethods: Record<string, any> = {
         return {
           ...board,
           ready: !!meet,
+          authError: this.hubAuthError,
           urlIssue: this.meetUrlError,
           urlFixed: this.meetUrlFixed,
         };
@@ -792,11 +811,13 @@ export const webUiMethods: Record<string, any> = {
        */
       if (method === 'saveProfile') {
         const text = String(args[0] ?? '').trim();
-        const meet = this.meetOptions();
+        const meet = typeof this.meetOptionsAsync === 'function' ? await this.meetOptionsAsync() : this.meetOptions();
         if (!meet) {
-          throw new Error(this.meetUrlError
-            ? `碰面服务器那一栏读不成网址：${this.meetUrlError}。去设置里改一下，改完不用重启。`
-            : '还没配碰面服务器 —— 名片存在服务器上，本机写不了。填上地址（例如 https://cooppetsjourney.top）就能存。');
+          throw new Error(this.hubAuthError
+            ? this.hubAuthError
+            : (this.meetUrlError
+              ? `服务器地址那一栏读不成网址：${this.meetUrlError}。去设置里改一下，改完不用重启。`
+              : '还没配 Hub 总服或碰面服务器 —— 名片存在服务器上，本机写不了。填上地址（例如 https://hub.cooppetsjourney.top）就能存。'));
         }
         const r = await putProfile(meet, text);
         /*
@@ -1133,38 +1154,50 @@ export const webUiMethods: Record<string, any> = {
          *
          * 现在按解析结果判，并把「为什么不能用」一起带出去。
          */
-        const targets = normalizeMeetTargets(this.cfg.meetUrl);
-        const configured = targets.bases.length > 0;
-        const urlIssue = configured ? '' : targets.error;
-        const urlNote = targets.note;
+        const hubRaw = String(this.cfg.hubUrl ?? '').trim();
+        const hubFix = hubRaw ? normalizeHubUrl(hubRaw) : null;
+        const hubConfigured = Boolean(hubFix?.base);
+        const hubMode = Boolean(hubRaw);
+        if (hubConfigured && hubFix?.base && (!this.hubAuth || this.hubAuth.hubUrl !== hubFix.base || this.hubAuthError)) {
+          const diskAuth = readHubAuth(this.opts.dataDir, hubFix.base);
+          const tokenChanged = !this.hubAuthErrorToken || (diskAuth?.token ?? '') !== this.hubAuthErrorToken;
+          if (diskAuth && diskAuth.hubUrl === hubFix.base && tokenChanged) {
+            const hadErr = Boolean(this.hubAuthError);
+            this.hubAuth = diskAuth;
+            this.hubAuthError = '';
+            this.hubAuthErrorToken = '';
+            if (hadErr && this.lastMeetOk === false) this.lastMeetOk = null;
+          }
+        }
+        const targets = hubRaw ? null : normalizeMeetTargets(this.cfg.meetUrl);
+        const configured = hubConfigured || Boolean(targets?.bases.length);
+        const urlIssue = hubRaw
+          ? (hubConfigured ? '' : (hubFix?.error ?? ''))
+          : (configured ? '' : (targets?.error ?? ''));
+        const urlNote = hubRaw ? '' : (targets?.note ?? '');
+        const authError = hubConfigured ? (this.hubAuthError || '') : '';
         const probed = this.nearbyProbe?.cityId === this.st.hereId ? this.nearbyProbe : null;
         const nearby = this.plan?.neighbors.length ?? probed?.n ?? 0;
-        /*
-         * 今天这座城来过几只**别人**（2026-11-20）。
-         *
-         * 服务端 `/sight` 回的 `here` 是 `COUNT(DISTINCT uid) WHERE city=? AND at>=今天0点`
-         * —— **不带 exclude**。所以「里面有没有她自己」不是常量，取决于两件事：
-         * 这个数是什么时候、对哪座城取的（`nearbyProbe.cityId/day`），
-         * 以及今天有没有对那座城**成功上报过 presence**（`presenceReported`）。
-         *
-         * `reportHere()` 只在 `phase === 'staying'` 时上报。所以在家里、在路上，
-         * 服务端根本不知道她来过 —— 那会儿无条件减一就是**少报一只**，
-         * 而那正是「今天有 1 只别人来过，面板却说没别人」的来路。
-         *
-         * 两个都同城同日才减一；其余情况原样报。
-         */
         const ownCounted = !!probed
           && this.presenceReported?.cityId === probed.cityId
           && this.presenceReported?.day === probed.day;
         const hereToday = Math.max(0, (probed?.here ?? 0) - (ownCounted ? 1 : 0));
         const invites = this.plan?.invites.length ?? 0;
-        // 「池子今天多少只」：取样值优先（20 分钟内新鲜），排表那次的值兜底。
-        // 两个来源都可能是 0（没配服务器 / 真没人 / 接口没回），面板那边只在 > 0 时显示。
         const pool = this.poolProbe?.value || this.plan?.pool || 0;
         // 「填了但一个都用不了」也要出一条 —— 否则面板上什么都没有，用户以为没生效。
         if (!configured && !p && !urlIssue) return null;
-        const online = configured ? this.lastMeetOk !== false : false;
-        const base = { online, nearby, here: hereToday, invites, pool, urlIssue, urlNote };
+        const online = configured ? (authError ? false : this.lastMeetOk !== false) : false;
+        const hubPetId = hubConfigured && this.hubAuth?.petId ? this.hubAuth.petId : '';
+        const base = {
+          online,
+          nearby,
+          here: hereToday,
+          invites,
+          pool,
+          urlIssue,
+          urlNote,
+          ...(hubMode ? { hubMode: true, ...(hubPetId ? { hubPetId } : {}), ...(authError ? { authError } : {}) } : {}),
+        };
         if (!p) return { ...base, pledge: null };
         const city = this.cityName(p.cityId);
         if (!p.arrivedAt) {

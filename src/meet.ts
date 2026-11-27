@@ -21,6 +21,25 @@
  * 想做社交，那得另起一个东西，不能从这儿慢慢长出去。
  */
 
+import {
+  hubAcceptInvite,
+  hubAckTakenInvites,
+  hubFetchCards,
+  hubFetchFootprints,
+  hubFetchProfiles,
+  hubFetchSignposts,
+  hubFetchStatus,
+  hubFindNeighbors,
+  hubListInvites,
+  hubMyTakenInvites,
+  hubPutCard,
+  hubPutProfile,
+  hubReportFootprint,
+  hubReportPresence,
+  hubReportSignpost,
+  hubSendInvite,
+} from './hub-client.ts';
+
 /** 碰面用的时段。四档够粗，不会「错开六小时也算一起吃饭」。 */
 export type Slot = 'morning' | 'afternoon' | 'evening' | 'night';
 
@@ -41,10 +60,16 @@ export interface Neighbor {
 export interface MeetOptions {
   /** 服务器根地址。留空 = 这个功能整个不工作。 */
   readonly url: string;
-  /** 她的匿名标识。本地随机生成一次，不跟账号、不跟硬件绑。 */
+  /** 她的匿名标识（老服为 hex uid；Hub 模式为 petId）。 */
   readonly uid: string;
   /** 宠物名。**唯一会被别人看见的字段。** */
   readonly pet: string;
+  /** 运行模式：'legacy'（默认老服）或 'hub'（Hub v1.2）。 */
+  readonly mode?: 'legacy' | 'hub';
+  /** Hub 模式 Bearer 令牌。 */
+  readonly token?: string;
+  /** Hub 模式统一宠物 ID。 */
+  readonly petId?: string;
 }
 
 /** 一次碰面最多几个人 —— 含她自己。 */
@@ -360,6 +385,9 @@ export async function reportPresence(
 ): Promise<ReportResult> {
   const url = clean(opt.url);
   if (!url) return { ok: false, why: '没填碰面服务器地址' };
+  if (opt.mode === 'hub' && opt.token) {
+    return hubReportPresence(url, opt.token, cityId, dateKey, slot, doing);
+  }
   if (!clean(opt.uid) || !clean(opt.pet)) return { ok: false, why: '缺 uid 或宠物名，这一条没法发' };
   try {
     const res = await fetch(`${endpointOf(url)}`, {
@@ -443,6 +471,9 @@ export async function findNeighbors(
   windowMs?: number,
 ): Promise<NeighborBoard> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubFindNeighbors(url, opt.token, clean(opt.pet), cityId, slot, limit, windowMs);
+  }
   if (!url || !clean(opt.uid)) return { list: [], pool: 0, here: 0, ok: false };
   /*
    * **不再传 `date`（2026-11-10）。**
@@ -517,6 +548,9 @@ export async function reportFootprint(
   /* `meetOptions()` 在没配服务器时返回 null —— 直接读 `opt.url` 会把她到站的整条链路炸掉。 */
   if (!opt) return false;
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubReportFootprint(url, opt.token, cityId);
+  }
   if (!url || !clean(opt.uid)) return false;
   try {
     const res = await fetch(`${endpointOf(url)}/footprints`, {
@@ -541,6 +575,9 @@ export async function reportFootprint(
 export async function fetchFootprints(opt: MeetOptions | null): Promise<Footprint[]> {
   if (!opt) return [];
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubFetchFootprints(url, opt.token);
+  }
   if (!url || !clean(opt.uid)) return [];
   try {
     const q = new URLSearchParams({ uid: clean(opt.uid) });
@@ -587,6 +624,9 @@ export async function reportSignpost(
 ): Promise<boolean> {
   if (!opt) return false;
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubReportSignpost(url, opt.token, cityId, text);
+  }
   if (!url || !clean(opt.uid) || !clean(opt.pet)) return false;
   try {
     const res = await fetch(`${endpointOf(url)}/signposts`, {
@@ -618,6 +658,9 @@ export async function fetchSignposts(
 ): Promise<Signpost[]> {
   if (!opt) return [];
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubFetchSignposts(url, opt.token, cityId);
+  }
   if (!url || !clean(opt.uid)) return [];
   try {
     const q = new URLSearchParams({ city: cityId, exclude: clean(opt.uid) });
@@ -648,6 +691,7 @@ export async function fetchSignposts(
  */
 export interface Invite {
   readonly id: string;
+  readonly petId?: string;
   readonly pet: string;
   readonly to: string;
   readonly days: number;
@@ -957,6 +1001,9 @@ export async function sendInvite(
   /* 怎么去：跟 note 一样压成一行、限长。空串是合法的（就是没挑）。 */
   const mode = flat(args.mode ?? '', 40);
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubSendInvite(url, opt.token, args);
+  }
   if (!url || !clean(opt.uid) || !clean(opt.pet)) return { ok: false, reason: '没配碰面服务器' };
   try {
     const res = await fetch(`${endpointOf(url)}/invite`, {
@@ -997,6 +1044,9 @@ export async function listInvites(
   cityId: string,
 ): Promise<{ ok: true; list: Invite[] } | InviteFail> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubListInvites(url, opt.token, cityId);
+  }
   if (!url || !clean(opt.uid)) return { ok: false, reason: '没配碰面服务器' };
   const q = new URLSearchParams({ city: cityId, uid: clean(opt.uid) });
   try {
@@ -1035,6 +1085,9 @@ export async function fetchStatus(
   cityId: string,
 ): Promise<{ ok: true; pool: number; invites: Invite[]; mineTaken: number } | InviteFail> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubFetchStatus(url, opt.token, cityId);
+  }
   if (!url || !clean(opt.uid)) return { ok: false, reason: '没配碰面服务器' };
   const q = new URLSearchParams({ city: cityId, uid: clean(opt.uid) });
   try {
@@ -1081,6 +1134,9 @@ export async function myTakenInvites(
   opt: MeetOptions,
 ): Promise<{ ok: true; list: Invite[] } | InviteFail> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubMyTakenInvites(url, opt.token);
+  }
   if (!url || !clean(opt.uid)) return { ok: false, reason: '没配碰面服务器' };
   const q = new URLSearchParams({ uid: clean(opt.uid), mine: '1' });
   try {
@@ -1093,6 +1149,18 @@ export async function myTakenInvites(
   } catch (e) {
     return { ok: false, reason: netFail(e) };
   }
+}
+
+export async function ackTakenInvites(
+  opt: MeetOptions,
+  inviteIds: readonly string[],
+  pairs?: readonly { inviteId: string; memberPetId: string }[],
+): Promise<boolean> {
+  const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubAckTakenInvites(url, opt.token, inviteIds, pairs);
+  }
+  return true;
 }
 
 export async function acceptInvite(
@@ -1114,6 +1182,9 @@ export async function acceptInvite(
   readonly postedAt: string;
 } | InviteFail> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubAcceptInvite(url, opt.token, id);
+  }
   if (!url || !okUidLike(clean(opt.uid))) return { ok: false, reason: '没配碰面服务器' };
   /*
    * 编号从她传进来的那串里**抠出来**，不要求原样。
@@ -1306,6 +1377,9 @@ export async function putCard(
   contact: string,
 ): Promise<boolean> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubPutCard(url, opt.token, inviteId, note, contact);
+  }
   const id = clean(inviteId).toLowerCase();
   if (!url || !okUidLike(clean(opt.uid)) || !/^[a-f0-9]{16}$/.test(id)) return false;
   if (!clean(note) && !clean(contact)) return false;
@@ -1359,6 +1433,9 @@ const cardOf = (raw: unknown): PartyCard | null => {
 
 export async function fetchCards(opt: MeetOptions, inviteId: string): Promise<CardBoard> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubFetchCards(url, opt.token, inviteId);
+  }
   const id = clean(inviteId).toLowerCase();
   if (!url || !okUidLike(clean(opt.uid)) || !/^[a-f0-9]{16}$/.test(id)) return EMPTY_BOARD;
   try {
@@ -1434,6 +1511,9 @@ export interface PutProfileResult {
  */
 export async function putProfile(opt: MeetOptions, text: string): Promise<PutProfileResult> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubPutProfile(url, opt.token, text);
+  }
   if (!url || !okUidLike(clean(opt.uid))) {
     return { ok: false, reason: '碰面地址或 uid 没填全（名片存在服务器上）' };
   }
@@ -1473,6 +1553,9 @@ export async function putProfile(opt: MeetOptions, text: string): Promise<PutPro
  */
 export async function fetchProfiles(opt: MeetOptions): Promise<ProfileBoard> {
   const url = clean(opt.url);
+  if (opt.mode === 'hub' && opt.token && url) {
+    return hubFetchProfiles(url, opt.token);
+  }
   if (!url || !okUidLike(clean(opt.uid))) return EMPTY_PROFILE_BOARD;
   try {
     const q = new URLSearchParams({ uid: clean(opt.uid) });

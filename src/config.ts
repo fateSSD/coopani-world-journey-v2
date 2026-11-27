@@ -74,6 +74,12 @@ export interface JourneyConfigSection extends WorldSection {
    */
   meetUrl: string | string[];
   /**
+   * Coopanion Hub v1 统一总服地址（选填，留空时回退老服 meetUrl 或纯单机）。
+   * 支持多扩展共享身份（<dataDir>/coopanion-hub-auth.json）、全时段同行查重、
+   * 显式认领与同行解锁鱼间私信。推荐公共总服：https://hub.cooppetsjourney.top
+   */
+  hubUrl: string;
+  /**
    * 让宠物主跟着一块走。
    *
    * 打开后：日记用「我们」而不是「我」，事件正文会提到同行的那个人；
@@ -389,6 +395,7 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
   // 26 周 ≈ 半年，和原来的「6 个月」等价。
   maxTripWeeks: 26,
   meetUrl: '',
+  hubUrl: '',
   withUser: false,
   /*
    * 记账默认**开**（2026-11-17）。
@@ -599,9 +606,18 @@ export function journeyConfigGroups(): ConfigGroup[] {
             title: '首页显示「正在打车」',
             description: '她上了车，首页顶上多一张进度卡；车到了自己消失。',
           },
+          'worlds.journey.hubUrl': {
+            type: 'string',
+            title: 'Hub 总服地址（二期联机 · 推荐）',
+            'x-hot': true,
+            description: 'Coopanion 多扩展统一总服地址（与「模拟鱼生」共用同一只鱼身份、同行后可直接在鱼间信箱互寄明信片）。'
+              + '推荐公共总服：https://hub.cooppetsjourney.top 。'
+              + '首次连接会自动认领本机老服 meet-uid 并保存统一凭据；填好即时热生效，不想接入或需退回老服时留空即可。',
+            default: '',
+          },
           'worlds.journey.meetUrl': {
             type: 'string',
-            title: '碰面（和其他宠物在同一处）',
+            title: '碰面（老服兼容地址）',
             /*
              * 2026-11-04 Mr.Q：有人说「加群才能用这个功能」。
              *
@@ -620,8 +636,8 @@ export function journeyConfigGroups(): ConfigGroup[] {
              * **默认值仍然是空**：不替用户决定「把宠物名和行踪放进公共池」这件事。
              * 设置页不解析 markdown，所以这段是纯文本，不要写星号和换行。
              */
-            description: '填一个「碰面服务器」的地址，她到站就能看见同城同时段还有谁。'
-              + '想省事就填这个（作者维护的公共池）：https://cooppetsjourney.top —— 填上就能碰上别人的桌宠，不用自己搭。'
+            description: '若上方 Hub 总服留空，可填老服碰面地址，她到站就能看见同城同时段还有谁。'
+              + '老服公共地址：https://cooppetsjourney.top —— 填上就能碰上别人的桌宠，不用自己搭。'
               /*
                * 2026-11-13：读者报「名片一直填不了」「约鱼发不出去」。
                * 查下来是这一栏漏了 https:// 时 fetch 直接抛，被压成「没连上碰面服务器」——

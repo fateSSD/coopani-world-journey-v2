@@ -45,9 +45,16 @@ import {
   reportFootprint, reportSignpost, fetchStatus, paceGap,
   putCard, fetchCards, EMPTY_BOARD,
   putProfile, fetchProfiles, EMPTY_PROFILE_BOARD, normalizeMeetUrl, normalizeMeetTargets, explainNet,
-  sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine, agoText,
+  sendInvite, listInvites, myTakenInvites, ackTakenInvites, acceptInvite, inviteLine, agoText,
   type MeetOptions,
 } from './meet.ts';
+import {
+  ensureHubAuth,
+  hubPutExtProfile,
+  normalizeHubUrl,
+  normHubBaseUrl,
+  readHubAuth,
+} from './hub-client.ts';
 import { factsFor } from './geo/hotel-facts.ts';
 import { nightIn } from './geo/cities.ts';
 import { playLine } from './geo/city-play.ts';
@@ -101,6 +108,10 @@ import {
 } from './helpers.ts';
 export * from './helpers.ts';
 
+export async function resolveMeetOpt(self: any): Promise<MeetOptions | null> {
+  return typeof self?.meetOptionsAsync === 'function' ? await self.meetOptionsAsync() : (self?.meetOptions?.() ?? null);
+}
+
 export const socialMethods: Record<string, any> = {
   /**
    * 碰面的配置。**没填地址就返回 null**，整个功能不工作 —— 这是默认状态。
@@ -108,20 +119,37 @@ export const socialMethods: Record<string, any> = {
    * 一个开关管两头：填了就既上报也被看见，不填就谁也不打扰谁。
    * 只开一半（我能看别人、别人看不见我）是占便宜，不做。
    */
+  isHubMode(): boolean {
+    return Boolean(normHubBaseUrl(this.cfg.hubUrl));
+  },
+
   meetOptions(): MeetOptions | null {
-    /*
-     * 2026-11-13：那一栏不再原样拿去拼 URL。
-     *
-     * 少一个 `https://` 时 `fetch` 抛 `Invalid URL`，原来被压成「没连上碰面服务器」，
-     * 用户和模型都只能推「地址没填对」—— 而线上服务实测是好的。
-     * 现在先归一化（补协议、清零宽、剪掉多余路径），修不了的把原因留给面板和工具回执。
-     */
-    /*
-     * 2026-11-21：改走 `normalizeMeetTargets`。它认多值，**但这里只取第一台** ——
-     * 真连多台是 L2 的事，L0 只把配置与解析层铺好，运行时行为一点不变。
-     * `meetUrlFixed` 仍只放「地址被整理过」的说明；「只连第一台」那句提示
-     * 由面板自己算（`normalizeMeetTargets().note`），不走这一个字段。
-     */
+    const hubRaw = String(this.cfg.hubUrl ?? '').trim();
+    if (hubRaw) {
+      const hfix = normalizeHubUrl(this.cfg.hubUrl);
+      this.meetUrlError = hfix.error;
+      this.meetUrlFixed = hfix.fixed;
+      if (!hfix.base) return null;
+      if (!this.hubAuth || this.hubAuth.hubUrl !== hfix.base) {
+        const local = readHubAuth(this.opts.dataDir, hfix.base);
+        const tokenChanged = !this.hubAuthErrorToken || (local?.token ?? '') !== this.hubAuthErrorToken;
+        if (local && local.hubUrl === hfix.base && tokenChanged) {
+          this.hubAuth = local;
+          this.hubAuthError = '';
+          this.hubAuthErrorToken = '';
+        }
+      }
+      if (!this.hubAuth || this.hubAuth.hubUrl !== hfix.base) return null;
+      return {
+        url: hfix.base,
+        uid: this.hubAuth.petId,
+        pet: this.opts.botName,
+        mode: 'hub',
+        token: this.hubAuth.token,
+        petId: this.hubAuth.petId,
+      };
+    }
+
     const fix = normalizeMeetTargets(this.cfg.meetUrl);
     this.meetUrlError = fix.error;
     this.meetUrlFixed = fix.fixed;
@@ -129,21 +157,156 @@ export const socialMethods: Record<string, any> = {
     return { url: fix.bases[0], uid: this.meetUid(), pet: this.opts.botName };
   },
 
-  /**
-   * 这一栏到底能不能用。
-   *
-   * **纯判断，不生成 uid、不写盘。** 面板每开一次就走一遍 `uiSnapshot()`，
-   * 在里面调 `meetOptions()` 会触发 `meetUid()` 读写 `meet-uid.txt` ——
-   * 渲染路径不该做文件 IO。
-   *
-   * 它和 `meetOptions()` 的分工（2026-11-21）：
-   * - `meetOptions()` 回答「要连哪儿」，会顺手生成 uid，只该在网络/工具路径调；
-   * - `meetUsable()` 回答「这一栏有没有一个能用的地址」，随时可调。
-   *
-   * 少了这个区分，「填了 `ftp://bad`」会被判成「配了服务器」，
-   * 而所有请求其实一次都没发出去 —— 面板于是亮绿灯说「这段时间没别人」。
-   */
+  async meetOptionsAsync(): Promise<MeetOptions | null> {
+    const hubRaw = String(this.cfg.hubUrl ?? '').trim();
+    if (hubRaw) {
+      const hfix = normalizeHubUrl(this.cfg.hubUrl);
+      this.meetUrlError = hfix.error;
+      this.meetUrlFixed = hfix.fixed;
+      if (!hfix.base) {
+        this.hubAuth = null;
+        return null;
+      }
+      if (this.lastHubUrl && this.lastHubUrl !== hfix.base) {
+        this.hubAuth = null;
+        this.hubAuthError = '';
+        this.hubAuthErrorToken = '';
+        this.hubAuthFailedUrl = '';
+        this.hubAuthRetryAfterMs = 0;
+        this.hubAuthFailStep = 0;
+      }
+      this.lastHubUrl = hfix.base;
+      if (this.hubAuth && this.hubAuth.hubUrl === hfix.base) {
+        return {
+          url: hfix.base,
+          uid: this.hubAuth.petId,
+          pet: this.opts.botName,
+          mode: 'hub',
+          token: this.hubAuth.token,
+          petId: this.hubAuth.petId,
+        };
+      }
+      const local = readHubAuth(this.opts.dataDir, hfix.base);
+      const tokenChanged = !this.hubAuthErrorToken || (local?.token ?? '') !== this.hubAuthErrorToken;
+      if (local && local.hubUrl === hfix.base && tokenChanged) {
+        this.hubAuth = local;
+        this.hubAuthError = '';
+        this.hubAuthErrorToken = '';
+        this.hubAuthFailedUrl = '';
+        this.hubAuthRetryAfterMs = 0;
+        this.hubAuthFailStep = 0;
+        return {
+          url: hfix.base,
+          uid: local.petId,
+          pet: this.opts.botName,
+          mode: 'hub',
+          token: local.token,
+          petId: local.petId,
+        };
+      }
+      const realNowMs = this.realNow().getTime();
+      if (this.hubAuthFailedUrl === hfix.base && realNowMs < this.hubAuthRetryAfterMs) {
+        this.lastMeetOk = false;
+        return null;
+      }
+      if (!this.hubAuthInFlight || this.hubAuthInFlight.hubUrl !== hfix.base) {
+        const targetBase = hfix.base;
+        const promise = (async () => {
+          try {
+            const res = await ensureHubAuth({
+              hubUrl: targetBase,
+              dataDir: this.opts.dataDir,
+              displayName: this.opts.botName || '大肥鱼',
+            });
+            if (res.ok && res.auth) {
+              this.hubAuth = res.auth;
+              this.hubAuthError = '';
+              this.hubAuthErrorToken = '';
+              this.hubAuthFailedUrl = '';
+              this.hubAuthRetryAfterMs = 0;
+              this.hubAuthFailStep = 0;
+              return res.auth;
+            }
+            this.hubAuthError = res.reason || 'Hub 身份认证失败';
+            this.hubAuthFailedUrl = targetBase;
+            this.lastMeetOk = false;
+            const errNowMs = this.realNow().getTime();
+            if (res.code === 'LEGACY_UID_CLAIMED') {
+              this.hubAuthRetryAfterMs = errNowMs + 15 * 60_000;
+            } else {
+              const wait = Math.min(30 * 60_000, 60_000 * 2 ** (this.hubAuthFailStep || 0));
+              this.hubAuthFailStep = Math.min((this.hubAuthFailStep || 0) + 1, 6);
+              this.hubAuthRetryAfterMs = errNowMs + wait;
+            }
+            return null;
+          } finally {
+            if (this.hubAuthInFlight?.promise === promise) {
+              this.hubAuthInFlight = null;
+            }
+          }
+        })();
+        this.hubAuthInFlight = { hubUrl: targetBase, promise };
+      }
+      const authed = await this.hubAuthInFlight.promise;
+      if (authed) {
+        return {
+          url: hfix.base,
+          uid: authed.petId,
+          pet: this.opts.botName,
+          mode: 'hub',
+          token: authed.token,
+          petId: authed.petId,
+        };
+      }
+      return null;
+    }
+
+    this.hubAuth = null;
+    this.hubAuthError = '';
+    this.hubAuthFailedUrl = '';
+    this.hubAuthRetryAfterMs = 0;
+    this.hubAuthFailStep = 0;
+    return this.meetOptions();
+  },
+
+  async syncHubJourneyProfile(force = false): Promise<void> {
+    if (!this.isHubMode()) return;
+    const here = this.cityOrNull(this.st.hereId);
+    const home = this.resolveHome().city;
+    const key = `${this.st.phase}:${this.st.hereId}:${this.cfg.withUser ? 1 : 0}:${this.st.pledge?.cityId ?? ''}`;
+    const real = this.realNow().getTime();
+    if (!force && key === this.lastHubExtKey && real - this.lastHubExtSyncAt < 15 * 60_000) {
+      return;
+    }
+    this.lastHubExtSyncAt = real;
+    this.lastHubExtKey = key;
+    const meet = await resolveMeetOpt(this);
+    if (!meet || meet.mode !== 'hub' || !meet.token) return;
+    const destName = this.st.leg ? this.cityName(this.st.leg.toId) : '';
+    const summaryText = this.st.phase === 'traveling' && destName
+      ? `正在前往${destName}（从${here?.name ?? home.name}出发）`
+      : this.st.phase === 'staying'
+        ? `停留在${here?.name ?? this.st.hereId}过日子`
+        : `在出发地${home.name}休整`;
+    await hubPutExtProfile(meet.url, meet.token, {
+      schemaVer: 1,
+      summaryText,
+      payload: {
+        phase: this.st.phase,
+        cityId: this.st.hereId,
+        cityName: here?.name ?? this.st.hereId,
+        homeId: home.id,
+        homeName: home.name,
+        withUser: Boolean(this.cfg.withUser),
+        everVisitedCount: this.st.everVisited.length,
+        pledgeCityId: this.st.pledge?.cityId ?? null,
+      },
+    }).catch(() => {});
+  },
+
   meetUsable(): boolean {
+    const hubRaw = String(this.cfg.hubUrl ?? '').trim();
+    if (hubRaw) return Boolean(normHubBaseUrl(hubRaw));
     return normalizeMeetTargets(this.cfg.meetUrl).bases.length > 0;
   },
 
@@ -161,7 +324,7 @@ export const socialMethods: Record<string, any> = {
    * 这条链路以前静默到「面板上名字还是旧的」都没人知道是上报没发出去。
    */
   async reportHere(): Promise<void> {
-    const meet = this.meetOptions();
+    const meet = this.meetOptions() ?? (await resolveMeetOpt(this));
     if (!meet) return;
     const c = this.cityOrNull(this.st.hereId);
     if (!c || this.st.phase !== 'staying') return;
@@ -191,6 +354,7 @@ export const socialMethods: Record<string, any> = {
         clearTimeout(this.reportRetryTimer);
         this.reportRetryTimer = null;
       }
+      if (meet.mode === 'hub') void this.syncHubJourneyProfile();
       return;
     }
 
@@ -290,8 +454,12 @@ export const socialMethods: Record<string, any> = {
    * 服务端一支鱼一城一天只收一条（重留覆盖旧的），带链接的会被直接拒掉。
    */
   async signpost(text: string, cityArg: string): Promise<string> {
-    const meet = this.meetOptions();
-    if (!meet || !meet.url) return '（没配碰面服务器，路标留不下来。）';
+    const meet = await resolveMeetOpt(this);
+    if (!meet || !meet.url) {
+      return this.hubAuthError
+        ? `（${this.hubAuthError}）`
+        : '（没配碰面服务器或 Hub 地址，路标留不下来。）';
+    }
     const body = text.trim().slice(0, 40);
     if (!body) return '（要留的那句话是空的。）';
 
@@ -500,12 +668,20 @@ export const socialMethods: Record<string, any> = {
    * 而这里根本不看 `list`）。
    */
   async probeStatus(now: Date): Promise<void> {
-    const meet = this.meetOptions();
-    if (!meet) return;
+    if (!this.meetUsable()) return;
     const real = this.realNow().getTime();
     if (this.poolProbe && real - this.poolProbe.at < STATUS_PROBE_MS) return;
     const here = this.cityOrNull(this.st.hereId);
     if (!here) return;
+    const meet = await resolveMeetOpt(this);
+    if (!meet) {
+      this.poolProbe = {
+        at: real,
+        value: this.poolProbe?.value ?? 0,
+        taken: this.poolProbe?.taken ?? 0,
+      };
+      return;
+    }
     try {
       // 一个请求拿两样：池子总数 + 谁在找伴。见 `meet.ts` 的 `fetchStatus`。
       const r = await fetchStatus(meet, here.id);
@@ -573,13 +749,14 @@ export const socialMethods: Record<string, any> = {
       this.meetRetryStep = 0;
       return;
     }
-    const meet = this.meetOptions();
-    if (!meet) return;
+    if (!this.meetUsable()) return;
     const real = this.realNow().getTime();
     const wait = Math.min(MEET_RETRY_MAX_MS, MEET_RETRY_MS * 2 ** this.meetRetryStep);
     if (real - this.meetRetryAt < wait) return;
     this.meetRetryAt = real;
     this.meetRetryStep = Math.min(this.meetRetryStep + 1, 8);
+    const meet = await resolveMeetOpt(this);
+    if (!meet) return;
     const here = this.cityOrNull(this.st.hereId);
     if (!here) return;
     const slot = slotOf(localMoment(now, here.tz).hour);
@@ -664,8 +841,7 @@ export const socialMethods: Record<string, any> = {
    * 而 `refreshMeetIfDown` 又只在 `false` 时才重试 —— 两边一起哑。
    */
   async probeNearby(now: Date): Promise<void> {
-    const meet = this.meetOptions();
-    if (!meet) return;
+    if (!this.meetUsable()) return;
     const city = this.cityOrNull(this.st.hereId);
     if (!city) return;
     const realDate = this.realNow();
@@ -683,6 +859,12 @@ export const socialMethods: Record<string, any> = {
       here: same ? (this.nearbyProbe?.here ?? 0) : 0,
       n: same ? (this.nearbyProbe?.n ?? 0) : 0,
     };
+    const meet = await resolveMeetOpt(this);
+    if (!meet) {
+      this.lastMeetOk = false;
+      this.meetRetryAt = real;
+      return;
+    }
     const b = await findNeighbors(meet, city.id, slotOf(moment.hour)).catch(() => null);
     if (!b?.ok) {
       /*
@@ -733,10 +915,33 @@ export const socialMethods: Record<string, any> = {
      * 而且把 pledge 一直占着。2026-11-06 的 144 天跑抓到了这个循环。
      */
     const seen = new Set(this.st.claimedInvites ?? []);
+    const staleSeen = r.list.filter((x) => seen.has(x.id));
+    if (staleSeen.length) {
+      const stalePairs = staleSeen.filter((x) => x.petId).map((x) => ({ inviteId: x.id, memberPetId: x.petId! }));
+      const staleIds = [...new Set(staleSeen.filter((x) => !x.petId).map((x) => x.id))];
+      // 补发确认，避免曾本地记入 seen 但未成功 ack 的旧约一直占着 20 条上限；若有新成员加入同约一并补录
+      for (const item of staleSeen) {
+        const who = String(item.pet ?? '').trim();
+        if (!who || who === '一只鱼') continue;
+        const entry = this.partyLog.list().find((pt) => pt.id === item.id);
+        if (entry && !entry.pets.includes(who)) {
+          this.rememberPet(who, 6);
+          this.partyLog.add({
+            id: item.id,
+            pets: [...entry.pets, who],
+            days: entry.days,
+            at: now.toISOString(),
+            city: entry.city,
+          });
+        }
+      }
+      void ackTakenInvites(meet, staleIds, stalePairs);
+    }
     const fresh = r.list.filter((x) => !seen.has(x.id));
     if (!fresh.length) return;
     const one = fresh[0];
     const same = r.list.filter((x) => x.id === one.id);
+    const ackPairs = same.filter((x) => x.petId).map((x) => ({ inviteId: one.id, memberPetId: x.petId! }));
     /*
      * 接单人的**全量**名单，和给句子用的名单分开（2026-11-11）。
      *
@@ -801,6 +1006,7 @@ export const socialMethods: Record<string, any> = {
       city: dest.name,
     });
     this.persist();
+    void ackTakenInvites(meet, ackPairs.length ? [] : [one.id], ackPairs);
     this.queueLifeEffect?.('有人接了同行邀约', { vitalsDelta: { social: 12, fun: 6 } });
     /*
      * 有人接了话 —— 今天这一拍重开（2026-11-20，见 `reopenTodayDecision`）。
@@ -867,10 +1073,12 @@ export const socialMethods: Record<string, any> = {
      */
     mode?: string,
   ): Promise<{ text: string; isError?: boolean }> {
-    const meet = this.meetOptions();
+    const meet = await resolveMeetOpt(this);
     if (!meet) {
       return {
-        text: '碰面服务器没配，发不出去。跟他说一声就行，别自己圆一个「有人回了」。',
+        text: this.hubAuthError
+          ? `没发出去：${this.hubAuthError}`
+          : '碰面服务器没配，发不出去。跟他说一声就行，别自己圆一个「有人回了」。',
         isError: true,
       };
     }
@@ -1015,8 +1223,13 @@ export const socialMethods: Record<string, any> = {
 
   /** 看看谁在找伴。**全服的邀约都看得见**（2026-11-25 起），不改任何状态。 */
   async listNearbyInvites(): Promise<{ text: string; isError?: boolean }> {
-    const meet = this.meetOptions();
-    if (!meet) return { text: '碰面服务器没配，看不到有没有人找伴。', isError: true };
+    const meet = await resolveMeetOpt(this);
+    if (!meet) {
+      return {
+        text: this.hubAuthError ? `看不到：${this.hubAuthError}` : '碰面服务器没配，看不到有没有人找伴。',
+        isError: true,
+      };
+    }
     /*
      * **在家也能看。**
      *
@@ -1140,7 +1353,7 @@ export const socialMethods: Record<string, any> = {
      */
     const meetWant = meetName ? cityByName(meetName) : here;
     const meetCity = meetWant && dest && meetWant.id === dest.id ? here : meetWant;
-    const meetReady = Boolean(this.meetOptions());
+    const meetReady = this.meetUsable() && (this.isHubMode() ? !this.hubAuthError : Boolean(this.meetOptions()));
 
     const legs: Array<{ label: string; km: number; modes: string[] }> = [];
     if (dest) {
@@ -1173,9 +1386,11 @@ export const socialMethods: Record<string, any> = {
       ? ''
       : (dest ? '' : `内置城市表里没有「${toName}」—— 换个大一点的城市名`);
     const meetProblem = !meetReady
-      ? (this.meetUrlError
-        ? `碰面服务器那一栏读不成网址：${this.meetUrlError}`
-        : '还没配碰面服务器 —— 邀约存在服务器上，本机发不出去')
+      ? (this.hubAuthError
+        ? this.hubAuthError
+        : (this.meetUrlError
+          ? `碰面服务器那一栏读不成网址：${this.meetUrlError}`
+          : '还没配碰面服务器或 Hub 总服 —— 邀约存在服务器上，本机发不出去'))
       : (meetName && !meetWant ? `城市表里没有「${meetName}」` : '');
     const whereProblem = sameHere
       ? `她现在就在${here.name}，不用约人去那儿`
@@ -1256,7 +1471,7 @@ export const socialMethods: Record<string, any> = {
       : this.st.phase === 'home'
         ? (this.stillResting(this.worldNow()) ? '她还在家歇着，这会儿发的约赶不上' : '')
         : '';
-    const meet = this.meetOptions();
+    const meet = await resolveMeetOpt(this);
     const base = {
       here: { id: here.id, name: here.name },
       pool: 0,
@@ -1267,9 +1482,11 @@ export const socialMethods: Record<string, any> = {
     if (!meet) {
       return {
         ready: false,
-        reason: this.meetUrlError
-          ? `碰面服务器那一栏读不成网址：${this.meetUrlError}`
-          : '还没配碰面服务器 —— 邀约挂在服务器上，本机看不到也发不出去。',
+        reason: this.hubAuthError
+          ? this.hubAuthError
+          : (this.meetUrlError
+            ? `碰面服务器那一栏读不成网址：${this.meetUrlError}`
+            : '还没配碰面服务器或 Hub 总服 —— 邀约挂在服务器上，本机看不到也发不出去。'),
         ...base,
       };
     }
@@ -1318,8 +1535,13 @@ export const socialMethods: Record<string, any> = {
    * 得在一个城里、手上不能已经有别的约定、那地方得真的去得了。
    */
   async takeInvite(id: string, approved = false): Promise<{ text: string; isError?: boolean }> {
-    const meet = this.meetOptions();
-    if (!meet) return { text: '碰面服务器没配，接不了。', isError: true };
+    const meet = await resolveMeetOpt(this);
+    if (!meet) {
+      return {
+        text: this.hubAuthError ? `接不了：${this.hubAuthError}` : '碰面服务器没配，接不了。',
+        isError: true,
+      };
+    }
     /*
      * **在家也能接。**
      *
@@ -1751,31 +1973,16 @@ export const socialMethods: Record<string, any> = {
    * 对方当天下午才到的，她第二天早上才看见 —— 这就是「等一天」，可以接受。
    */
   async matesHere(p: Pledge, here: City, now: Date): Promise<{ names: string[]; ok: boolean }> {
-    const meet = this.meetOptions();
+    const meet = await resolveMeetOpt(this);
     if (!meet) return { names: [], ok: false };
     const names = (p.withPets ?? [p.withPet]).map((x) => x.trim()).filter(Boolean);
     if (!names.length) return { names: [], ok: true };
-    /*
-     * 只问「此刻在这座城的有谁」，不问日期 —— 服务端按真实写入时刻划窗口。
-     * 约好的人在不在这儿，是个当下的事，跟她的游戏内日历无关。
-     */
-    /*
-     * **四个时段都要问**（2026-11-17，zzy1053 报的，附服务端源码可核）。
-     *
-     * 原来只查 `night`。而服务端 `cloud/sight-cf/src/worker.js` 的查询是
-     * `WHERE city = ?1 AND slot = ?2 AND at >= ?3` —— **按 slot 硬过滤**，
-     * 对方在 afternoon 上报的，查 night 永远拿不到。
-     *
-     * `SLOTS` 就四个（morning / afternoon / evening / night），全查一遍再合并去重。
-     * 一天只判一次，四次请求的代价可以接受；漏一个人就废掉一天，那才是贵的。
-     *
-     * ⚠ 服务端那边 `LIMIT` 是常量 `MAX = 3`，**不读客户端传的 limit 参数** ——
-     * 单个时段最多回 3 个，四个时段合并后才有机会看到 5 个人。
-     */
-    const boards = await Promise.all(
-      (['morning', 'afternoon', 'evening', 'night'] as const)
-        .map((s) => findNeighbors(meet, here.id, s, 20, 24 * 3_600_000).catch(() => null)),
-    );
+    const boards = meet.mode === 'hub'
+      ? [await findNeighbors(meet, here.id, 'all' as any, 20, 24 * 3_600_000).catch(() => null)]
+      : await Promise.all(
+        (['morning', 'afternoon', 'evening', 'night'] as const)
+          .map((s) => findNeighbors(meet, here.id, s, 20, 24 * 3_600_000).catch(() => null)),
+      );
     const have = new Set<string>();
     for (const b of boards) {
       for (const x of b?.list ?? []) have.add(x.pet.trim());
@@ -1992,7 +2199,7 @@ export const socialMethods: Record<string, any> = {
    * 对方要的是「这事儿黄了」，不是我们这边的账目。
    */
   async tellTheOtherSide(p: Pledge, why: string): Promise<void> {
-    const meet = this.meetOptions();
+    const meet = await resolveMeetOpt(this);
     if (!meet) return;
     const id = String(p.inviteId ?? '');
     if (!/^[a-f0-9]{16}$/.test(id)) return;

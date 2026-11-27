@@ -823,3 +823,107 @@ test('前端产物：邀约页按发布 —— 五个参数走数组，成功后
     assert.ok(boardsAfter > boardsBefore, '发完之后应刷新公告栏');
   } finally { restore(); }
 });
+
+test('前端产物：Hub 鉴权报错单独渲染在 jr-alert，不混入 jr-facts 信息卡', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import(`../dist/webui.js?alerttest=${Date.now()}`)).default;
+    const errRoot = new FakeNode('div');
+    const ctxErr = makeCtx(errRoot, async () => ({
+      ...snapshot,
+      guideSeen: true,
+      social: {
+        online: false,
+        nearby: 0,
+        invites: 0,
+        pool: 0,
+        urlIssue: '',
+        urlNote: '',
+        hubMode: true,
+        authError: '老服 uid（78797e52…）已被 Hub 认领，且本机缺少 coopanion-hub-auth.json',
+        pledge: null,
+      },
+    }));
+    await bundle.panels.now.mount(ctxErr);
+
+    const alertBox = errRoot.find((n) => String(n.className).includes('jr-alert'));
+    const factsBox = errRoot.find((n) => String(n.className).includes('jr-facts'));
+    assert.ok(alertBox, '应存在独立的 .jr-alert 报错区');
+    assert.equal(alertBox.hidden, false, '有报错时 .jr-alert 不应隐藏');
+    assert.match(alertBox.text, /联机报错/);
+    assert.match(alertBox.text, /78797e52/);
+
+    assert.ok(factsBox, '应存在 .jr-facts 信息卡区');
+    assert.ok(!factsBox.text.includes('78797e52'), '长报错文本不该混入 .jr-facts 信息格');
+    assert.match(factsBox.text, /身份异常（见上方提示）/);
+    assert.match(factsBox.text, /Hub 总服没连上/);
+
+    // 正常连上后，独立报错区应保持隐藏
+    const okRoot = new FakeNode('div');
+    const ctxOk = makeCtx(okRoot, async () => ({
+      ...snapshot,
+      guideSeen: true,
+      social: {
+        online: true,
+        nearby: 0,
+        invites: 0,
+        pool: 1,
+        urlIssue: '',
+        urlNote: '',
+        hubMode: true,
+        hubPetId: 'pet_0mwy7e0m9fb6',
+        pledge: null,
+      },
+    }));
+    await bundle.panels.now.mount(ctxOk);
+    const okAlert = okRoot.find((n) => String(n.className).includes('jr-alert'));
+    assert.ok(okAlert);
+    assert.equal(okAlert.hidden, true, '无报错时 .jr-alert 必须隐藏');
+
+    // Hub 首次连接完成前应显示「Hub 总服连接中…」，不出现自相矛盾的「没连上 + 没别人」
+    const connRoot = new FakeNode('div');
+    const ctxConn = makeCtx(connRoot, async () => ({
+      ...snapshot,
+      guideSeen: true,
+      social: {
+        online: true,
+        nearby: 0,
+        invites: 0,
+        pool: 0,
+        urlIssue: '',
+        urlNote: '',
+        hubMode: true,
+        hubPetId: '',
+        authError: '',
+        pledge: null,
+      },
+    }));
+    await bundle.panels.now.mount(ctxConn);
+    assert.match(connRoot.text, /Hub 总服连接中…/);
+    assert.ok(!connRoot.text.includes('这段时间没别人'), '首次连接中不应误报这段时间没别人');
+
+    // 非法 hubUrl 时，jr-alert 必须渲染总服错误文案而非碰面错误文案
+    const badUrlRoot = new FakeNode('div');
+    const ctxBadUrl = makeCtx(badUrlRoot, async () => ({
+      ...snapshot,
+      guideSeen: true,
+      social: {
+        online: false,
+        nearby: 0,
+        invites: 0,
+        pool: 0,
+        urlIssue: '地址只认 http 和 https',
+        urlNote: '',
+        hubMode: true,
+        hubPetId: '',
+        authError: '',
+        pledge: null,
+      },
+    }));
+    await bundle.panels.now.mount(ctxBadUrl);
+    const badAlert = badUrlRoot.find((n) => String(n.className).includes('jr-alert'));
+    assert.ok(badAlert && badAlert.hidden === false);
+    assert.match(badAlert.text, /总服：总服地址读不成/);
+    assert.ok(!badAlert.text.includes('碰面地址读不成'));
+  } finally { restore(); }
+});

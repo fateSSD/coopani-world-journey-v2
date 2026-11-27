@@ -79,13 +79,20 @@ const TEXT = {
     poolN: '今天一共 {n} 只',
     meetTitle: '碰面：和别人的鱼一起走一段',
     meetLead: '填一个公共地址，她到站会看一眼这一带还有谁；想找人一起走，跟她说一声就行。',
-    meetHint: '下面这个是我这边一直开着的，填进设置里的「碰面地址」就能用：',
+    meetHint: '下面这个是我这边一直开着的，填进设置里的「Hub 总服地址」就能用（老服兼容地址也继续支持）：',
     meetCopy: '复制地址',
     nearbyNone: '这段时间没别人',
     nearbyWas: '今天来过 {n} 只，这会儿没碰上',
     nearbyOffline: '碰面服务器没连上',
     nearbyBroken: '碰面地址读不成（{why}），去设置里改一下',
     meetNote: '碰面',
+    hubLabel: '总服',
+    hubValue: 'Hub v1 共享身份（{id}）',
+    hubConnecting: 'Hub 总服连接中…',
+    hubOffline: 'Hub 总服没连上',
+    hubBroken: '总服地址读不成（{why}），去设置里改一下',
+    alertTitle: '联机报错',
+    hubAuthBad: '身份异常（见上方提示）',
     nearbyN: '{n} 个也在这一带',
     invites: '找伴',
     invitesN: '{n} 个在找伴',
@@ -319,13 +326,20 @@ const TEXT = {
     poolN: '{n} pets today',
     meetTitle: 'Meet up: travel a stretch with someone else\'s pet',
     meetLead: 'Add a public server and she will see who is around when she arrives; to travel together, just tell her.',
-    meetHint: 'This one is always on — paste it into the "meet server" setting:',
+    meetHint: 'This one is always on — paste it into the "Hub URL" setting (legacy meet URL also supported):',
     meetCopy: 'Copy address',
     nearbyNone: 'nobody else right now',
     nearbyWas: '{n} passed through today, none around now',
     nearbyOffline: 'meet server unreachable',
     nearbyBroken: 'meet address unreadable ({why}) — fix it in settings',
     meetNote: 'meet',
+    hubLabel: 'Hub',
+    hubValue: 'Hub v1 shared identity ({id})',
+    hubConnecting: 'Connecting to Hub…',
+    hubOffline: 'Hub server unreachable',
+    hubBroken: 'Hub address unreadable ({why}) — fix it in settings',
+    alertTitle: 'Connection error',
+    hubAuthBad: 'Auth issue (see alert above)',
     nearbyN: '{n} others nearby',
     invites: 'Company',
     invitesN: '{n} looking for company',
@@ -914,6 +928,9 @@ export default {
         head.append(left, right);
 
         const homeBox = el('section', 'jr-home');
+        const alertBox = el('section', 'jr-alert');
+        alertBox.setAttribute('role', 'alert');
+        alertBox.hidden = true;
         /*
          * 「她在等你点头」。
          *
@@ -942,7 +959,7 @@ export default {
         /* 灯说明放在最底下 —— 用户是「看到灰点、滚下来找答案」才需要它。 */
         const helpBox = lampsHelp(T);
 
-        app.append(head, askBox, homeBox, rideBox, guide, legBox, facts, meetBox, nextBox, helpBox, foot, fbSlot);
+        app.append(head, alertBox, askBox, homeBox, rideBox, guide, legBox, facts, meetBox, nextBox, helpBox, foot, fbSlot);
 
         const render = (s) => {
           app.dataset.mode = s.mode;
@@ -1284,38 +1301,44 @@ export default {
            * 塞一条「0 个」。配了服务器但同城没人时**照样显示**「这段时间没别人」：
            * 用户填完地址总得看到点变化，否则只会以为没生效。
            */
+          const alerts = [];
+          if (s.social?.authError) alerts.push([T.hubLabel, s.social.authError]);
+          if (s.social?.urlIssue) {
+            alerts.push([
+              s.social.hubMode ? T.hubLabel : T.meetNote,
+              fill(s.social.hubMode ? T.hubBroken : T.nearbyBroken, { why: s.social.urlIssue }),
+            ]);
+          }
+          alertBox.replaceChildren();
+          if (alerts.length === 0) {
+            alertBox.hidden = true;
+          } else {
+            alertBox.hidden = false;
+            alertBox.append(el('p', 'jr-alert-title', T.alertTitle));
+            for (const [label, text] of alerts) {
+              alertBox.append(el('p', 'jr-alert-body', `${label}：${text}`));
+            }
+          }
+
           if (s.social) {
             const so = s.social;
-            /*
-             * 先给总数，再给同城。
-             *
-             * 只有「同城 0 个」的时候，用户分不清是「今天真没人」还是「这条线坏了」；
-             * 前面一行写着「池子今天一共 37 只」，答案就清楚了：
-             * 池子活着，只是这一带没人。总数是 0 才说明服务器没回话或真的空了。
-             */
+            const isHubConnecting = Boolean(so.hubMode && !so.authError && !so.urlIssue && !so.hubPetId && so.online !== false);
+            if (so.hubMode) {
+              chips.push([
+                T.hubLabel,
+                so.authError
+                  ? T.hubAuthBad
+                  : (so.hubPetId ? fill(T.hubValue, { id: so.hubPetId.slice(0, 12) }) : (isHubConnecting ? T.hubConnecting : T.hubOffline)),
+              ]);
+            }
             if (so.pool > 0) chips.push([T.pool, fill(T.poolN, { n: so.pool })]);
-            /*
-             * 「同城」这一格有三层，别压成两层（2026-11-20）。
-             *
-             * 第二层原来是 `nearby > 0 ? ... : nearbyNone` —— 于是「今天有 3 只来过、
-             * 只是这会儿不在」和「这城今天一只都没有」显示成同一句「这段时间没别人」。
-             * 服务端一直回着 `here`（今天这座城来过几只，去重、含自己，后端已减一），
-             * 拿它把这两件事分开。旧服务端不回这个字段时 `so.here` 是 undefined，
-             * 自然落回原来那句，向后兼容。
-             */
-            /*
-             * 填了但读不成网址（2026-11-21）：这时候说「没连上」是错的 ——
-             * 一次请求都没发出去，服务器根本没被试过。两句必须分开。
-             */
-            chips.push([T.nearby, so.online === false
-              ? (so.urlIssue ? fill(T.nearbyBroken, { why: so.urlIssue }) : T.nearbyOffline)
-              : (so.nearby > 0
-                ? fill(T.nearbyN, { n: so.nearby })
-                : (so.here > 0 ? fill(T.nearbyWas, { n: so.here }) : T.nearbyNone))]);
-            /*
-             * 填了多台时只连第一台，这句必须出现在主面板 ——
-             * 用户填了第二条却一个字反馈都没有，就是下一个「怎么没生效」。
-             */
+            chips.push([T.nearby, isHubConnecting
+              ? T.hubConnecting
+              : (so.online === false
+                ? (so.hubMode ? T.hubOffline : T.nearbyOffline)
+                : (so.nearby > 0
+                  ? fill(T.nearbyN, { n: so.nearby })
+                  : (so.here > 0 ? fill(T.nearbyWas, { n: so.here }) : T.nearbyNone)))]);
             if (so.urlNote) chips.push([T.meetNote, so.urlNote]);
             if (so.invites > 0) chips.push([T.invites, fill(T.invitesN, { n: so.invites })]);
             if (so.pledge) {
@@ -1355,8 +1378,8 @@ export default {
             meetBox.append(el('p', 'jr-meet-lead', T.meetLead));
             meetBox.append(el('p', 'jr-meet-hint', T.meetHint));
             const addr = el('div', 'jr-meet-addr');
-            const url = 'https://cooppetsjourney.top';
-            addr.append(el('span', 'jr-meet-url', 'cooppetsjourney.top'));
+            const url = 'https://hub.cooppetsjourney.top';
+            addr.append(el('span', 'jr-meet-url', 'hub.cooppetsjourney.top'));
             const copy = el('button', 'jr-linkbtn', T.meetCopy);
             copy.type = 'button';
             copy.addEventListener('click', () => {
@@ -2118,9 +2141,11 @@ export default {
            * 原来一律说「没配」，填了地址的人会照着这句去「配」，配一百遍也还是那一格字。
            */
           if (pr && !pr.ready) {
-            profTip.textContent = pr.urlIssue
-              ? T.profileUrlBad.replace('{}', pr.urlIssue)
-              : T.partiesNotReady;
+            profTip.textContent = pr.authError
+              ? pr.authError
+              : (pr.urlIssue
+                ? T.profileUrlBad.replace('{}', pr.urlIssue)
+                : T.partiesNotReady);
           } else if (pr && pr.urlFixed) {
             profTip.textContent = T.profileUrlFixed.replace('{}', pr.urlFixed);
           }

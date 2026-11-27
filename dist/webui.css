@@ -16,6 +16,9 @@
   --jr-accent: #c06a35;
   --jr-accent-soft: #f6e7da;
   --jr-ok: #5f7d5a;
+  --jr-err: #a9442e;
+  --jr-err-soft: #fdf2ef;
+  --jr-err-line: #eab8ad;
 
   box-sizing: border-box;
   max-width: 880px;
@@ -43,6 +46,9 @@
     --jr-accent: #e39b62;
     --jr-accent-soft: #38291e;
     --jr-ok: #9dbba0;
+    --jr-err: #f29b88;
+    --jr-err-soft: #331d19;
+    --jr-err-line: #6e3b31;
   }
 }
 :root[style*="color-scheme: dark"] .jr-app,
@@ -55,6 +61,9 @@
   --jr-accent: #e39b62;
   --jr-accent-soft: #38291e;
   --jr-ok: #9dbba0;
+  --jr-err: #f29b88;
+  --jr-err-soft: #331d19;
+  --jr-err-line: #6e3b31;
 }
 
 /* ---------- 头部 ---------- */
@@ -190,6 +199,33 @@
 .jr-btn-primary { background: var(--jr-accent); border-color: var(--jr-accent); color: #fff; }
 .jr-btn:disabled { opacity: .55; cursor: default; }
 .jr-btn:focus-visible, .jr-photo:focus-visible { outline: 2px solid var(--jr-accent); outline-offset: 3px; }
+
+/* ---------- 联机独立报错区（与状态信息卡分离） ---------- */
+.jr-alert {
+  margin-top: 16px;
+  padding: 12px 15px;
+  border: 1px solid var(--jr-err-line);
+  border-left: 3px solid var(--jr-err);
+  border-radius: 12px;
+  background: var(--jr-err-soft);
+  color: var(--jr-err);
+}
+.jr-alert[hidden] { display: none; }
+.jr-alert-title {
+  margin: 0 0 4px !important;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+}
+.jr-alert-body {
+  margin: 0 !important;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--jr-ink);
+  word-break: break-word;
+}
+.jr-alert-body + .jr-alert-body { margin-top: 4px !important; }
 
 /* ---------- 她在等你点头 ---------- */
 /*

@@ -201,10 +201,20 @@ export interface UiSnapshot {
     readonly online?: boolean;
     /** 同城、同时段还有几个人。0 = 没人（不是坏了）。 */
     readonly nearby: number;
+    /** 今天这座城一共来过多少只（不含自己）。 */
+    readonly here?: number;
     /** 同城有几个人在找伴走一段。 */
     readonly invites: number;
     /** 这个池子今天一共多少只（不分城市）。0 = 服务器没回这个字段（旧版）。 */
     readonly pool: number;
+    readonly urlIssue?: string;
+    readonly urlNote?: string;
+    /** 是否走 Hub v1 多城总服模式。 */
+    readonly hubMode?: boolean;
+    /** Hub 统一身份（脱敏展示）。 */
+    readonly hubPetId?: string;
+    /** Hub 身份认领或鉴权阻断说明（如 409 防裂号）。 */
+    readonly authError?: string;
     /** 她手上那份约定。`here` = 已经到那儿了。 */
     readonly pledge: {
       readonly withPet: string;

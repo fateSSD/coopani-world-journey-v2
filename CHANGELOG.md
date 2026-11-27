@@ -1,5 +1,15 @@
 # 更新日志
 
+## 2.11.0 — 2026-11-27（接入 Coopanion Hub v1.2 二期总服 + 共享身份与同行解锁私信 + 面板状态提示）
+
+- **Coopanion Hub v1.2 双轨联机接入**（`src/hub-client.ts`、`src/config.ts`、`src/meet.ts`、`src/world-social.ts`、`src/world-plan.ts`、`src/world.ts`）：
+  - 新增热配置 `worlds.journey.hubUrl`（推荐 `https://hub.cooppetsjourney.top`）；留空时 100% 退回老服 `meetUrl` 或纯单机运行。
+  - 新增 `src/hub-client.ts`，与 `coopani-world-life` 共用 `<dataDir>/coopanion-hub-auth.json` 原子凭据，首次只读探测 `meet-uid.txt` / `life-town-uid.txt` 认领历史 UID（遇 `409 LEGACY_UID_CLAIMED` 诚实报错防裂号，不静默新建账号）。
+  - 所有既有接口（上报位置、同城查重、足迹、路标、全服邀约、接约、留言卡、名片）在 `mode === 'hub'` 下透明对接 `/v1/journey/*`：修复服务端 `limit` 截断写死与 `slot=all` 全时段同伴查询，`claimTakenInvite` 改用显式 `POST /v1/journey/invites/ack` 确认不再靠 `GET` 吞认领，并周期上报 `PUT /v1/core/pets/me/ext/journey` 公开旅途切片；配合总服解锁「旅途同行过」之后的 `life_mail` 鱼间私信准入。
+- **面板与文档同步**（`src/ui.ts`、`src/world-webui.ts`、`dist/webui.js`、`package.json`、`README.md`、`test/hub-v1.test.mjs`）：
+  - `uiSnapshot().social` 透出 `hubMode`、`hubPetId` 与 `authError`，首页「此刻」面板清晰区分 Hub 总服共享身份、老服碰面地址与认领异常；无服务器引导更新至 `https://hub.cooppetsjourney.top`。
+  - 新增本地 mock 集成测试 `test/hub-v1.test.mjs`。
+
 ## 2.10.5 — 2026-11-25（新增城市「宝鸡」，兼容长格式景点短名反查）
 
 - **新增城市「宝鸡」（`baoji`，陕西，全城 193 → 194 座）**：按读者点名加入，暂无常规民航航班（`air: false, port: false`），往来走宝鸡南站高铁或从西安换乘。同步补齐全部 11 处城表项（`src/geo/cities.ts`）：

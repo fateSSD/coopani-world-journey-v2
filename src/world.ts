@@ -57,6 +57,7 @@ import {
   sendInvite, listInvites, myTakenInvites, acceptInvite, inviteLine,
   type MeetOptions,
 } from './meet.ts';
+import { normHubBaseUrl, onHubAuthFailure, type HubAuthFailureEvent, type HubAuthRecord } from './hub-client.ts';
 import { factsFor } from './geo/hotel-facts.ts';
 import { nightIn } from './geo/cities.ts';
 import { playLine } from './geo/city-play.ts';
@@ -226,6 +227,17 @@ export class JourneyWorld implements World {
   private reportWhy = '';
   /** 最近一次查碰面服务器是否连上：null = 未配或未查，true = 连上，false = 断连。 */
   public lastMeetOk: boolean | null = null;
+  public hubAuth: HubAuthRecord | null = null;
+  public hubAuthError = '';
+  public hubAuthErrorToken = '';
+  private unsubHubAuthFailure: (() => void) | null = null;
+  public hubAuthInFlight: { hubUrl: string; promise: Promise<HubAuthRecord | null> } | null = null;
+  public hubAuthFailedUrl = '';
+  public hubAuthRetryAfterMs = 0;
+  public hubAuthFailStep = 0;
+  public lastHubUrl: string | null = null;
+  public lastHubExtSyncAt = 0;
+  public lastHubExtKey = '';
 
   /** 失败后排的那一次重试。和心跳并存，谁先到谁报。 */
   private reportRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -699,6 +711,22 @@ export class JourneyWorld implements World {
   async start(host: WorldHost): Promise<void> {
     this.host = host;
     this.log = host.log;
+    this.unsubHubAuthFailure?.();
+    this.unsubHubAuthFailure = onHubAuthFailure((ev: HubAuthFailureEvent) => {
+      if (ev.hubUrl !== normHubBaseUrl(this.cfg.hubUrl)) return;
+      this.hubAuthErrorToken = ev.token;
+      this.lastMeetOk = false;
+      if (ev.code === 'ACCOUNT_BANNED') {
+        this.hubAuthError = `Hub 账号已被封禁：${ev.message || '请联系总服管理员处理'}`;
+      } else if (ev.code === 'RENAME_REQUIRED') {
+        this.hubAuthError = 'Hub 昵称需按审核要求修改后才可继续使用（请改名后重试）';
+      } else {
+        this.hubAuthError = `Hub 身份令牌已失效（${ev.code}），请重新认领或通过 tokens/reset 找回：${ev.message}`;
+        this.hubAuth = null;
+        this.hubAuthFailedUrl = ev.hubUrl;
+        this.hubAuthRetryAfterMs = this.realNow().getTime() + 60_000;
+      }
+    });
     // 密钥搬家（#659 第二条）。要 log 就绪，所以放在这一句之后。
     this.adoptKeys();
 
@@ -845,10 +873,14 @@ export class JourneyWorld implements World {
      * 连返回值都没人看。位置和作息是两件事：排不出今天干什么，
      * 不代表别人不该知道她在哪。
      */
+    this.lastHubUrl = normHubBaseUrl(this.cfg.hubUrl);
     try {
       if (this.st.phase === 'staying') await this.rebuildPlan(this.worldNow());
     } finally {
       await this.reportHere();
+    }
+    if (this.isHubMode()) {
+      void this.syncHubJourneyProfile(true);
     }
 
     this.retimer();
@@ -898,6 +930,8 @@ export class JourneyWorld implements World {
     this.heartTimer = null;
     this.reportRetryTimer = null;
     this.versionTimer = null;
+    this.unsubHubAuthFailure?.();
+    this.unsubHubAuthFailure = null;
     this.host = null;
     this.log = null;
   }
@@ -1187,6 +1221,26 @@ export class JourneyWorld implements World {
           const n = this.purgePendingSpendTickets();
           if (n > 0) this.log?.info(`已关闭扣她钱包，清理掉 ${n} 张尚未结算的旅途扣款条子。`);
         }
+      }
+      const hubNow = normHubBaseUrl(this.cfg.hubUrl);
+      if (this.lastHubUrl === null) {
+        this.lastHubUrl = hubNow;
+      } else if (hubNow !== this.lastHubUrl) {
+        this.lastHubUrl = hubNow;
+        this.hubAuth = null;
+        this.hubAuthError = '';
+        this.hubAuthErrorToken = '';
+        this.hubAuthFailedUrl = '';
+        this.hubAuthRetryAfterMs = 0;
+        this.hubAuthFailStep = 0;
+        this.lastHubExtSyncAt = 0;
+        this.lastHubExtKey = '';
+        this.lastMeetOk = null;
+        this.poolProbe = null;
+        this.nearbyProbe = null;
+      }
+      if (hubNow) {
+        void this.syncHubJourneyProfile();
       }
 
       // 换歌时立刻反应，而不是等到出发那一刻。
@@ -2202,7 +2256,11 @@ export class JourneyWorld implements World {
      * **不 await、不重试**：这是履历，不是行程的一部分。让它挡住行程推进，
      * 一次网络抖动就会把她卡在站台上；而失败了下次到站还会再记。
      */
-    void reportFootprint(this.meetOptions(), to.id);
+    const getMeet = typeof this.meetOptionsAsync === 'function' ? this.meetOptionsAsync() : Promise.resolve(this.meetOptions());
+    void getMeet.then((m) => reportFootprint(m, to.id));
+    if (this.isHubMode()) {
+      void this.syncHubJourneyProfile(true);
+    }
 
     /*
      * 到站那一刻就把「这一带还有谁」说出来，不等第二天早上那句 `journey.day`。
