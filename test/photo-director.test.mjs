@@ -575,3 +575,25 @@ test('在途表达、前半程出发/目的地与零循环引用：消除「在�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('compileDirectorPrompt：11 月底 12:31 白昼自写词未显式声明白天护栏时，自动追加明亮中性日光与路灯未亮守卫', () => {
+  const lz = cityById('lanzhou');
+  const dayFacts = buildPhotoFacts({
+    city: lz,
+    hour: 12.52,
+    month: 11,
+    day: 27,
+    subject: 'food',
+    dish: '红烧鱼',
+    weather: { dateKey: '2026-11-27', dayWeather: '晴', nightWeather: '晴', dayTemp: 8, nightTemp: -3, dayWind: '北', dayPower: '3' },
+    castOn: true,
+    personRefActive: true,
+    lang: 'zh',
+  });
+  const outZh = compileDirectorPrompt('坐在靠窗木桌前吃红烧鱼和青菜白饭，笑着看镜头', dayFacts);
+  assert.match(outZh, /大白天明亮中性日光/);
+  assert.match(outZh, /路灯未亮/);
+
+  const outEn = compileDirectorPrompt('Sitting by a wooden restaurant window eating braised fish and steamed rice', { ...dayFacts, lang: 'en' });
+  assert.match(outEn, /streetlights off/i);
+});

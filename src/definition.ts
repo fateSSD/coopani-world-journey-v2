@@ -1,6 +1,21 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { WorldDefinition } from 'cortico/world.ts';
 import { JOURNEY_DEFAULTS, JOURNEY_ID, type JourneyConfigSection } from './config.ts';
 import { JOURNEY_DESCRIBE, JourneyWorld } from './world.ts';
+
+function readExplicitConfigKeys(botDir: string): Set<string> {
+  try {
+    const file = join(botDir, 'config.json');
+    if (!existsSync(file)) return new Set();
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { worlds?: Record<string, unknown> };
+    const sec = raw?.worlds?.[JOURNEY_ID];
+    if (!sec || typeof sec !== 'object' || Array.isArray(sec)) return new Set();
+    return new Set(Object.keys(sec));
+  } catch {
+    return new Set();
+  }
+}
 
 export const JOURNEY: WorldDefinition<JourneyConfigSection> = {
   id: JOURNEY_ID,
@@ -18,6 +33,7 @@ export const JOURNEY: WorldDefinition<JourneyConfigSection> = {
     },
     // 搬完之后要把配置里那份清掉，否则重启一次 key 又回到 config.json。
     persist: (patch) => ctx.persist(patch),
+    hasExplicitConfigKey: (key) => readExplicitConfigKeys(ctx.botDir).has(key),
   }),
   describe: JOURNEY_DESCRIBE,
 };

@@ -400,6 +400,21 @@ export function compileDirectorPrompt(authoredRaw: string, facts: PhotoFacts): s
     guards.push(isZhBody ? '没有可读文字，没有水印' : 'no readable text, no watermark');
   }
 
+  const isBrightDay = !facts.sun.whiteNight
+    && (facts.sun.phase === 'noon' || facts.sun.phase === 'day' || facts.sun.phase === 'slant');
+  if (isBrightDay) {
+    const hasDayGuard = isZhBody
+      ? /大白天|路灯未亮|不开暖灯|白昼/.test(out)
+      : /\b(?:midday daylight|daytime sky|streetlights off)\b/i.test(out);
+    if (!hasDayGuard) {
+      guards.push(
+        isZhBody
+          ? (facts.sun.overcast ? '大白天明亮自然天光，白昼天色、路灯未亮' : '大白天明亮中性日光，白昼清亮天空、路灯未亮')
+          : (facts.sun.overcast ? 'bright overcast daytime natural light, daytime sky, streetlights off' : 'bright neutral midday daylight, clear daytime sky, streetlights off'),
+      );
+    }
+  }
+
   if (!guards.length) return out;
   const sep = isZhBody
     ? (/[。！？]$/.test(out) ? '' : '。')

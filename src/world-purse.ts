@@ -768,6 +768,37 @@ export const purseMethods: Record<string, any> = {
     return { ok: left === null || need <= left, need, left, fare, bed, meals: MEALS_PER_DAY, days: n };
   },
 
+  /**
+   * 从家自主出发前的最低整趟门槛校验：
+   * 余额达到 tight（>= 900）或足够负担「最低往返路费 + 最少停留天数（2 天）最便宜住吃」才放行；
+   * 手头在 low / empty 档（< 420）或连最省一趟往返吃住都付不起时，先留在家里攒钱。
+   */
+  homeDepartAffordable(from: City, to: City, km: number): { ok: boolean; need: number; left: number | null } {
+    const left = this.purseLeft();
+    if (left === null) return { ok: true, need: 0, left: null };
+    const stage = this.purseStage();
+    if (stage === 'empty' || stage === 'low') {
+      const check = this.pledgeAffordable(
+        [
+          { km, crossBorder: from.country !== to.country, from, to },
+          { km, crossBorder: to.country !== from.country, from: to, to: from },
+        ],
+        STAY_DAYS_MIN,
+        to,
+      );
+      return { ok: false, need: check.need, left };
+    }
+    const check = this.pledgeAffordable(
+      [
+        { km, crossBorder: from.country !== to.country, from, to },
+        { km, crossBorder: to.country !== from.country, from: to, to: from },
+      ],
+      STAY_DAYS_MIN,
+      to,
+    );
+    return { ok: check.ok, need: check.need, left };
+  },
+
 
   /**
    * 买得起哪种票。
@@ -867,10 +898,10 @@ export const purseMethods: Record<string, any> = {
     }
     const life = this.lifeAllowance();
     if (life !== null) {
-      /* 生活层是实时余额，没有「预算」这个数可报 —— 说还能动用多少，别说预算多少。 */
-      if (life <= 0) return `这一趟花了 ${spent} 块${tail}，手头的钱已经见底了。`;
-      if (life < TIGHT_THRESHOLD) return `这一趟花了 ${spent} 块${tail}，还能动用 ${life} 块，得省着来。`;
-      return `这一趟花了 ${spent} 块${tail}，还能动用 ${life} 块。`;
+      /* 生活层是实时余额，没有「预算」这个数可报 —— 说清从她自己钱包扣且还能动用多少，不与「你请客」混淆。 */
+      if (life <= 0) return `这一趟花你自己的钱（从「模拟鱼生」钱包扣），已花 ${spent} 块${tail}，手头的钱已经见底了。`;
+      if (life < TIGHT_THRESHOLD) return `这一趟花你自己的钱（从「模拟鱼生」钱包扣），已花 ${spent} 块${tail}，还能动用 ${life} 块，得省着来。`;
+      return `这一趟花你自己的钱（从「模拟鱼生」钱包扣），已花 ${spent} 块${tail}，还能动用 ${life} 块。`;
     }
     if (this.cfg.budget <= 0) return `这一趟已经花了 ${spent} 块${tail}。`;
     // 还剩多少按净值算：挣的钱确实能花。
@@ -1207,7 +1238,9 @@ export const purseMethods: Record<string, any> = {
   purseTravelLine(): string {
     if (!this.cfg.moneyEnabled) return '';
     if (this.cfg.payFromLife === false) {
+      const hasLife = existsSync(join(this.opts.dataDir, 'life-state.json')) || this.lifeAllowance() !== null;
       if (this.cfg.budget <= 0) {
+        if (!hasLife) return '';
         return this.st.spent > 0
           ? `这一趟由他出钱（不扣你的钱包），目前记了 ${this.st.spent} 块花销。`
           : '这一趟由他出钱，不扣你的钱包。';
@@ -1217,6 +1250,17 @@ export const purseMethods: Record<string, any> = {
       if (left <= 0) return `这一趟由他出钱（不扣你的钱包），${spentPart}预算 ${this.cfg.budget} 已用完。`;
       if (left < PURSE_TIGHT.floor) return `这一趟由他出钱（不扣你的钱包），${spentPart}预算还剩 ${left} 块，得省着来。`;
       return `这一趟由他出钱（不扣你的钱包），${spentPart}预算还剩 ${left} 块。`;
+    }
+    const life = this.lifeAllowance();
+    if (life !== null) {
+      const spentPart = this.st.spent > 0 ? `已花 ${this.st.spent} 块，` : '';
+      if (life <= 0) {
+        return `这一趟花你自己的钱（从「模拟鱼生」钱包扣），${spentPart}能动用的钱见底了 —— 想走下一段，得先在这座城打几天短工攒路费。`;
+      }
+      if (life < PURSE_TIGHT.floor) {
+        return `这一趟花你自己的钱（从「模拟鱼生」钱包扣），${spentPart}还能动用 ${life} 块，走不远也住不好；想去的地方太远，就先攒。`;
+      }
+      return `这一趟花你自己的钱（从「模拟鱼生」钱包扣），${spentPart}还能动用 ${life} 块。`;
     }
     const left = this.purseLeft();
     if (left === null) return '';
@@ -1281,6 +1325,7 @@ export const purseMethods: Record<string, any> = {
         : '',
       typeof this.withUserLine === 'function' ? this.withUserLine() : '',
       this.pledgeText(now),
+      this.purseTravelLine(),
         /*
          * **赶路那天也要报日记欠账。**
          *
@@ -1893,6 +1938,10 @@ export const purseMethods: Record<string, any> = {
        * 她自己那份才是对的。
        */
       'journey.actions': actionsPrompt(),
+      'journey.promptProfileCount': String(this.promptEditorStore?.loadProfiles?.().length ?? 0),
+      'journey.promptSnapshotCount': String(this.promptEditorStore?.loadHistory?.().length ?? 0),
+      'journey.promptAutoSwitch': this.cfg.promptAutoSwitch !== false ? '已开启' : '已关闭',
+      'journey.promptHasDraft': this.promptEditorStore?.loadDraft?.() ? '有待保存草稿' : '无',
     };
   },
 

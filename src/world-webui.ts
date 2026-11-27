@@ -131,11 +131,25 @@ export const webUiMethods: Record<string, any> = {
     if (st.everVisited.length) {
       badges.push({ label: '去过', value: `${st.everVisited.length} 个地方`, tone: 'plain' });
     }
-    if (this.cfg.moneyEnabled && st.spent > 0) {
+    if (this.cfg.moneyEnabled) {
+      if (this.cfg.payFromLife === false) {
+        if (st.spent > 0) {
+          badges.push({ label: '你请客', value: `${st.spent} 元`, tone: 'plain' });
+        }
+      } else if (this.lifeAllowance() !== null) {
+        badges.push({
+          label: '花销',
+          value: st.spent > 0 ? `${st.spent} 元（花她的钱）` : '花她的钱（已生效）',
+          tone: 'on',
+        });
+      } else if (st.spent > 0) {
+        badges.push({ label: '花销', value: `${st.spent} 元`, tone: 'plain' });
+      }
+    } else if (!this.cfg.moneyEnabled && this.cfg.payFromLife && this.lifeAllowance() !== null) {
       badges.push({
-        label: this.cfg.payFromLife === false ? '你请客' : '花销',
-        value: `${st.spent} 元`,
-        tone: 'plain',
+        label: '花销',
+        value: '未生效（需同时开「记花销」）',
+        tone: 'off',
       });
     }
     return badges;
@@ -204,6 +218,11 @@ export const webUiMethods: Record<string, any> = {
           title: '生图设置',
           description: '她拍的照片从哪儿出来：云端还是本地，点一边只填那一边。',
         },
+        {
+          id: 'prompts',
+          title: '生图提示词',
+          description: '多模型提示词方案管理、预览对比与历史回滚（原作者：frost77r）。',
+        },
       ],
       invoke: (panel, method, args) => this.panelInvoke(panel, method, args),
       config: journeyConfigGroups(),
@@ -223,6 +242,10 @@ export const webUiMethods: Record<string, any> = {
           { name: 'journey.homeFeel', description: '出发地那边的体感（干湿、风、海拔、温差），由城市数据算出来。' },
           { name: 'journey.diary', description: '日记目录。' },
           { name: 'journey.actions', description: '当前这套立绘认识的动作名（从 figure.json 现读）。' },
+          { name: 'journey.promptProfileCount', description: '已保存的多模型生图提示词方案数。' },
+          { name: 'journey.promptSnapshotCount', description: '生图提示词历史备份快照数。' },
+          { name: 'journey.promptAutoSwitch', description: '切换生图模型时是否自动套用对应提示词方案。' },
+          { name: 'journey.promptHasDraft', description: '当前是否存在待保存的生图提示词草稿。' },
         ],
       }],
       storage: [
@@ -312,6 +335,41 @@ export const webUiMethods: Record<string, any> = {
             this.writePublic();
             return '已清除旅行足迹与记忆文件。';
           },
+        },
+        {
+          key: 'journey.promptProfiles',
+          label: '多模型提示词方案',
+          kind: 'disk',
+          location: this.promptEditorStore.profilesPath,
+          danger: true,
+          note: '清除所有为不同生图模型保存的提示词方案，不改动当前已生效的生图提示词。',
+          stat: () => this.promptEditorStore.profilesStatText(),
+          clear: () => {
+            const n = this.promptEditorStore.clearProfiles();
+            return `已清除 ${n} 套模型提示词方案。`;
+          },
+        },
+        {
+          key: 'journey.promptHistory',
+          label: '生图提示词备份历史',
+          kind: 'disk',
+          location: this.promptEditorStore.historyPath,
+          danger: true,
+          note: '清除后将无法再回滚到此前的提示词历史备份，不改动当前已生效的提示词。',
+          stat: () => this.promptEditorStore.historyStatText(),
+          clear: () => {
+            const n = this.promptEditorStore.clearHistory();
+            return `已清除 ${n} 条提示词备份历史。`;
+          },
+        },
+        {
+          key: 'journey.promptDraft',
+          label: '未保存的提示词草稿',
+          kind: 'disk',
+          location: this.promptEditorStore.draftPath,
+          note: '清除暂存的未保存提示词修改，不影响当前已生效配置。',
+          stat: () => this.promptEditorStore.draftStatText(),
+          clear: () => (this.promptEditorStore.clearDraft() ? '已清除待保存草稿。' : '当前没有待保存草稿。'),
         },
       ] satisfies StoragePart[],
     };
@@ -488,7 +546,7 @@ export const webUiMethods: Record<string, any> = {
    * 同机任何进程都能打这个口子。白名单保证它只能改生图那几项 ——
    * 尤其是碰不到 `enabled`、`homeCity` 这种会改变她行为的东西。
    */
-  saveImageSettings(patch: unknown): Record<string, unknown> {
+  saveImageSettings(patch: unknown, opts?: { skipAutoSwitch?: boolean }): Record<string, unknown> {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
       throw new Error('保存的内容不是一组键值');
     }
@@ -533,6 +591,13 @@ export const webUiMethods: Record<string, any> = {
       }
       clean[key] = String(value ?? '').trim();
     }
+    if (typeof clean.imageKey === 'string' && clean.imageKey) {
+      const stripped = clean.imageKey.replace(/^Bearer\s+/i, '').trim();
+      if (/\s/.test(stripped)) {
+        throw new Error('生图密钥里不能包含空格或换行，请只粘贴 Key 本身');
+      }
+      clean.imageKey = stripped;
+    }
     if (Object.keys(clean).length === 0) throw new Error('没有要保存的内容');
 
     /*
@@ -554,16 +619,28 @@ export const webUiMethods: Record<string, any> = {
     }
 
     if (this.opts.persist) {
-      /*
-       * 宿主 `persist` 里的 `assignDeep` 改的就是 `cfg` 那一个对象
-       * （`context()` 里 `cfg: this.section(...)`），所以活对象和 config.json
-       * 会一起变 —— 不用、也不该再手写一遍 `Object.assign(this.cfg, …)`。
-       */
       this.opts.persist(clean);
+      /* 同步更新活对象，防止部分测试桩或宿主延迟刷新时紧接的 adoptKeys() 读到旧值。 */
+      Object.assign(this.cfg, clean);
     } else {
       // 测试里没有宿主：只改内存。说出来，别让人以为存下来了。
       this.log?.warn('没有持久化通道，生图设置只改了内存，重启就没了。');
       Object.assign(this.cfg, clean);
+    }
+
+    if (typeof clean.imageKey === 'string' && clean.imageKey) {
+      this.adoptKeys?.();
+      if ((this.cfg.imageKey ?? '').trim()) {
+        this.runtimeImageKey = this.cfg.imageKey.trim();
+      } else {
+        this.runtimeImageKey = null;
+      }
+    }
+
+    const touchedBackend = ['imageProtocol', 'imagePreset', 'imageApi', 'imageModel', 'imageWorkflow']
+      .some((k) => Object.hasOwn(clean, k));
+    if (touchedBackend && !opts?.skipAutoSwitch && !this.promptAutoSwitching && this.promptEditor) {
+      queueMicrotask(() => { void this.maybeAutoSwitchPrompts('save-image-settings'); });
     }
 
     return this.imageSettingsSnapshot();
@@ -588,10 +665,38 @@ export const webUiMethods: Record<string, any> = {
      * 只是没人点过。生图组删掉之后更是连组都没了。
      * 统一收到这里，两个页签共用同一条白名单与同一套落盘逻辑。
      */
-    if (method === 'saveImageSettings') return this.saveImageSettings(args[0]);
+    if (method === 'saveImageSettings') {
+      const snap = this.saveImageSettings(args[0], { skipAutoSwitch: true });
+      const raw = args[0] && typeof args[0] === 'object' ? (args[0] as Record<string, unknown>) : {};
+      const touchedBackend = ['imageProtocol', 'imagePreset', 'imageApi', 'imageModel', 'imageWorkflow']
+        .some((k) => Object.hasOwn(raw, k));
+      if (touchedBackend && await this.maybeAutoSwitchPrompts('settings-save')) {
+        return this.imageSettingsSnapshot();
+      }
+      return snap;
+    }
     if (panel === 'settings') {
       if (method === 'imageSettings') return this.imageSettingsSnapshot();
       throw new Error(`生图设置没有这个方法：${method}`);
+    }
+    if (panel === 'prompts') {
+      const first = Array.isArray(args) && args[0] && typeof args[0] === 'object'
+        ? (args[0] as Record<string, unknown>)
+        : {};
+      if (method === 'overview') {
+        const [state, listed] = await Promise.all([
+          this.promptEditor.readState(),
+          this.promptEditor.listProfiles({}),
+        ]);
+        return { state, profiles: listed.profiles };
+      }
+      if (method === 'profileDetail') return await this.promptEditor.listProfiles(first);
+      if (method === 'saveProfile') return await this.promptEditor.saveProfile(first);
+      if (method === 'applyProfile') return await this.promptEditor.applyProfile(first);
+      if (method === 'deleteProfile') return await this.promptEditor.deleteProfile(first);
+      if (method === 'historyList' || method === 'historyDetail') return await this.promptEditor.readHistory(first);
+      if (method === 'rollback') return await this.promptEditor.rollbackPrompt(first);
+      throw new Error(`生图提示词没有这个方法：${method}`);
     }
     if (panel === 'now') {
       if (method === 'snapshot') {
@@ -1114,6 +1219,7 @@ export const webUiMethods: Record<string, any> = {
         budget: this.cfg.budget,
         moneyOn: this.cfg.moneyEnabled,
         payFromLife: this.cfg.payFromLife !== false,
+        hasLife: this.lifeAllowance() !== null || existsSync(join(this.opts.dataDir, 'life-state.json')),
       },
       /** 出发地认不出来时的一句话。用户看不到日志，得放在界面上。 */
       homeProblem: this.homeProblem,

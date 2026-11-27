@@ -396,3 +396,30 @@ test('参考图激活时 readLifeLibraryHint 跳过角色文字外观，保留�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('11 月底正午 12:31 餐馆室内食物（foodPrompt 完整与极简）：必须大白天中性光且路灯未亮，不出现暖色诱导', () => {
+  const base = {
+    city: '兰州',
+    cityId: 'lanzhou',
+    month: 11,
+    day: 27,
+    hour: 12.52,
+    subject: 'food',
+    dish: '红烧鱼',
+  };
+  for (const weather of ['晴', '多云']) {
+    const full = photoPrompt({ ...base, weather, minimal: false });
+    assert.match(full, /大白天明亮/, `${weather} 正午室内食物缺失大白天明亮光：${full}`);
+    assert.match(full, /不开暖灯/, `${weather} 正午室内食物缺失不开暖灯：${full}`);
+    assert.match(full, /路灯未亮/, `${weather} 正午窗外缺失路灯未亮：${full}`);
+    assert.doesNotMatch(full, /暖色|黄昏|日落/, `${weather} 正午出现暖色/黄昏诱导词：${full}`);
+
+    const min = photoPrompt({ ...base, weather, minimal: true });
+    assert.match(min, /路灯未亮/, `${weather} 极简正午食物缺失路灯未亮：${min}`);
+    assert.match(min, /不开暖灯/, `${weather} 极简正午食物缺失不开暖灯：${min}`);
+    assert.doesNotMatch(min, /黄昏|深夜/, `${weather} 极简正午食物出现黄昏/深夜：${min}`);
+  }
+  // 阴天室内仍不许带出「日光/金色」
+  const overcast = photoPrompt({ ...base, weather: '阴', minimal: false });
+  assert.doesNotMatch(overcast, /日光|金色|暖色/);
+});

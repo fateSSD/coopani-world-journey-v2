@@ -106,3 +106,50 @@ test('广播文件坏了：退回手填预算，不抛异常', () => {
   assert.equal(purseMethods.lifeAllowance.call(c), null);
   assert.equal(purseMethods.purseLeft.call(c), 2000);
 });
+
+test('807 元低余额（travelAllowance=565）拦住从家远行/撑不起的出发，且 affordMode 拦住超出旅费一半的贵票', async () => {
+  const { JourneyWorld } = await import('../src/world.ts');
+  const { JOURNEY_DEFAULTS } = await import('../src/config.ts');
+  const { cityById } = await import('../src/geo/cities.ts');
+
+  const d = dir();
+  // 现金 807 -> travelAllowance = 565
+  broadcast(d, 565, 807);
+  const lz = cityById('lanzhou');
+  const zs = cityById('zhoushan');
+  const c = ctx(d, {
+    cfg: { moneyEnabled: true, payFromLife: true, budget: 0 },
+    fareOf: (id, km) => (id === 'plane' ? km * 0.4 : id === 'train' ? km * 0.21 : km * 0.33),
+  });
+  // 兰州到舟山往返 + 2天吃住远超 565
+  const dep = purseMethods.homeDepartAffordable.call(c, lz, zs, 1800);
+  assert.equal(dep.ok, false);
+  assert.ok(dep.need > 565);
+
+  // 565 元余额下 affordMode(1800, 0.5) 上限约 282.5 元，必须拦住飞机与 1800km 贵票
+  const filter = purseMethods.affordMode.call(c, 1800, 0.5, false, { from: lz, to: zs });
+  assert.equal(filter({ id: 'plane' }), false);
+
+  // 真实 World：807 元现金时在家自主 depart()（即便选中远处）应留在家里攒钱
+  const infos = [];
+  const w = new JourneyWorld({
+    cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州', moneyEnabled: true, payFromLife: true, restDays: 0 },
+    dataDir: d,
+    botName: '大肥鱼',
+    now: () => new Date('2026-11-27T04:00:00Z'), // 当地 12:00
+  });
+  await w.start({
+    log: { trace() {}, debug() {}, info: (m) => infos.push(m), warn() {}, error() {} },
+    pushEvent: async (e) => ({ ...e, cursor: 1, blobs: [] }),
+    store: {},
+    drainPendingEvents: async () => [],
+  });
+  // 跳过加载宽限
+  w.bootedAt = new Date('2026-11-27T04:00:00Z').getTime() - 10 * 60_000;
+  // 无论挑到什么城市，只要最低往返+2天住吃 > 565 就必须被拦在家里；用 pickNextLeg 固定挑舟山验证
+  w.pickNextLeg = () => ({ city: zs, km: 1800 });
+  await w.depart(new Date('2026-11-27T04:00:00Z'));
+  assert.equal(w.st.phase, 'home', '807 元现金不应自主出发去远方');
+  assert.ok(infos.some((m) => m.includes('不够往返') && m.includes('先在家攒钱')));
+  await w.stop?.();
+});

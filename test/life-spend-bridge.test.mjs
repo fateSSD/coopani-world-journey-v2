@@ -136,3 +136,120 @@ test('运行中将 payFromLife 热切为 false 时 tick() 清掉未结算扣款�
   assert.equal(remained.amount, 0);
   assert.equal(remained.note, '旅途早饭');
 });
+
+test('payFromLife 默认关闭，且通过 journey-prefs.json 沿用用户已修改设置不随版本更新改回默认', async () => {
+  assert.equal(JOURNEY_DEFAULTS().payFromLife, false);
+  const { existsSync, writeFileSync: wf } = await import('node:fs');
+  const dir = dirWithLife();
+  wf(join(dir, 'life-public.json'), JSON.stringify({
+    schema: 2, asleepUntil: '', ledger: { cash: 2000, travelAllowance: 1400 },
+  }));
+  const patches = [];
+  const host = {
+    log: { trace() {}, debug() {}, info() {}, warn() {}, error() {} },
+    pushEvent: async (e) => ({ ...e, cursor: 1, blobs: [] }),
+    store: {},
+    drainPendingEvents: async () => [],
+  };
+
+  // 1. 首次显式开启 payFromLife=true -> 同步写入 journey-prefs.json
+  const w1 = new JourneyWorld({
+    ...opts(dir, { payFromLife: true }),
+    persist: (p) => patches.push(p),
+    hasExplicitConfigKey: () => true,
+  });
+  await w1.start(host);
+  assert.equal(existsSync(join(dir, 'journey-prefs.json')), true);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'journey-prefs.json'), 'utf8')).payFromLife, true);
+  await w1.stop?.();
+
+  // 2. 模拟升级后 config.json 缺省该键回退成默认值 false -> start() 应从 journey-prefs.json 恢复为 true
+  const cfg2 = { ...JOURNEY_DEFAULTS(), enabled: true, homeCity: '兰州' };
+  const w2 = new JourneyWorld({
+    cfg: cfg2,
+    dataDir: dir,
+    botName: '大肥鱼',
+    now: () => new Date('2026-11-15T09:00:00Z'),
+    persist: (p) => patches.push(p),
+    hasExplicitConfigKey: () => false,
+  });
+  await w2.start(host);
+  assert.equal(cfg2.payFromLife, true, '缺失配置键时应沿用历史选择 true');
+  assert.equal(patches.some((p) => p.payFromLife === true), true);
+
+  // 3. 运行中热切换为 false -> tick() 写入 journey-prefs.json
+  w2.cfg.payFromLife = false;
+  await w2.tick();
+  assert.equal(JSON.parse(readFileSync(join(dir, 'journey-prefs.json'), 'utf8')).payFromLife, false);
+  await w2.stop?.();
+});
+
+test('开启 payFromLife 但关闭 moneyEnabled 时：settingBadges 与启动日志显式提示未生效', async () => {
+  const dir = dirWithLife();
+  writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+    schema: 2, asleepUntil: '', ledger: { cash: 807, travelAllowance: 565 },
+  }));
+  const warns = [];
+  const w = new JourneyWorld(opts(dir, { moneyEnabled: false, payFromLife: true }));
+  await w.start({
+    log: { trace() {}, debug() {}, info() {}, warn: (m) => warns.push(m), error() {} },
+    pushEvent: async (e) => ({ ...e, cursor: 1, blobs: [] }),
+    store: {},
+    drainPendingEvents: async () => [],
+  });
+  assert.ok(warns.some((m) => m.includes('记花销')), '应记录记花销未开启的提醒');
+  const badge = w.settingBadges().find((b) => b.label === '花销');
+  assert.ok(badge && badge.value.includes('未生效'), `settingBadges 应提示未生效：${JSON.stringify(badge)}`);
+  await w.stop?.();
+});
+
+test('在途阶段（phase=traveling）且双开关全开时：nowSummary 明确提示花她自己的钱与可动用余额，不混淆为请客', async () => {
+  const dir = dirWithLife();
+  writeFileSync(join(dir, 'life-public.json'), JSON.stringify({
+    schema: 2, asleepUntil: '', ledger: { cash: 805, travelAllowance: 564 },
+  }));
+  const w = new JourneyWorld(opts(dir, { moneyEnabled: true, payFromLife: true, budget: 0 }));
+  w.st = {
+    ...w.st,
+    phase: 'traveling',
+    hereId: 'lanzhou',
+    spent: 0,
+    leg: {
+      id: 'leg-test-1',
+      fromId: 'lanzhou',
+      toId: 'zhoushan',
+      modeId: 'train',
+      km: 1838,
+      seatId: 'hard-sleeper',
+      seat: '硬卧',
+      seatMult: 1,
+      durationWorldHours: 16.1,
+      departedAt: '2026-11-27T00:25:27.330Z',
+      arriveAt: '2026-11-27T16:31:27.330Z',
+      speed: 1,
+      viaIds: [],
+      createdAt: '2026-11-27T00:25:27.330Z',
+      fare: 386,
+    },
+  };
+  const nowTxt = w.nowSummary();
+  assert.match(nowTxt, /这一趟花你自己的钱（从「模拟鱼生」钱包扣）/);
+  assert.match(nowTxt, /还能动用 564 块/);
+  assert.doesNotMatch(nowTxt, /由他出钱/);
+
+  const badge = w.settingBadges().find((b) => b.label === '花销');
+  assert.ok(badge && badge.value.includes('花她的钱（已生效）'), `settingBadges 应标明已生效：${JSON.stringify(badge)}`);
+  assert.equal(w.uiSnapshot().trip.hasLife, true);
+});
+
+test('设置页文案：记花销与旅行花她的钱均写明需同时打开才按经济情况决定出门', async () => {
+  const { journeyConfigGroups } = await import('../src/config.ts');
+  const lifeGroup = journeyConfigGroups().find((g) => g.id === 'journey.life');
+  const moneyDesc = String(lifeGroup?.schema?.properties?.['worlds.journey.moneyEnabled']?.description ?? '');
+  const payDesc = String(lifeGroup?.schema?.properties?.['worlds.journey.payFromLife']?.description ?? '');
+  assert.match(moneyDesc, /同时打开/);
+  assert.match(moneyDesc, /经济情况/);
+  assert.match(payDesc, /同时打开/);
+  assert.match(payDesc, /经济情况决定出不出去/);
+  assert.equal(moneyDesc.includes('**') || payDesc.includes('**'), false);
+});

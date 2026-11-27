@@ -34,6 +34,9 @@ const TEXT = {
     visited: '去过 {n} 个地方',
     spent: '花销 {n}',
     spentTreat: '你请客 {n}（不扣她钱包）',
+    spentSelf: '花她自己的钱 · 已花 {n}',
+    spentSelfZero: '花她自己的钱（已生效）',
+    payBlockedWarn: '「旅行花她的钱」已开，但「记花销」未开 —— 需在设置里同时打开「记花销」和「旅行花她的钱」，她才会按自己的经济情况决定出不出去并从钱包扣费。',
     budgetLeft: '预算还剩 {n}',
     diary: '日记 {n} 天',
     working: '打工',
@@ -291,6 +294,9 @@ const TEXT = {
     visited: '{n} places visited',
     spent: 'spent {n}',
     spentTreat: 'on you {n}',
+    spentSelf: 'her wallet · spent {n}',
+    spentSelfZero: 'her wallet (active)',
+    payBlockedWarn: 'Pay-from-life is on, but Track Spending is off — turn on both so she checks her own balance before departing.',
     budgetLeft: '{n} of budget left',
     diary: '{n} diary days',
     working: 'Working',
@@ -1417,12 +1423,21 @@ export default {
           if (s.trip.days) bits.push(fmt(T.tripDays, s.trip.days));
           bits.push(fmt(T.visited, s.trip.visited));
           if (s.trip.moneyOn) {
-            bits.push(s.trip.budget > 0
-              ? fmt(T.budgetLeft, Math.max(0, s.trip.budget - s.trip.spent))
-              : fmt(s.trip.payFromLife === false ? T.spentTreat : T.spent, s.trip.spent));
+            bits.push(s.trip.payFromLife === false
+              ? (s.trip.budget > 0
+                ? `${fmt(T.spentTreat, s.trip.spent)} · ${fmt(T.budgetLeft, Math.max(0, s.trip.budget - s.trip.spent))}`
+                : fmt(T.spentTreat, s.trip.spent))
+              : s.trip.hasLife
+                ? (s.trip.spent > 0 ? fmt(T.spentSelf, s.trip.spent) : T.spentSelfZero)
+                : s.trip.budget > 0
+                  ? fmt(T.budgetLeft, Math.max(0, s.trip.budget - s.trip.spent))
+                  : fmt(T.spent, s.trip.spent));
           }
           bits.push(fmt(T.diary, s.diary.days));
           foot.append(el('p', null, bits.join(' · ')));
+          if (!s.trip.moneyOn && s.trip.payFromLife && s.trip.hasLife) {
+            foot.append(el('p', 'jr-warn', T.payBlockedWarn));
+          }
           /*
            * 版本号**不在这里**了 —— 2026-11-08 挪到标题那一行（见 `ver`）。
            * 页脚混在「日记 3 天 · 花销 1200」中间，11px 灰字，等于没显示。
@@ -3035,6 +3050,414 @@ export default {
         }, { signal: ctx.signal });
 
         await load();
+      },
+    },
+    prompts: {
+      /**
+       * 生图提示词与多模型方案管理面板（原作者：frost77r）。
+       * 只读与确认操作并重：保持现有 prompts 编辑/切换主要交由对话工具完成，面板提供一目了然的状态、对比、应用方案与回滚历史。
+       */
+      async mount(ctx) {
+        const isZh = String(ctx.language || 'zh').startsWith('zh');
+        const FIELD_META = [
+          { key: 'imageStyle', label: isZh ? '默认画风' : 'Default style', emptyHint: isZh ? '留空（使用默认真实旅行摄影）' : 'Blank (default travel photo style)' },
+          { key: 'imageCast', label: isZh ? '出镜角色描述' : 'Character cast', emptyHint: isZh ? '留空（画面不含出镜角色）' : 'Blank (no character in frame)' },
+          { key: 'imageStyleCast', label: isZh ? '出镜专属画风' : 'Cast-only style', emptyHint: isZh ? '留空（自动回退使用默认画风）' : 'Blank (falls back to imageStyle)' },
+        ];
+        const fmtTime = (iso) => {
+          if (!iso) return '-';
+          const d = new Date(iso);
+          if (Number.isNaN(d.getTime())) return String(iso);
+          const pad = (n) => String(n).padStart(2, '0');
+          return `${d.getMonth() + 1}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        };
+        const fmtFull = (iso) => {
+          if (!iso) return '-';
+          const d = new Date(iso);
+          if (Number.isNaN(d.getTime())) return String(iso);
+          const pad = (n) => String(n).padStart(2, '0');
+          return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        };
+        const actLabel = (action) => {
+          if (action === 'save') return { label: isZh ? '保存修改' : 'Saved', cls: 'jpe-tag jpe-tag-accent' };
+          if (action === 'profile-apply') return { label: isZh ? '切换方案' : 'Profile applied', cls: 'jpe-tag jpe-tag-ok' };
+          if (action === 'auto-switch') return { label: isZh ? '随模型自动切换' : 'Auto-switched', cls: 'jpe-tag jpe-tag-ok' };
+          if (action === 'rollback') return { label: isZh ? '回滚恢复' : 'Rolled back', cls: 'jpe-tag jpe-tag-warn' };
+          return { label: action || (isZh ? '变更' : 'Change'), cls: 'jpe-tag' };
+        };
+        const makeTag = (textStr, cls = 'jpe-tag', withDot = false) => {
+          const span = el('span', cls);
+          if (withDot) span.append(el('span', 'jpe-dot'));
+          span.append(document.createTextNode(textStr));
+          return span;
+        };
+        const addCls = (node, cls) => {
+          const cur = String(node.className || '').split(/\s+/).filter(Boolean);
+          if (!cur.includes(cls)) cur.push(cls);
+          node.className = cur.join(' ');
+        };
+        const toggleCls = (node, cls, force) => {
+          const cur = String(node.className || '').split(/\s+/).filter(Boolean);
+          const has = cur.includes(cls);
+          const next = force === undefined ? !has : Boolean(force);
+          if (next && !has) cur.push(cls);
+          else if (!next && has) cur.splice(cur.indexOf(cls), 1);
+          node.className = cur.join(' ');
+          return next;
+        };
+
+        const app = el('div', 'jr-app jpe-wrap');
+        ctx.root.append(app);
+
+        const navRow = el('div', 'jpe-nav-row');
+        const subTabs = el('div', 'jr-set-seg jpe-subtabs');
+        const tabProfilesBtn = el('button', 'jr-set-seg-btn on', isZh ? '当前与模型方案' : 'Active & Profiles');
+        tabProfilesBtn.type = 'button';
+        const tabHistoryBtn = el('button', 'jr-set-seg-btn', isZh ? '变更记录与回滚' : 'Change History');
+        tabHistoryBtn.type = 'button';
+        subTabs.append(tabProfilesBtn, tabHistoryBtn);
+
+        const authorTag = makeTag(isZh ? '提示词管理 · 原作者：frost77r' : 'Prompt Editor · Author: frost77r', 'jpe-tag jpe-author-tag');
+        navRow.append(subTabs, authorTag);
+
+        const statusLine = el('div', 'jpe-status-bar');
+        statusLine.hidden = true;
+        const bodyHost = el('div', 'jpe-body-host');
+        app.append(navRow, statusLine, bodyHost);
+
+        let activeTab = 'profiles';
+        let expandedProfileId = null;
+        let expandedSnapshotId = null;
+
+        const setStatus = (msg, tone = 'info') => {
+          if (!msg) {
+            statusLine.hidden = true;
+            statusLine.textContent = '';
+            return;
+          }
+          statusLine.hidden = false;
+          statusLine.className = `jpe-status-bar is-${tone}`;
+          statusLine.textContent = msg;
+        };
+
+        const buildFieldCard = (meta, value) => {
+          const card = el('div', 'jpe-field-card');
+          const head = el('div', 'jpe-field-head');
+          const title = el('div', 'jpe-field-title', meta.label);
+          title.append(el('span', 'jpe-field-key', meta.key));
+
+          const right = el('div', 'jpe-field-meta');
+          const valStr = typeof value === 'string' ? value : '';
+          right.append(el('span', null, valStr ? `${valStr.length} 字` : (isZh ? '未设置' : 'Unset')));
+
+          const body = el('p', 'jpe-field-body');
+          if (!valStr) {
+            body.textContent = meta.emptyHint;
+            addCls(body, 'is-empty');
+          } else {
+            body.textContent = valStr;
+            if (valStr.length > 140 || valStr.includes('\n')) {
+              addCls(body, 'is-clamped');
+              const toggle = el('button', 'jpe-link-btn', isZh ? '展开全文' : 'Expand');
+              toggle.type = 'button';
+              toggle.addEventListener('click', () => {
+                const clamped = toggleCls(body, 'is-clamped');
+                toggle.textContent = clamped ? (isZh ? '展开全文' : 'Expand') : (isZh ? '收起' : 'Collapse');
+              }, { signal: ctx.signal });
+              right.append(toggle);
+            }
+          }
+          head.append(title, right);
+          card.append(head, body);
+          return card;
+        };
+
+        const renderProfilesView = async () => {
+          bodyHost.replaceChildren(el('div', 'jpe-empty', isZh ? '正在读取生图提示词配置…' : 'Loading prompt settings…'));
+          try {
+            const { state, profiles } = await ctx.invoke('overview', []);
+            const backend = state.activeBackend || {};
+            const matched = state.matchedProfile;
+
+            const hero = el('div', 'jpe-hero');
+            const top = el('div', 'jpe-hero-top');
+            const left = el('div');
+            left.append(
+              el('div', 'jpe-hero-eyebrow', isZh ? '当前『大肥鱼环游世界』生图模型' : 'Active Journey Image Model'),
+              el('div', 'jpe-hero-title', backend.effectiveModel || backend.displayLabel || (isZh ? '未配置生图模型' : 'Not configured')),
+              el('div', 'jpe-hero-sub', `${backend.protocol || '-'} · ${isZh ? '预设' : 'Preset'} ${backend.preset || 'custom'}${backend.api ? ` · ${backend.api}` : ''}`),
+            );
+            const refreshBtn = el('button', 'jr-btn jpe-sm-btn', isZh ? '刷新' : 'Refresh');
+            refreshBtn.type = 'button';
+            refreshBtn.addEventListener('click', () => void renderProfilesView(), { signal: ctx.signal });
+            top.append(left, refreshBtn);
+
+            const tags = el('div', 'jpe-tags');
+            tags.append(
+              makeTag(isZh ? '已整合进本体' : 'Built-in integration', 'jpe-tag jpe-tag-ok', true),
+              makeTag(
+                state.autoSwitchByModel
+                  ? (isZh ? '切模型自动切换：开' : 'Auto-switch: On')
+                  : (isZh ? '切模型自动切换：关' : 'Auto-switch: Off'),
+                state.autoSwitchByModel ? 'jpe-tag jpe-tag-accent' : 'jpe-tag',
+              ),
+              matched
+                ? makeTag(
+                  isZh
+                    ? `命中方案：${matched.name}${matched.inSync ? '（已同步）' : '（有差异）'}`
+                    : `Matched: ${matched.name}${matched.inSync ? ' (synced)' : ' (differs)'}`,
+                  matched.inSync ? 'jpe-tag jpe-tag-ok' : 'jpe-tag jpe-tag-warn',
+                )
+                : makeTag(isZh ? '当前模型未绑定专属方案' : 'No profile matched'),
+            );
+            if (state.draft?.exists) {
+              tags.append(makeTag(isZh ? '存在未保存草稿' : 'Unsaved draft', 'jpe-tag jpe-tag-warn'));
+            }
+
+            const tip = el(
+              'div',
+              'jpe-tip',
+              isZh
+                ? '本功能由 frost77r 开发并整合进『大肥鱼环游世界』。你可以直接在对话里让我修改、预览、保存或回滚三项提示词；在「生图设置」切换模型后会自动备份并套用对应方案。'
+                : 'Built on frost77r\'s prompt editor. Ask the companion in chat to preview, save, rollback prompts, or bind per-model profiles; model switches auto-apply matched profiles with backup.',
+            );
+            hero.append(top, tags, tip);
+
+            const curSec = el('div');
+            const curHead = el('div', 'jpe-sec-head');
+            curHead.append(
+              el('div', 'jpe-sec-title', isZh ? '当前生效的三项生图提示词' : 'Active Image Prompts'),
+              el('div', 'jpe-sec-note', state.effectiveStyleNote || ''),
+            );
+            const fieldsBox = el('div', 'jpe-fields');
+            for (const meta of FIELD_META) {
+              fieldsBox.append(buildFieldCard(meta, state.fields?.[meta.key] ?? ''));
+            }
+            curSec.append(curHead, fieldsBox);
+
+            const profSec = el('div');
+            const profHead = el('div', 'jpe-sec-head');
+            profHead.append(
+              el('div', 'jpe-sec-title', isZh ? `多模型提示词方案（${profiles.length}）` : `Per-Model Profiles (${profiles.length})`),
+              el('div', 'jpe-sec-note', isZh ? '可在对话中新增、修改或删除方案' : 'Manage via chat tools'),
+            );
+            profSec.append(profHead);
+
+            if (!profiles.length) {
+              profSec.append(
+                el('div', 'jpe-empty', isZh ? '还没有保存任何模型提示词方案。\n可以直接让我为当前模型或常用生图模型保存专属方案。' : 'No saved per-model profiles yet.'),
+              );
+            } else {
+              const grid = el('div', 'jpe-grid');
+              for (const p of profiles) {
+                const isActive = Boolean(p.isBestMatch && p.inSyncWithActive);
+                const card = el('div', `jpe-profile-card${isActive ? ' is-active' : ''}`);
+                const head = el('div', 'jpe-profile-head');
+                const titleWrap = el('div');
+                titleWrap.append(
+                  el('div', 'jpe-profile-name', p.name),
+                  el('div', 'jpe-profile-rule', p.matchDescription),
+                );
+                const statusTag = p.isBestMatch
+                  ? makeTag(
+                    p.inSyncWithActive ? (isZh ? '当前生效' : 'Active') : (isZh ? '命中 · 有差异' : 'Matched · diff'),
+                    p.inSyncWithActive ? 'jpe-tag jpe-tag-ok' : 'jpe-tag jpe-tag-warn',
+                  )
+                  : makeTag(p.autoMatchEnabled ? (isZh ? '其他模型' : 'Other model') : (isZh ? '手动方案' : 'Manual'));
+                head.append(titleWrap, statusTag);
+
+                const lines = el('div', 'jpe-profile-lines');
+                for (const [k, v] of [
+                  [isZh ? '画风' : 'Style', p.fieldsSummary?.imageStyle ?? '（空）'],
+                  [isZh ? '角色' : 'Cast', p.fieldsSummary?.imageCast ?? '（空）'],
+                  [isZh ? '出镜' : 'CastStyle', p.fieldsSummary?.imageStyleCast ?? '（空）'],
+                ]) {
+                  const row = el('div', 'jpe-profile-line');
+                  row.append(el('span', 'jpe-profile-k', `${k}：`), el('span', 'jpe-profile-v', v));
+                  lines.append(row);
+                }
+
+                const foot = el('div', 'jpe-profile-foot');
+                const detailBtn = el('button', 'jr-btn jpe-sm-btn', expandedProfileId === p.profileId ? (isZh ? '收起详情' : 'Hide') : (isZh ? '查看详情' : 'Details'));
+                detailBtn.type = 'button';
+                detailBtn.addEventListener('click', () => {
+                  expandedProfileId = expandedProfileId === p.profileId ? null : p.profileId;
+                  void renderProfilesView();
+                }, { signal: ctx.signal });
+                foot.append(el('span', 'jpe-profile-time', isZh ? `更新于 ${fmtTime(p.updatedAt)}` : `Updated ${fmtTime(p.updatedAt)}`), detailBtn);
+
+                card.append(head, lines);
+                if (p.note) card.append(el('div', 'jpe-profile-note', p.note));
+                card.append(foot);
+
+                if (expandedProfileId === p.profileId) {
+                  const detailBox = el('div', 'jpe-inline-detail');
+                  const detailRes = await ctx.invoke('profileDetail', [{ profileId: p.profileId }]);
+                  const prof = detailRes.profile || p;
+                  const diffInfo = detailRes.diffAgainstActive;
+                  for (const m of FIELD_META) {
+                    const block = el('div', 'jpe-drawer-block');
+                    block.append(
+                      el('div', 'jpe-drawer-label', `${m.label} (${m.key})`),
+                      el('p', 'jpe-drawer-text', prof.fields?.[m.key] || m.emptyHint),
+                    );
+                    detailBox.append(block);
+                  }
+                  if (diffInfo?.hasChanges && Array.isArray(diffInfo.changes) && diffInfo.changes.length) {
+                    const diffSec = el('div', 'jpe-drawer-block');
+                    diffSec.append(el('div', 'jpe-drawer-label', isZh ? '与当前生效配置的差异' : 'Diff against active'));
+                    for (const c of diffInfo.changes) {
+                      diffSec.append(
+                        el('div', 'jpe-hist-sub', c.label),
+                        el('div', 'jpe-diff-before', `${isZh ? '当前：' : 'Active: '}${c.before || '（空）'}`),
+                        el('div', 'jpe-diff-after', `${isZh ? '方案：' : 'Profile: '}${c.after || '（空）'}`),
+                      );
+                    }
+                    detailBox.append(diffSec);
+
+                    const actFoot = el('div', 'jpe-drawer-foot');
+                    let armed = false;
+                    const applyBtn = el('button', 'jr-btn jpe-sm-btn jpe-primary-btn', isZh ? '应用此方案' : 'Apply profile');
+                    applyBtn.type = 'button';
+                    applyBtn.addEventListener('click', async () => {
+                      if (!armed) {
+                        armed = true;
+                        applyBtn.textContent = isZh ? '确认切换并自动备份？' : 'Confirm apply?';
+                        return;
+                      }
+                      applyBtn.disabled = true;
+                      try {
+                        const applied = await ctx.invoke('applyProfile', [{ profileId: p.profileId }]);
+                        setStatus(applied.note || applied.message || (isZh ? '已应用模型方案' : 'Profile applied'), 'ok');
+                        await renderProfilesView();
+                        await ctx.refresh?.();
+                      } catch (err) {
+                        setStatus(err instanceof Error ? err.message : String(err), 'bad');
+                        applyBtn.disabled = false;
+                      }
+                    }, { signal: ctx.signal });
+                    actFoot.append(applyBtn);
+                    detailBox.append(actFoot);
+                  }
+                  card.append(detailBox);
+                }
+
+                grid.append(card);
+              }
+              profSec.append(grid);
+            }
+
+            bodyHost.replaceChildren(hero, curSec, profSec);
+          } catch (err) {
+            bodyHost.replaceChildren(el('div', 'jr-empty', why(TEXT[isZh ? 'zh' : 'en'], err)));
+          }
+        };
+
+        const renderHistoryView = async () => {
+          bodyHost.replaceChildren(el('div', 'jpe-empty', isZh ? '正在读取备份记录…' : 'Loading history…'));
+          try {
+            const res = await ctx.invoke('historyList', [{ limit: 50 }]);
+            const head = el('div', 'jpe-sec-head');
+            const title = el('div', 'jpe-sec-title', isZh ? `变更历史与备份（共 ${res.total} 条）` : `Change History (${res.total})`);
+            const refreshBtn = el('button', 'jr-btn jpe-sm-btn', isZh ? '刷新' : 'Refresh');
+            refreshBtn.type = 'button';
+            refreshBtn.addEventListener('click', () => void renderHistoryView(), { signal: ctx.signal });
+            head.append(title, refreshBtn);
+
+            const listHost = el('div', 'jpe-timeline');
+            if (!res.snapshots.length) {
+              listHost.append(el('div', 'jpe-empty', isZh ? '暂无变更记录。每次保存提示词、应用方案或切换模型时，都会在这里留下一份备份。' : 'No snapshots yet.'));
+            } else {
+              for (const item of res.snapshots) {
+                const card = el('div', 'jpe-hist-card');
+                const rowTop = el('div', 'jpe-hist-row');
+                const main = el('div', 'jpe-hist-main');
+
+                const top = el('div', 'jpe-hist-top');
+                const info = actLabel(item.action);
+                top.append(makeTag(info.label, info.cls), el('span', 'jpe-hist-time', fmtFull(item.createdAt)));
+                if (item.modelLabel) top.append(makeTag(item.modelLabel));
+                main.append(top);
+                if (item.reason) main.append(el('div', 'jpe-hist-reason', item.reason));
+                const fieldsTxt = (item.changedFields || []).length
+                  ? (isZh ? `改动字段：${item.changedFields.join('、')}` : `Changed: ${item.changedFields.join(', ')}`)
+                  : (isZh ? '无字段改动' : 'No fields changed');
+                main.append(el('div', 'jpe-hist-sub', fieldsTxt));
+
+                const detailBtn = el('button', 'jr-btn jpe-sm-btn', expandedSnapshotId === item.snapshotId ? (isZh ? '收起对比' : 'Hide diff') : (isZh ? '查看对比' : 'View diff'));
+                detailBtn.type = 'button';
+                detailBtn.addEventListener('click', () => {
+                  expandedSnapshotId = expandedSnapshotId === item.snapshotId ? null : item.snapshotId;
+                  void renderHistoryView();
+                }, { signal: ctx.signal });
+                rowTop.append(main, detailBtn);
+                card.append(rowTop);
+
+                if (expandedSnapshotId === item.snapshotId) {
+                  const detail = await ctx.invoke('historyDetail', [{ snapshotId: item.snapshotId }]);
+                  const snap = detail.snapshot;
+                  const detailBox = el('div', 'jpe-inline-detail');
+                  const changed = new Set(snap.changedFields || []);
+                  for (const m of FIELD_META) {
+                    if (changed.size > 0 && !changed.has(m.key)) continue;
+                    const block = el('div', 'jpe-drawer-block');
+                    block.append(
+                      el('div', 'jpe-drawer-label', `${m.label} (${m.key})`),
+                      el('div', 'jpe-diff-before', `${isZh ? '修改前：' : 'Before: '}${snap.before?.[m.key] || '（空）'}`),
+                      el('div', 'jpe-diff-after', `${isZh ? '修改后：' : 'After: '}${snap.after?.[m.key] || '（空）'}`),
+                    );
+                    detailBox.append(block);
+                  }
+                  const foot = el('div', 'jpe-drawer-foot');
+                  for (const [side, labelText] of [['before', isZh ? '恢复到修改前' : 'Restore before'], ['after', isZh ? '恢复到修改后' : 'Restore after']]) {
+                    let armed = false;
+                    const rbBtn = el('button', 'jr-btn jpe-sm-btn', labelText);
+                    rbBtn.type = 'button';
+                    rbBtn.addEventListener('click', async () => {
+                      if (!armed) {
+                        armed = true;
+                        rbBtn.textContent = isZh ? `确认${labelText}？（自动备份当前）` : `Confirm ${labelText}?`;
+                        return;
+                      }
+                      rbBtn.disabled = true;
+                      try {
+                        const rb = await ctx.invoke('rollback', [{ snapshotId: item.snapshotId, target: side }]);
+                        setStatus(rb.note || rb.message || (isZh ? '已回滚提示词' : 'Rolled back'), 'ok');
+                        await renderHistoryView();
+                        await ctx.refresh?.();
+                      } catch (err) {
+                        setStatus(err instanceof Error ? err.message : String(err), 'bad');
+                        rbBtn.disabled = false;
+                      }
+                    }, { signal: ctx.signal });
+                    foot.append(rbBtn);
+                  }
+                  detailBox.append(foot);
+                  card.append(detailBox);
+                }
+
+                listHost.append(card);
+              }
+            }
+            bodyHost.replaceChildren(head, listHost);
+          } catch (err) {
+            bodyHost.replaceChildren(el('div', 'jr-empty', why(TEXT[isZh ? 'zh' : 'en'], err)));
+          }
+        };
+
+        const switchTab = (next) => {
+          activeTab = next;
+          toggleCls(tabProfilesBtn, 'on', next === 'profiles');
+          toggleCls(tabHistoryBtn, 'on', next === 'history');
+          setStatus('');
+          if (next === 'profiles') void renderProfilesView();
+          else void renderHistoryView();
+        };
+
+        tabProfilesBtn.addEventListener('click', () => switchTab('profiles'), { signal: ctx.signal });
+        tabHistoryBtn.addEventListener('click', () => switchTab('history'), { signal: ctx.signal });
+
+        await renderProfilesView();
       },
     },
   },

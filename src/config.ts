@@ -382,6 +382,10 @@ export interface JourneyConfigSection extends WorldSection {
    * 想换成别人的（二次分发、团队内部版），改这一项就行。
    */
   feedbackEmail: string;
+  /** 切换生图模型时自动套用匹配的提示词方案（frost77r 提示词管理整合）。 */
+  promptAutoSwitch: boolean;
+  /** 生图提示词历史备份保留条数（5–200）。 */
+  promptMaxSnapshots: number;
 }
 
 export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
@@ -408,12 +412,13 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
    */
   moneyEnabled: true,
   /*
-   * 花她的钱也默认**开**（2026-11-17）。
+   * 花她的钱默认**关**（2026-11-27 调整）。
    *
-   * 和记账是两个开关（一个记、一个扣），但只有两个都开，「出门要花钱」才成立。
-   * 递条子有保护：`life-state.json` 不在就不写，所以只装旅行的人什么都不会发生。
+   * 关着的时候「这趟你请」，打开就从她在「模拟鱼生」的钱包里扣（需同时打开「记花销」）。
+   * 用户一旦在配置里改过这一项，会同步记忆在 `journey-prefs.json` 与 `config.json` 中，
+   * 后续扩展升级不会把用户已选好的状态拉回默认。
    */
-  payFromLife: true,
+  payFromLife: false,
   budget: 0,
   bridgeSpend: true,
   bridgeDiary: true,
@@ -466,6 +471,8 @@ export const JOURNEY_DEFAULTS = (): JourneyConfigSection => ({
    * `author` 里是名字不是邮箱，而这里要的就是一个能发信的地方。
    */
   feedbackEmail: '623263325@qq.com',
+  promptAutoSwitch: true,
+  promptMaxSnapshots: 30,
 });
 
 /**
@@ -560,7 +567,7 @@ export function journeyConfigGroups(): ConfigGroup[] {
           'worlds.journey.moneyEnabled': {
             type: 'boolean',
             title: '记花销',
-            description: '打开才累计交通、房费、三餐。关着一分不记，也不会提钱。',
+            description: '打开才累计交通、房费、三餐，并按余额/预算约束行程。关着一分不记，也不会按钱拦她出门；想让她根据自己在「模拟鱼生」里的经济情况决定出不出去，必须把「记花销」和下面的「旅行花她的钱」同时打开。',
             'x-hot': true,
           },
           'worlds.journey.hasLicense': {
@@ -571,9 +578,9 @@ export function journeyConfigGroups(): ConfigGroup[] {
           'worlds.journey.payFromLife': {
             type: 'boolean',
             title: '旅行花她的钱',
-            description: '打开（默认）= 路费房费每笔从她在「模拟鱼生」的钱包里扣，想去远处就得先赚出那笔钱。'
-              + '关掉 = 这趟你请：绝不扣她的钱包，也不拿她的余额卡预算，面板会标成你请客照记花销。'
-              + '要装了「模拟鱼生」才生效；没装就走这里自己的预算。',
+            description: '关掉（默认）= 这趟你请：绝不扣她的钱包，也不拿她的余额卡预算，面板会标成你请客照记花销。'
+              + '打开 = 路费房费每笔从她在「模拟鱼生」的钱包里扣，她会根据自己的经济情况决定出不出去、去多远——必须把上面的「记花销」和这一项同时打开才会生效（只开一项不会扣钱，也不会按余额拦她出门）。'
+              + '你修改后的选择会随存档记住，后续版本更新不会改回默认；要装了「模拟鱼生」才生效，没装就走这里自己的预算。',
             'x-hot': true,
           },
           'worlds.journey.budget': {
@@ -702,6 +709,22 @@ export function journeyConfigGroups(): ConfigGroup[] {
               + '内核主导（auto）：宿主支持后台认知时由内核直接写词出图；暂不支持时只在到达景点或长途中段提醒主对话，由她亲自决定是否调 journey_photo（挂机不聊天时可能不出图）。',
             enum: ['template', 'auto'],
             default: 'template',
+          },
+          'worlds.journey.promptAutoSwitch': {
+            type: 'boolean',
+            title: '切换生图模型时自动套用对应提示词方案',
+            description: '开启后，当你在「生图设置」切换生图模型或服务商（如从 Kolors 切到千问、豆包或 ComfyUI）时，自动先备份当前提示词并套用对应模型的提示词方案。',
+            default: true,
+            'x-hot': true,
+          },
+          'worlds.journey.promptMaxSnapshots': {
+            type: 'integer',
+            title: '生图提示词最多保留备份条数',
+            description: '每次修改提示词、应用方案或回滚前都会自动留一份备份，超出上限时自动清理最早的记录。',
+            minimum: 5,
+            maximum: 200,
+            default: 30,
+            'x-hot': true,
           },
         },
       },

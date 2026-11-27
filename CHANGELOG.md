@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2.12.0 — 2026-11-27（整合 frost77r 多模型提示词编辑器 + 旅费双开关持久化与在途可见性 + 生图密钥与昼夜光线修复）
+
+- **整合多模型生图提示词编辑器（`原作者：frost77r`）**（`src/prompt-editor.ts`、`src/config.ts`、`src/describe.ts`、`describe.json`、`src/world.ts`、`src/world-webui.ts`、`src/world-purse.ts`、`dist/webui.js`、`dist/webui.css`、`ENV_PROMPT.md`）：
+  - 新增 9 个提示词管理与画像工具（`describe.json` 工具总计 34 个）与 WebUI「提示词」管理页签（页面内明示 `原作者：frost77r`），支持方案画像匹配与一键应用、原/改差异对比、草稿哈希防漂移、原子备份快照（默认上限 `promptMaxSnapshots = 30`）与一键回滚。
+  - 新增热配置 `promptAutoSwitch`（默认开启），在「生图设置」保存并切换模型或服务商时自动备份当前提示词并切换到匹配方案。
+- **修复「旅行花她的钱」默认值持久化、出发校验、在途提示与双开关 UI 说明**（`src/config.ts`、`src/definition.ts`、`src/world.ts`、`src/world-purse.ts`、`src/world-webui.ts`、`src/ui.ts`、`dist/webui.js`）：
+  - `payFromLife` 默认值设为 `false`（由你请客），同时引入 `<dataDir>/journey-prefs.json` 与 `hasExplicitConfigKey('payFromLife')` 同步机制，用户改过的开关选择会永久跟随存档保留，后续版本升级不会拉回默认。
+  - 补全 `homeDepartAffordable()` 在家自费出发预算校验，避免余额不够往返路费+三天基本住吃时直接动身；修复 `nowSummary()` 的 `traveling`（在途）分支漏调 `purseTravelLine()` 导致车上分不清自费还是请客的问题，并在双开关全开时显式标明「这一趟花你自己的钱（从「模拟鱼生」钱包扣）」。
+  - 设置说明、状态徽章与主面板页脚均明确提示需同时打开「记花销」和「旅行花她的钱」才会按她在「模拟鱼生」的经济情况决定出行与扣费；只开「旅行花她的钱」未开「记花销」时页面直接挂警示提示。
+- **修复生图密钥覆盖与白昼光线误偏黄昏问题**（`src/world-webui.ts`、`src/photo.ts`、`src/photo-facts.ts`、`test/secrets-migrate.test.mjs`、`test/photo-light.test.mjs`、`test/photo-director.test.mjs`）：
+  - 修复 WebUI 保存生图设置时原有密钥无法被新填写的密钥正确改写的问题；补全室内/餐饮白昼光线描述与 `compileDirectorPrompt()` 大白天明亮日光防误偏黄昏护栏。
+
 ## 2.11.0 — 2026-11-27（接入 Coopanion Hub v1.2 二期总服 + 共享身份与同行解锁私信 + 面板状态提示）
 
 - **Coopanion Hub v1.2 双轨联机接入**（`src/hub-client.ts`、`src/config.ts`、`src/meet.ts`、`src/world-social.ts`、`src/world-plan.ts`、`src/world.ts`）：

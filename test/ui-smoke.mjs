@@ -154,6 +154,50 @@ test('前端产物：能加载，且导出两个面板', async () => {
     assert.ok(bundle.panels, '没有 panels');
     assert.equal(typeof bundle.panels.now?.mount, 'function', '缺「她此刻」面板');
     assert.equal(typeof bundle.panels.album?.mount, 'function', '缺「照片」面板');
+    assert.equal(typeof bundle.panels.prompts?.mount, 'function', '缺「生图提示词」面板');
+  } finally { restore(); }
+});
+
+test('前端产物：生图提示词面板正常渲染且注明原作者 frost77r', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const root = new FakeNode('div');
+    const ctx = makeCtx(root, async (method) => {
+      if (method === 'overview') {
+        return {
+          state: {
+            author: 'frost77r',
+            activeBackend: { protocol: 'openai', preset: 'doubao', effectiveModel: 'doubao-seedream-5-0-260128', api: 'https://ark.cn-beijing.volces.com/api/v3' },
+            autoSwitchByModel: true,
+            matchedProfile: { profileId: 'doubao', name: '豆包写实', inSync: true },
+            fields: { imageStyle: 'film photography', imageCast: '', imageStyleCast: '' },
+            effectiveStyleNote: '当前 imageCast 为空',
+            draft: { exists: false },
+          },
+          profiles: [
+            {
+              profileId: 'doubao',
+              name: '豆包写实',
+              matchDescription: '模型=doubao-seedream-5-0-260128',
+              autoMatchEnabled: true,
+              isBestMatch: true,
+              inSyncWithActive: true,
+              updatedAt: '2026-11-27T10:00:00Z',
+              fieldsSummary: { imageStyle: 'film photography', imageCast: '（空）', imageStyleCast: '（空）' },
+            },
+          ],
+        };
+      }
+      if (method === 'historyList') return { total: 0, snapshots: [] };
+      return {};
+    });
+    ctx.panelId = 'prompts';
+    await bundle.panels.prompts.mount(ctx);
+    const rendered = root.text;
+    assert.match(rendered, /frost77r/, '必须注明原作者 frost77r');
+    assert.match(rendered, /doubao-seedream-5-0-260128/);
+    assert.match(rendered, /豆包写实/);
   } finally { restore(); }
 });
 
@@ -925,5 +969,29 @@ test('前端产物：Hub 鉴权报错单独渲染在 jr-alert，不混入 jr-fac
     assert.ok(badAlert && badAlert.hidden === false);
     assert.match(badAlert.text, /总服：总服地址读不成/);
     assert.ok(!badAlert.text.includes('碰面地址读不成'));
+  } finally { restore(); }
+});
+
+test('前端产物：双开关提示 —— 仅开「旅行花她的钱」未开「记花销」显示提醒；全开显示已生效', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import('../dist/webui.js')).default;
+    const blockedRoot = new FakeNode('div');
+    const ctxBlocked = makeCtx(blockedRoot, async () => ({
+      ...snapshot,
+      guideSeen: true,
+      trip: { ...snapshot.trip, moneyOn: false, payFromLife: true, hasLife: true, spent: 0 },
+    }));
+    await bundle.panels.now.mount(ctxBlocked);
+    assert.match(blockedRoot.text, /需在设置里同时打开「记花销」和「旅行花她的钱」/);
+
+    const activeRoot = new FakeNode('div');
+    const ctxActive = makeCtx(activeRoot, async () => ({
+      ...snapshot,
+      guideSeen: true,
+      trip: { ...snapshot.trip, moneyOn: true, payFromLife: true, hasLife: true, spent: 0 },
+    }));
+    await bundle.panels.now.mount(ctxActive);
+    assert.match(activeRoot.text, /花她自己的钱（已生效）/);
   } finally { restore(); }
 });

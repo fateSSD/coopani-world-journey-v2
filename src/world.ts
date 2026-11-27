@@ -81,6 +81,16 @@ import {
 import { shootPhoto, photoPrompt, photoTitle, spotFromBeat, skyOf, nightNegative, shotIsNight, imagePixelSize, type SkyView, type PhotoSubject } from './photo.ts';
 import { shootComfy, parseSize } from './comfy.ts';
 import { resolveImageBackend, presetDefaults } from './image-backend.ts';
+import {
+  PROMPT_FIELDS,
+  PromptEditorStore,
+  createPromptEditorService,
+  createPromptEditorTools,
+  readPromptFieldsFromObject,
+  resolveImageBackendMeta,
+  type PromptEditorService,
+  type PromptFields,
+} from './prompt-editor.ts';
 import { cropBottom, WATERMARK_CROP_RATIO } from './png-crop.ts';
 import { PhotoBook, type PhotoRecord } from './photo-book.ts';
 import { PartyLog } from './party-log.ts';
@@ -130,7 +140,9 @@ export interface JourneyWorldOptions {
    */
   keys?: KeyPorts;
   /** 把迁移结果写回配置（清掉已经搬进 .env 的那一份）。不传就只在内存里生效。 */
-  persist?: (patch: { amapKey?: string; imageKey?: string }) => void;
+  persist?: (patch: { amapKey?: string; imageKey?: string; payFromLife?: boolean }) => void;
+  /** 判断某配置键是否显式写在部署 config.json 中（用于区分用户显式修改与默认缺省）。 */
+  hasExplicitConfigKey?: (key: string) => boolean;
 }
 
 import { socialMethods } from './world-social.ts';
@@ -306,6 +318,21 @@ export class JourneyWorld implements World {
   /** 上一次观测到的扣她钱包开关（moneyEnabled && payFromLife），关掉时清掉待结算正数条子。 */
   private lastPayFromLife: boolean | null = null;
 
+  /** 上一次观测到的 `payFromLife` 偏好开关，热切换时同步持久化到 `journey-prefs.json`。 */
+  private lastSyncedPayFromLife: boolean | null = null;
+
+  /** 上一次记录「余额不足以从家出门」日志的本地日期，防刷屏。 */
+  private lastLowBudgetLogDay = '';
+
+  /** 是否已提醒过「开了旅行花她的钱但记花销为关」。 */
+  private moneyDisabledWarned = false;
+
+  /** 生图提示词多模型方案与历史备份存储（原作者：frost77r）。 */
+  private readonly promptEditorStore: PromptEditorStore;
+  private readonly promptEditor: PromptEditorService;
+  private promptAutoSwitching = false;
+  private lastObservedBackendSig = '';
+
   /** 上一次看到的歌名。用来判断「换歌了」—— 同一个歌名不重复处理。 */
   private lastSongTitle: string | null = null;
 
@@ -418,7 +445,77 @@ export class JourneyWorld implements World {
       join(opts.dataDir, 'weather-cache.json'),
       (level, msg) => (level === 'warn' ? this.log?.warn(msg) : this.log?.info(msg)),
     );
+    this.promptEditorStore = new PromptEditorStore(opts.dataDir, () => Number(this.cfg.promptMaxSnapshots ?? 30));
+    this.promptEditor = createPromptEditorService({
+      store: this.promptEditorStore,
+      getConfig: () => this.cfg,
+      bridge: {
+        readPrompts: async () => {
+          const snap = this.imageSettingsSnapshot();
+          return {
+            fields: readPromptFieldsFromObject({
+              imageStyle: snap.style,
+              imageCast: snap.cast,
+              imageStyleCast: snap.styleCast,
+            }),
+            backend: resolveImageBackendMeta(snap),
+            source: 'live-inproc',
+            liveConnected: true,
+          };
+        },
+        writePrompts: async (patch: Partial<PromptFields>) => {
+          const cleanPatch: Record<string, string> = {};
+          for (const f of PROMPT_FIELDS) {
+            if (Object.hasOwn(patch, f) && typeof patch[f] === 'string') {
+              cleanPatch[f] = patch[f] as string;
+            }
+          }
+          const prevGuard = this.promptAutoSwitching;
+          this.promptAutoSwitching = true;
+          let snap: Record<string, unknown>;
+          try {
+            snap = this.saveImageSettings(cleanPatch, { skipAutoSwitch: true });
+          } finally {
+            this.promptAutoSwitching = prevGuard;
+          }
+          const backend = resolveImageBackendMeta(snap);
+          this.lastObservedBackendSig = backend.signature;
+          return {
+            fields: readPromptFieldsFromObject({
+              imageStyle: snap.style,
+              imageCast: snap.cast,
+              imageStyleCast: snap.styleCast,
+            }),
+            backend,
+            applyMode: 'live-inproc',
+            liveApplied: true,
+          };
+        },
+      },
+      onAfterWrite: (backend) => {
+        this.lastObservedBackendSig = backend.signature;
+      },
+    });
     this.st = initialState('lanzhou');
+  }
+
+  private async maybeAutoSwitchPrompts(trigger: string): Promise<boolean> {
+    if (this.promptAutoSwitching) return false;
+    this.promptAutoSwitching = true;
+    try {
+      const res = await this.promptEditor.checkModelSwitch(trigger);
+      this.lastObservedBackendSig = resolveImageBackendMeta(this.cfg).signature;
+      if (res.status === 'switched') {
+        this.log?.info(`生图模型切换（${res.fromModel} → ${res.toModel}），已自动套用提示词方案「${res.profileName}」（备份 ${res.snapshotId}）。`);
+        return true;
+      }
+      return false;
+    } catch (e) {
+      this.log?.warn(`生图提示词方案自动切换失败：${(e as Error).message}`);
+      return false;
+    } finally {
+      this.promptAutoSwitching = false;
+    }
   }
 
 
@@ -431,8 +528,12 @@ export class JourneyWorld implements World {
   }
 
 
-  /** 生图密钥。同上。 */
+  /** 面板热改生图密钥但 `.env` 无法写入时的内存兜底值，保证不重启且不被旧 `.env` 盖住。 */
+  private runtimeImageKey: string | null = null;
+
+  /** 生图密钥。优先读面板热改但未能落入 `.env` 的新值，其次走 `.env` / 配置兜底。 */
   private imageKey(): string {
+    if (this.runtimeImageKey) return this.runtimeImageKey;
     return readKey(this.opts.keys ?? {}, IMAGE_KEY_NAME, this.cfg.imageKey);
   }
 
@@ -472,7 +573,10 @@ export class JourneyWorld implements World {
      * `config.json` —— 不落盘的话重启一次 key 又回到配置里，等于白搬。
      */
     if (patch.amapKey !== undefined) this.cfg.amapKey = patch.amapKey;
-    if (patch.imageKey !== undefined) this.cfg.imageKey = patch.imageKey;
+    if (patch.imageKey !== undefined) {
+      this.cfg.imageKey = patch.imageKey;
+      if (patch.imageKey === '') this.runtimeImageKey = null;
+    }
     this.opts.persist?.(patch);
 
     // 三个客户端在构造时拿的是旧值，搬完要重新注入
@@ -729,6 +833,9 @@ export class JourneyWorld implements World {
     });
     // 密钥搬家（#659 第二条）。要 log 就绪，所以放在这一句之后。
     this.adoptKeys();
+    // 沿用用户对「旅行花她的钱」的选择，不因版本更新或 config 缺省被重置回默认值。
+    this.syncPayFromLifePref();
+    this.warnIfPayFromLifeBlocked();
 
     let home = this.resolveHome();
     /*
@@ -749,6 +856,7 @@ export class JourneyWorld implements World {
     this.bootedAt = this.realNow().getTime();
     this.lastWithUser = Boolean(this.cfg.withUser);
     this.lastPayFromLife = Boolean(this.cfg.moneyEnabled && this.cfg.payFromLife !== false);
+    this.lastSyncedPayFromLife = Boolean(this.cfg.payFromLife);
 
     /*
      * **读完状态再认一次家**（2026-11-24）。
@@ -882,6 +990,7 @@ export class JourneyWorld implements World {
     if (this.isHubMode()) {
       void this.syncHubJourneyProfile(true);
     }
+    await this.maybeAutoSwitchPrompts('boot');
 
     this.retimer();
     /*
@@ -1149,6 +1258,22 @@ export class JourneyWorld implements World {
     if (this.ticking) return;
     this.ticking = true;
     try {
+      // 若设置页热写了新密钥进 cfg，先及时搬进 .env 并更新内存/客户端。
+      if ((this.cfg.amapKey ?? '').trim() || (this.cfg.imageKey ?? '').trim()) {
+        this.adoptKeys();
+      }
+      const backendSigNow = resolveImageBackendMeta(this.cfg).signature;
+      if (backendSigNow !== this.lastObservedBackendSig && !this.promptAutoSwitching) {
+        await this.maybeAutoSwitchPrompts('tick');
+      }
+      const prefNow = Boolean(this.cfg.payFromLife);
+      if (this.lastSyncedPayFromLife === null) {
+        this.lastSyncedPayFromLife = prefNow;
+      } else if (prefNow !== this.lastSyncedPayFromLife) {
+        this.lastSyncedPayFromLife = prefNow;
+        this.savePayFromLifePref(prefNow);
+      }
+      this.warnIfPayFromLifeBlocked();
       // 在 ensureClock() 改写倍速前记下停机期间实际运行的倍速，使离线世界时长与时钟结算完全同口径。
       const prevSpeed = this.st.clock?.speed ?? this.speedNow();
       this.ensureClock();
@@ -1559,6 +1684,17 @@ export class JourneyWorld implements World {
       }
       to = picked.city;
       km = picked.km;
+      if (!manual) {
+        const afford = this.homeDepartAffordable(from, to, km);
+        if (!afford.ok) {
+          const dayKey = localMoment(now, from.tz).dateKey;
+          if (this.lastLowBudgetLogDay !== dayKey) {
+            this.lastLowBudgetLogDay = dayKey;
+            this.log?.info(`手头可动用旅费仅 ${afford.left} 元，不够往返${to.name}吃住（约需 ${afford.need} 元），先在家攒钱。`);
+          }
+          return;
+        }
+      }
     }
     const mode = opts.mode
       // 约定里点过走法就照它 —— 那是他自己说的「买机票吧」，不该被掷骰子盖掉。
@@ -1744,6 +1880,17 @@ export class JourneyWorld implements World {
     if (!picked) {
       this.log?.warn('没有可去的地方，这一轮连问都不用问。');
       return;
+    }
+    if (!pledgedCity) {
+      const afford = this.homeDepartAffordable(from, picked.city, picked.km);
+      if (!afford.ok) {
+        const dayKey = localMoment(now, from.tz).dateKey;
+        if (this.lastLowBudgetLogDay !== dayKey) {
+          this.lastLowBudgetLogDay = dayKey;
+          this.log?.info(`手头可动用旅费仅 ${afford.left} 元，不够往返${picked.city.name}吃住（约需 ${afford.need} 元），先在家攒钱暂不问出门。`);
+        }
+        return;
+      }
     }
 
     const ask: Ask = {
@@ -3436,6 +3583,58 @@ export class JourneyWorld implements World {
   }
 
 
+  private prefsFile(): string {
+    return join(this.opts.dataDir, 'journey-prefs.json');
+  }
+
+  private savePayFromLifePref(val: boolean): void {
+    const file = this.prefsFile();
+    const tmp = `${file}.tmp-${process.pid}`;
+    try {
+      mkdirSync(this.opts.dataDir, { recursive: true });
+      writeFileSync(tmp, JSON.stringify({ payFromLife: val, updatedAt: this.realNow().toISOString() }, null, 2));
+      renameSync(tmp, file);
+    } catch (e) {
+      this.log?.warn(`保存旅费偏好失败：${e instanceof Error ? e.message : String(e)}`);
+      try { if (existsSync(tmp)) unlinkSync(tmp); } catch { /* ignore */ }
+    }
+  }
+
+  private syncPayFromLifePref(): void {
+    if (!this.opts.hasExplicitConfigKey) return;
+    const explicit = this.opts.hasExplicitConfigKey('payFromLife');
+    if (explicit) {
+      const val = Boolean(this.cfg.payFromLife);
+      this.savePayFromLifePref(val);
+      return;
+    }
+    try {
+      if (existsSync(this.prefsFile())) {
+        const saved = JSON.parse(readFileSync(this.prefsFile(), 'utf8')) as { payFromLife?: unknown };
+        if (typeof saved?.payFromLife === 'boolean') {
+          this.cfg.payFromLife = saved.payFromLife;
+          this.opts.persist?.({ payFromLife: saved.payFromLife });
+          this.log?.info(`沿用你之前选好的「旅行花她的钱」设置（${saved.payFromLife ? '开启' : '关闭'}）。`);
+          return;
+        }
+      }
+    } catch { /* ignore broken prefs file */ }
+    const fallback = Boolean(this.cfg.payFromLife);
+    this.savePayFromLifePref(fallback);
+    this.opts.persist?.({ payFromLife: fallback });
+  }
+
+  private warnIfPayFromLifeBlocked(): void {
+    if (!this.cfg.moneyEnabled && this.cfg.payFromLife && this.lifeAllowance() !== null) {
+      if (!this.moneyDisabledWarned) {
+        this.moneyDisabledWarned = true;
+        this.log?.warn('已开启「旅行花她的钱」，但「记花销」当前为关闭状态，所以预算上限与模拟鱼生扣款尚未生效；如需按余额约束并扣费，请在设置中同时打开「记花销」。');
+      }
+    } else if (this.cfg.moneyEnabled) {
+      this.moneyDisabledWarned = false;
+    }
+  }
+
   private localClock(at: Date, city: City): string {
     const m = localMoment(at, city.tz);
     return `${m.dateKey} ${fmtHour(m.decimal)}`;
@@ -3741,6 +3940,7 @@ export class JourneyWorld implements World {
           return this.giveUpPledge(this.worldNow(), a.reason ?? '');
         },
       },
+      ...createPromptEditorTools(this.promptEditor),
     ];
   }
 

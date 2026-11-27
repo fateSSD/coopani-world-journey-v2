@@ -157,6 +157,7 @@ export interface UiSnapshot {
     readonly budget: number;
     readonly moneyOn: boolean;
     readonly payFromLife?: boolean;
+    readonly hasLife?: boolean;
   };
   /** 出发地认不出来时的说明。 = 正常。 */
   readonly homeProblem: string | null;

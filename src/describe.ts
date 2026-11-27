@@ -3,6 +3,7 @@
  *
  * 从 world.ts 拆出，由 world.ts 重导出；describe.json 由本文件唯一生成。
  */
+import { PROMPT_EDITOR_TOOL_DECLS } from './prompt-editor.ts';
 
 export const TOOL_DECLS = [
   {
@@ -471,6 +472,7 @@ export const TOOL_DECLS = [
     tags: ['write'] as const,
     summary: { zh: '取消苦等的碰面约定，留在原地停止等待。', en: 'Stop waiting and cancel the pending meet-up.' },
   },
+  ...PROMPT_EDITOR_TOOL_DECLS,
 ] as const;
 
 /** 给市场卡片和诊断看的全量清单。`events` 必须与源码里 push 的类型一一对应。 */

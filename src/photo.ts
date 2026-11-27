@@ -760,9 +760,11 @@ function foodPrompt(scene: PhotoScene): string {
     : fsun.phase === 'night' ? '窗外黑着，玻璃上映着屋里的灯'
       : fsun.phase === 'twilight' || fsun.phase === 'blue' ? '窗外已经很暗，玻璃上只有屋里的影子'
         : fsun.phase === 'afterglow' || fsun.phase === 'golden' ? '窗外还剩一点光，玻璃上是暗的'
-          : winter && cold ? '窗玻璃上结着一层水汽，外面是白的'
-            : summer ? '窗开着，外面亮得刺眼'
-              : '窗外亮着，玻璃上什么也没有';
+          : fsun.phase === 'low'
+            ? (winter && cold ? '窗玻璃上结着一层水汽，外面是白的' : summer ? '窗开着，外面亮得刺眼' : '窗外亮着，玻璃上什么也没有')
+            : winter && cold ? '窗玻璃有水汽，外面大白天路灯未亮'
+              : summer ? '窗开着，外面大白天亮得刺眼，路灯未亮'
+                : '窗外大白天街景，路灯未亮';
 
   /*
    * 食物是室内，光只有一件事：从窗进来，还是靠一盏灯。
@@ -1547,8 +1549,16 @@ export function lightLine(input: LightInput): string {
   }
 
   if (indoor) {
-    if (phase === 'noon' || phase === 'day') return '光从窗子斜进来，桌上有一块亮';
-    if (phase === 'slant' || phase === 'low') return '窗光斜进来，桌面上一块暖色';
+    if (phase === 'noon' || phase === 'day' || phase === 'slant') {
+      return overcast
+        ? '大白天明亮天光，屋里清亮不开暖灯'
+        : '大白天明亮白色日光，屋里不开暖灯';
+    }
+    if (phase === 'low') {
+      return overcast
+        ? '窗外天光偏平微暗，屋里光线柔和'
+        : '太阳偏低，窗外斜照进柔和日光，屋里仍属白天';
+    }
     if (phase === 'golden' || phase === 'afterglow') return '屋里已经偏暗，只有靠窗那一块还亮着';
     return '一盏暖黄的灯从上方罩下来，桌面反光';
   }
@@ -1975,7 +1985,11 @@ function minimalPrompt(scene: PhotoScene): string {
   const weather = (scene.weather ?? '').trim();
   const msun = sceneSun(scene);
   const part = minimalLightPart(scene.hour, msun);
-  const light = [weather, part].filter(Boolean).join('，');
+  const brightDaylight = !msun.whiteNight && (msun.phase === 'noon' || msun.phase === 'day' || msun.phase === 'slant');
+  const dayGuard = brightDaylight && subject === 'food'
+    ? '窗外白天明亮、路灯未亮，屋里不开暖灯'
+    : '';
+  const light = [weather, part, dayGuard].filter(Boolean).join('，');
 
   const describe = cleanPhotoText(scene.describe, 4, 120).replace(/。+$/, '');
   const focus = cleanPhotoText(scene.focus, 2, 40).replace(/。+$/, '');

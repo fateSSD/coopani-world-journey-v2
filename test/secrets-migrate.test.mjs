@@ -93,3 +93,35 @@ test('启动后：已经在 .env 里的，只清配置不再重写', async () =>
   assert.deepEqual(b.patches, [{ amapKey: '' }]);
   b.world.stop?.();
 });
+
+test('面板修改生图密钥：.env 已有旧密钥时立即覆写新密钥并清空 cfg 明文，且剥离 Bearer 前缀/拒收空白', async () => {
+  const b = boot();
+  b.env[IMAGE_KEY_NAME] = 'old-key-111';
+  await b.world.start(fakeHost());
+  assert.equal(b.world.imageKey(), 'old-key-111');
+
+  b.world.saveImageSettings({ imageKey: 'Bearer new-key-222' });
+  assert.equal(b.env[IMAGE_KEY_NAME], 'new-key-222', 'saveImageSettings 应立即覆写 .env');
+  assert.equal(b.cfg.imageKey, '', '覆写进 .env 后配置项应被清空');
+  assert.equal(b.world.imageKey(), 'new-key-222', '无需重启 imageKey() 即刻返回新密钥');
+
+  // 保存其他字段不传 imageKey 时保留现有 .env 密钥
+  b.world.saveImageSettings({ imageModel: 'doubao-seedream-5-5-261028' });
+  assert.equal(b.env[IMAGE_KEY_NAME], 'new-key-222');
+
+  // 含非法空白字符直接拒绝
+  assert.throws(() => b.world.saveImageSettings({ imageKey: 'bad key with space' }), /不能包含空格或换行/);
+  b.world.stop?.();
+});
+
+test('试挂载或 .env 不可写时修改生图密钥：imageKey() 必须优先读新配置而非旧 .env', async () => {
+  const b = boot({ refuse: true });
+  b.env[IMAGE_KEY_NAME] = 'old-key-111';
+  await b.world.start(fakeHost());
+
+  b.world.saveImageSettings({ imageKey: 'new-key-333' });
+  assert.equal(b.env[IMAGE_KEY_NAME], 'old-key-111', 'refuse=true 模拟写不进 .env');
+  assert.equal(b.cfg.imageKey, 'new-key-333', '写不进 .env 时保留 cfg 里的新密钥');
+  assert.equal(b.world.imageKey(), 'new-key-333', '读取时新配置必须优先于旧 .env');
+  b.world.stop?.();
+});
