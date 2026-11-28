@@ -85,7 +85,7 @@ function startMockHub(opts = {}) {
         res.end(JSON.stringify(payload));
       };
 
-      if (typeof opts.custom === 'function' && opts.custom({ method, path, body, state, send })) {
+      if (typeof opts.custom === 'function' && opts.custom({ method, path, req, body, state, send })) {
         return;
       }
 
@@ -812,5 +812,71 @@ test('Journey P2 回归：冷启动跨扩展锁与运行期 401/403 亮「总服
     await mockP2.close();
     rmSync(dirLock, { recursive: true, force: true });
     rmSync(dirWorld, { recursive: true, force: true });
+  }
+});
+
+test('ensureHubAuth 首注超时丢包后复用 coopanion-hub-claim.json 原地恢复并清理占位文件', async () => {
+  const dir = mkDir();
+  const seenSecrets = [];
+  let savedSecret = '';
+  let callNum = 0;
+  const mockTimeout = await startMockHub({
+    custom: ({ method, path, req, body, send }) => {
+      if (path === '/v1/core/pets/register' && method === 'POST') {
+        callNum += 1;
+        const sec = String(body.claimSecret || '');
+        seenSecrets.push({ sec, idem: req.headers['idempotency-key'] });
+        if (callNum === 1) {
+          savedSecret = sec;
+          setTimeout(() => {
+            try {
+              send(201, { ok: true, data: { petId: 'pet_journey_orphan', displayName: '鲸鲸', legacyUid: body.legacyUid, token: 'chub_lost_j1' } });
+            } catch { /* socket closed */ }
+          }, 220);
+          return true;
+        }
+        if (savedSecret && sec === savedSecret && req.headers['idempotency-key'] === savedSecret) {
+          send(201, {
+            ok: true,
+            data: { petId: 'pet_journey_orphan', displayName: '鲸鲸', legacyUid: body.legacyUid, token: 'chub_recovered_j2', recovered: true },
+          });
+        } else {
+          send(409, { ok: false, error: { code: 'LEGACY_UID_CLAIMED', message: '已被认领' } });
+        }
+        return true;
+      }
+      return false;
+    },
+  });
+
+  try {
+    writeFileSync(join(dir, 'meet-uid.txt'), 'b71eff6672eb82b91c8c9d83\n', 'utf8');
+    const r1 = await ensureHubAuth({
+      hubUrl: mockTimeout.url,
+      dataDir: dir,
+      displayName: '鲸鲸',
+      timeoutMs: 60,
+    });
+    assert.equal(r1.ok, false);
+    assert.equal(r1.code, 'TIMEOUT');
+    const claimPath = join(dir, 'coopanion-hub-claim.json');
+    assert.equal(existsSync(claimPath), true, '首注超时后应保留 coopanion-hub-claim.json');
+
+    const r2 = await ensureHubAuth({
+      hubUrl: mockTimeout.url,
+      dataDir: dir,
+      displayName: '鲸鲸',
+      timeoutMs: 2000,
+    });
+    assert.equal(r2.ok, true);
+    assert.equal(r2.auth?.petId, 'pet_journey_orphan');
+    assert.equal(r2.auth?.token, 'chub_recovered_j2');
+    assert.equal(seenSecrets.length, 2);
+    assert.equal(seenSecrets[1].sec, seenSecrets[0].sec);
+    assert.equal(seenSecrets[1].idem, seenSecrets[0].sec);
+    assert.equal(existsSync(claimPath), false, '落盘成功后应清理 coopanion-hub-claim.json');
+  } finally {
+    await mockTimeout.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

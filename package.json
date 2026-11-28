@@ -1,6 +1,6 @@
 {
   "name": "coopani-world-journey",
-  "version": "2.13.0",
+  "version": "2.13.1",
   "type": "module",
   "description": "大肥鱼环游世界 · 194 座真城市旅行体验，集成 Hub v1.2 多城总服、多模型生图提示词编辑器（原作者 frost77r）、旅费双开关持久化记忆与昼夜生图光线校准，与模拟鱼生账本双向联动。（需 Coopani 0.2.22+｜QQ 群 284525159）",
   "author": {

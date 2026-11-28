@@ -1,5 +1,12 @@
 # 更新日志
 
+## 2.13.1 — 2026-11-28（Hub v1 注册幂等自愈与超时加固）
+
+- **Hub v1 首次注册超时丢包幂等自愈**（`src/hub-client.ts`、`test/hub-v1.test.mjs`）：
+  - 将 `POST /v1/core/pets/register` 请求超时由 `5000ms` 放宽至 `15000ms`，降低跨境链路首次认领时超时断链的风险。
+  - 新增 `<dataDir>/coopanion-hub-claim.json`（24 小时 TTL、原子写）持久化当次 `claimSecret`，随注册请求体 `claimSecret` 与请求头 `Idempotency-Key` 一并上送，配合 Hub 总服在响应超时/丢包形成未使用孤儿账号（`last_used_at IS NULL`）时完成原位认领自愈；仅在 `coopanion-hub-auth.json` 原子写盘成功或并发自愈成功后清理待认领文件。
+  - `test/hub-v1.test.mjs` 新增「注册响应超时丢包 → 重试凭同 `claimSecret` 原位找回凭证」回归用例。
+
 ## 2.13.0 — 2026-11-28（游轮与景区特色体验扩容 + 凌晨到站当晚入住 + 双开驾照与生病静养真时钟联动 + 审计全量修复）
 
 - **景区特色体验与城市夜游扩容**（`src/plan/leisure.ts`、`src/photo.ts`、`test/leisure.test.mjs`、`test/night-ride.test.mjs`）：
