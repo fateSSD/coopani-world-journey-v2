@@ -174,6 +174,8 @@ export class JourneyWorld implements World {
 
   /** 首页卡的读取缓存。`ride-live.json` 一秒内问几次都只读一次盘（面板轮询很密）。 */
   private liveCache: { at: number; value: LiveRide | null } = { at: 0, value: null };
+  /** 城镇出行倍率读取缓存（按 mtimeNs + size 失效，免去 fareOf 选城/选载具循环高频同步 readFile）。 */
+  private lifeFareMultCache: { mtimeNs: bigint; size: bigint; updMs: number; value: number } | null = null;
 
   private readonly store: StateStore;
 

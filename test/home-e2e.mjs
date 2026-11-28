@@ -660,8 +660,8 @@ test('票价上限：买不起的那张票直接不给，别让它把预算打�
    * 2026-11-03 改：飞机按国内经济舱算（0.4 元/公里），不再按全价票的 1.5。
    * Mr.Q 给的真实数字是「兰州飞三亚淡季 800/900」，两千公里八百块上下。
    */
-  assert.equal(near({ id: 'plane' }), true, '三百公里机票一百二，余钱一半是五百，买得起');
-  assert.equal(world.affordMode(1500)({ id: 'plane' }), false, '一千五百公里机票六百，超了五百的上限');
+  assert.equal(near({ id: 'plane' }), true, '三百公里机票九十六，余钱一半是五百，买得起');
+  assert.equal(world.affordMode(2000)({ id: 'plane' }), false, '两千公里机票六百四，超了五百的上限');
 
   // 没记账 / 预算 0：不限制
   const off = makeWorld(seed({ phase: 'home', hereId: 'lanzhou', homeId: 'lanzhou' }), { moneyEnabled: false, budget: 3000 });

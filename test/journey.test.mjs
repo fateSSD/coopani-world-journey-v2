@@ -287,8 +287,8 @@ test('酒店概率：普通六成、景观三成半、高档零头、小破店�
     else dingy++;
   }
   const pb = budget / N; const pv = view / N; const pl = luxury / N; const pd = dingy / N;
-  assert.ok(pb > 0.56 && pb < 0.64, `普通房 ${(pb * 100).toFixed(1)}%`);
-  assert.ok(pv > 0.32 && pv < 0.40, `景观房 ${(pv * 100).toFixed(1)}%`);
+  assert.ok(pb > 0.66 && pb < 0.75, `普通房 ${(pb * 100).toFixed(1)}%`);
+  assert.ok(pv > 0.21 && pv < 0.29, `景观房 ${(pv * 100).toFixed(1)}%`);
   assert.ok(pl > 0.02 && pl < 0.07, `高档 ${(pl * 100).toFixed(1)}%，太少见不着、太多就不像过日子`);
   assert.ok(pd > 0 && pd < 0.01, `小破店 ${(pd * 100).toFixed(2)}%，要么没有要么超了 1%`);
 });
@@ -1703,11 +1703,11 @@ test('住宿价格要跟着城市走，别让纽约和天水一个价', () => {
   assert.ok(view('newyork') > view('tokyo'), '纽约该比东京贵');
   assert.ok(view('tokyo') > view('chengdu'), '东京该比成都贵');
   assert.ok(view('chengdu') > view('tianshui'), '成都该比天水贵');
-  // 量级跟实测对得上（容差 25%：这个数只用来定量级，不需要精确）
-  assert.ok(Math.abs(view('newyork') - 8656) / 8656 < 0.25, `纽约 ${view('newyork')} 离实测 8656 太远`);
-  assert.ok(Math.abs(view('tianshui') - 437) / 437 < 0.25, `天水 ${view('tianshui')} 离实测 437 太远`);
-  // 不传系数时保持老行为（老测试和没城市上下文的地方靠这个）
-  assert.equal(rollLodging(() => 0.8, false).price, 750);
+  // 量级跟再平衡后口径对得上（容差 25%）
+  assert.ok(Math.abs(view('newyork') - 6220) / 6220 < 0.25, `纽约 ${view('newyork')} 离预期 6220 太远`);
+  assert.ok(Math.abs(view('tianshui') - 310) / 310 < 0.25, `天水 ${view('tianshui')} 离预期 310 太远`);
+  // 不传系数时保持池内基准价格
+  assert.equal(rollLodging(() => 0.8, false).price, 560);
 });
 
 test('提示词：不许把她写成一条鱼', () => {

@@ -126,7 +126,7 @@ export function spotRideOptions(spot: string, ctx?: SpotRideContext): readonly R
       out.push({
         how: 'sedan',
         label: '滑竿',
-        price: 260,
+        price: 150,
         text: '坐了一段滑竿，两位师傅前后步调极稳，上陡坡比走路还平顺',
       });
     }
@@ -149,7 +149,7 @@ export function spotRideOptions(spot: string, ctx?: SpotRideContext): readonly R
     out.push({
       how: 'cabrio-cableway',
       label: '敞篷双层缆车',
-      price: 180,
+      price: 120,
       text: '踏上敞篷双层缆车的二层露天观景甲板，清冽山风迎面拂过，脚下云海与山脊缓缓铺开',
     });
   }
@@ -158,7 +158,7 @@ export function spotRideOptions(spot: string, ctx?: SpotRideContext): readonly R
     out.push({
       how: 'mountain-train',
       label: '登山齿轨小火车',
-      price: 120,
+      price: 80,
       text: '坐进登山齿轨小火车的木窗车厢，伴着轮轨咔嗒声慢悠悠穿过林海与弯道往山上爬升',
     });
   }
@@ -172,7 +172,7 @@ export function spotRideOptions(spot: string, ctx?: SpotRideContext): readonly R
     out.push({
       how: 'balloon',
       label: '高空热气球',
-      price: 280,
+      price: 180,
       text: '乘着高空热气球随风缓缓升空，俯瞰脚下的%s与远处天际，整片地貌一下子铺展在眼前',
     });
   }

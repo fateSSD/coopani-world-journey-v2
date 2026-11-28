@@ -46,15 +46,14 @@ function near(got, real, tol, label) {
 
 /* ---------------------------------------------------------------- 住宿 */
 
-test('高档：一线城市的中位价对齐实采五星（北京 1606 / 上海 1620）', () => {
-  near(sample('beijing').luxury, 1606, 0.2, '北京高档');
-  near(sample('shanghai').luxury, 1620, 0.2, '上海高档');
+test('高档：一线城市再平衡后中位对齐约 75%', () => {
+  near(sample('beijing').luxury, 1200, 0.2, '北京高档');
+  near(sample('shanghai').luxury, 1215, 0.2, '上海高档');
 });
 
-test('普通档：基准上调后，一线和低线城市都对得上', () => {
-  /* 原来整体偏低两成（北京 320 对 400、天水 90 对 115），两边同向 —— 说明是基准错。 */
-  near(sample('beijing').budget, 400, 0.2, '北京普通档');
-  near(sample('tianshui').budget, 115, 0.2, '天水普通档');
+test('普通档：再平衡下调后，一线和低线城市都对得上', () => {
+  near(sample('beijing').budget, 310, 0.2, '北京普通档');
+  near(sample('tianshui').budget, 90, 0.2, '天水普通档');
 });
 
 test('小破店有价格地板：任何城市都不出现两位数', () => {
@@ -119,17 +118,15 @@ test('城际价差的方向不能反：一线 > 省会 > 低线', () => {
 
 /* ---------------------------------------------------------------- 票价 */
 
-test('铁路短途：高铁二等座约 0.42 元/公里', () => {
-  /* 沪杭 169km/73 元、成都→西安 658km/263–285 元、兰州→西安 496km/184 元 */
-  near(Math.round(169 * trainUnit(169)), 73, 0.15, '上海→杭州');
-  near(Math.round(658 * trainUnit(658)), 274, 0.15, '成都→西安');
-  near(Math.round(496 * trainUnit(496)), 184, 0.2, '兰州→西安');
+test('铁路短途：高铁二等座下调约两成至 0.34 元/公里', () => {
+  near(Math.round(169 * trainUnit(169)), 57, 0.15, '上海→杭州');
+  near(Math.round(658 * trainUnit(658)), 224, 0.15, '成都→西安');
+  near(Math.round(496 * trainUnit(496)), 169, 0.2, '兰州→西安');
 });
 
-test('铁路长途：卧铺约 0.21 元/公里 —— 原来按高铁单价算，贵了两倍半', () => {
-  /* 北京西→兰州 1650km，Z 字头硬卧 322–363 元。 */
-  near(Math.round(1650 * trainUnit(1650)), 342, 0.15, '北京→兰州');
-  near(Math.round(2300 * trainUnit(2300)), 480, 0.2, '广州→北京');
+test('铁路长途：卧铺下调至约 0.17 元/公里', () => {
+  near(Math.round(1650 * trainUnit(1650)), 281, 0.15, '北京→兰州');
+  near(Math.round(2300 * trainUnit(2300)), 391, 0.2, '广州→北京');
 });
 
 test('铁路单价随距离只降不升，且一千公里附近没有断崖', () => {
@@ -170,5 +167,5 @@ test('跨洲机票：兰州→纽约量级约 7000 元，不再按 0.9 元/公�
   const lz = cityById('lanzhou');
   const ny = cityById('newyork');
   const fare = Math.round(w.cheapestFare(11000, true, { from: lz, to: ny }));
-  near(fare, 7000, 0.1, '兰州→纽约跨洲机票');
+  near(fare, 5640, 0.1, '兰州→纽约跨洲机票');
 });

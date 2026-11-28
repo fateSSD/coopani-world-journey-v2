@@ -286,21 +286,21 @@ export const NOW_TAIL = '（这些是事实，你自己心里有数就行 ——
  * 见 `fareOf()` 里的分段算法。
  */
 export const FARE_PER_KM: Record<ModeId, number> = {
-  walk: 0, bike: 0, scooter: 0.1, motorcycle: 0.3,
-  car: 0.8, bus: 0.33,
+  walk: 0, bike: 0, scooter: 0.08, motorcycle: 0.24,
+  car: 0.64, bus: 0.26,
   /** 火车走 `trainUnit(km)` 分段算，这一项只是兜底，不会实际用到。 */
-  train: 0.42,
-  ship: 0.7,
+  train: 0.34,
+  ship: 0.56,
   /** 飞机正常走 `fareOf()` 的分段公式，这里只是兜底，不会实际用到。 */
-  plane: 0.4,
+  plane: 0.32,
 };
 
 /* 铁路单价的上下两端（元/公里），依据见 `FARE_PER_KM` 上面那张表。 */
-export const TRAIN_FAST = 0.42;
-export const TRAIN_SLOW = 0.21;
+export const TRAIN_FAST = 0.34;
+export const TRAIN_SLOW = 0.17;
 
 /** 一天三顿的大致开销。 */
-export const MEALS_PER_DAY = 95;
+export const MEALS_PER_DAY = 65;
 /*
  * 租车的日租金不在这里了 —— 2026-11-07 起分三档，表在 `plan/dayplan.ts` 的 `CAR_TIERS`。
  * 价格和油耗必须共用一份：分开写两份，迟早出现「租金按经济型收、油耗按豪华型算」。

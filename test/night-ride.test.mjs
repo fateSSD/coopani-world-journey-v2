@@ -338,7 +338,7 @@ test('三期端到端：journey_spot_ride（热气球/敞篷缆车/齿轨）与 
       const before = world.st.spent;
       const out = await tool(world, 'journey_spot_ride').handler({ how: 'balloon' });
       assert.ok(!out.isError, out.text);
-      assert.equal(world.st.spent - before, 280);
+      assert.equal(world.st.spent - before, 180);
       assert.ok(world.plan.beats.some((b) => /热气球/.test(b.what)));
       const effects = readPendingMoodlets(world.opts.dataDir);
       assert.ok(effects.some((x) => x.amount === 0 && /热气球/.test(x.moodlet?.text || '') && x.vitalsDelta?.fun === 24));

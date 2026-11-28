@@ -288,7 +288,7 @@ test('三期：景区新增高空热气球、敞篷双层缆车、登山齿轨�
 
   // 1) 高空热气球：喀斯特/丹霞/草原晴天可选、雨天屏蔽、城里街巷与鸣沙山屏蔽
   const glDry = spotRideOptions('漓江', { city: guilin, wet: false });
-  assert.ok(glDry.some((o) => o.how === 'balloon' && o.price === 280), '桂林漓江晴天应可选高空热气球');
+  assert.ok(glDry.some((o) => o.how === 'balloon' && o.price === 180), '桂林漓江晴天应可选高空热气球');
   const glWet = spotRideOptions('漓江', { city: guilin, wet: true });
   assert.equal(glWet.some((o) => o.how === 'balloon'), false, '雨天应屏蔽热气球');
   assert.equal(spotRideOptions('西街', { city: guilin, wet: false }).some((o) => o.how === 'balloon'), false, '老街街区不出热气球');
@@ -303,11 +303,11 @@ test('三期：景区新增高空热气球、敞篷双层缆车、登山齿轨�
   assert.match(balloonShot, /高空热气球吊篮俯拍视角/);
 
   // 2) 敞篷双层缆车：高海拔/雪山景区触发
-  assert.ok(spotRideOptions('玉龙雪山', { city: lijiang, wet: false }).some((o) => o.how === 'cabrio-cableway' && o.price === 180));
+  assert.ok(spotRideOptions('玉龙雪山', { city: lijiang, wet: false }).some((o) => o.how === 'cabrio-cableway' && o.price === 120));
   assert.equal(spotRideOptions('城南公园', { city: sh, wet: false }).some((o) => o.how === 'cabrio-cableway'), false);
 
   // 3) 登山齿轨小火车：森林/古道/高山特色山地景区触发，普通公园不触发
-  assert.ok(spotRideOptions('国家森林公园', { city: zjj, wet: false }).some((o) => o.how === 'mountain-train' && o.price === 120));
+  assert.ok(spotRideOptions('国家森林公园', { city: zjj, wet: false }).some((o) => o.how === 'mountain-train' && o.price === 80));
   assert.ok(spotRideOptions('阿里山森林游乐区', { wet: false }).some((o) => o.how === 'mountain-train'));
   assert.equal(spotRideOptions('城南公园', { wet: false }).some((o) => o.how === 'mountain-train'), false);
 

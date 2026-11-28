@@ -494,38 +494,20 @@ export const purseMethods: Record<string, any> = {
    * 而实际洲际机票要六七千。三千公里以内按国内经济舱算，往上逐段加价。
    */
   fareOf(modeId: string, km: number, crossBorder = false, seatMult = 1): number {
-    /*
-     * `seatMult` 是座位档的倍数（二等 1 / 一等 1.6 / 商务 3.5 / 公务舱 2.8……）。
-     * **默认 1 = 最低档**，所以「买不买得起」（`canAffordTrip`）那条老路径不用改：
-     * 它问的是「最省能不能走」，那本来就该按最低档算。
-     */
+    const fareMult = this.readLifeTravelFareMult();
+    const round2 = (n: number) => Math.round(n * 100) / 100;
     if (modeId === 'plane') {
-      /*
-       * 国内经济舱 0.4 元/公里，跨国贵一截。
-       *
-       * 2026-11-03 模拟抓到的：不分国内国际的话，兰州飞大阪 2600 公里只要 1040 块，
-       * 比现实便宜一半 —— 她于是动不动就飞出去，预算 3000 的人 48 天花掉四万七。
-       *
-       * 2026-11-21 Mr.Q 实查跨洲机票约 7000 元（兰州 → 纽约 ~11000km）：
-       * 3000km 处接上 3000 × 0.85 = 2550，往后按 0.56 元/公里递加（11000km ≈ 7030 元）。
-       */
-      const per = crossBorder ? 0.85 : 0.4;
-      const base = crossBorder ? 2550 : 1200;
-      const tailPer = crossBorder ? 0.56 : 0.9;
-      return (km <= 3000 ? km * per : base + (km - 3000) * tailPer) * seatMult;
+      const per = crossBorder ? 0.68 : 0.32;
+      const base = crossBorder ? 2040 : 960;
+      const tailPer = crossBorder ? 0.45 : 0.72;
+      return round2((km <= 3000 ? km * per : base + (km - 3000) * tailPer) * seatMult * fareMult);
     }
-    /*
-     * 铁路与水路分段算：
-     * - 铁路（2026-11-08）：短途高铁、长途卧铺，单价差一倍。
-     * - 水路：300km 内短渡 0.7 元/km，超出部分按 0.35 元/km 递加，
-     *   避免中长途船票按平价翻倍后把主题远洋游轮（3.2x）挤出普通预算。
-     */
-    if (modeId === 'train') return km * trainUnit(km) * seatMult;
+    if (modeId === 'train') return round2(km * trainUnit(km) * seatMult * fareMult);
     if (modeId === 'ship') {
-      const base = km <= 300 ? km * 0.7 : 210 + (km - 300) * 0.35;
-      return base * seatMult;
+      const base = km <= 300 ? km * 0.56 : 168 + (km - 300) * 0.28;
+      return round2(base * seatMult * fareMult);
     }
-    return km * (FARE_PER_KM[modeId as ModeId] ?? 0) * seatMult;
+    return round2(km * (FARE_PER_KM[modeId as ModeId] ?? 0) * seatMult * fareMult);
   },
 
   /**
@@ -669,6 +651,33 @@ export const purseMethods: Record<string, any> = {
   effectiveHasLicense(): boolean {
     if (this.hasLifeInstalled()) return this.readLifeHasLicense();
     return Boolean(this.cfg.hasLicense);
+  },
+
+  /** 读取「模拟鱼生」当前城镇的旅费倍率（townBuffs.travelFareMult），24h 内有效，按 mtimeNs + size 缓存，默认 1。 */
+  readLifeTravelFareMult(): number {
+    const nowMs = this.realNow().getTime();
+    const file = join(this.opts.dataDir, 'life-public.json');
+    try {
+      const st = statSync(file, { bigint: true });
+      const cached = this.lifeFareMultCache;
+      if (cached && cached.mtimeNs === st.mtimeNs && cached.size === st.size) {
+        if (!Number.isFinite(cached.updMs) || Math.abs(nowMs - cached.updMs) > 24 * 3_600_000) return 1;
+        return cached.value;
+      }
+      const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+        updatedAt?: unknown;
+        townBuffs?: { travelFareMult?: unknown };
+      };
+      const upd = Date.parse(String(raw?.updatedAt ?? ''));
+      const val = Number(raw?.townBuffs?.travelFareMult);
+      const clamped = Number.isFinite(val) && val > 0 ? Math.max(0.6, Math.min(1.5, val)) : 1;
+      this.lifeFareMultCache = { mtimeNs: st.mtimeNs, size: st.size, updMs: upd, value: clamped };
+      if (!Number.isFinite(upd) || Math.abs(nowMs - upd) > 24 * 3_600_000) return 1;
+      return clamped;
+    } catch {
+      this.lifeFareMultCache = null;
+      return 1;
+    }
   },
 
 

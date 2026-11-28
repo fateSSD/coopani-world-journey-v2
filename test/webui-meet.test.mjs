@@ -28,11 +28,11 @@ test('面板里有碰面那块，地址指向作者的服务器', () => {
 test('只在没配服务器时出现', () => {
   // 配过之后还显示，就成了每次打开都要读一遍的说明书。
   const block = js.slice(js.indexOf('meetBox.replaceChildren()'), js.indexOf('meetBox.replaceChildren()') + 120);
-  assert.match(block, /if \(!s\.social\)/, `条件不对：${block.slice(0, 80)}`);
+  assert.match(block, /if \(!s\.hubConfigured && !s\.social\)/, `条件不对：${block.slice(0, 80)}`);
 });
 
 test('中英文案都齐（漏一个就是 undefined 上屏）', () => {
-  for (const key of ['meetTitle', 'meetLead', 'meetHint', 'meetCopy']) {
+  for (const key of ['meetTitle', 'meetLead', 'meetHint', 'meetCopy', 'meetFill', 'meetFilling', 'meetFilled', 'meetFillErr']) {
     const hits = js.split(new RegExp(`${key}:`, 'g')).length - 1;
     assert.equal(hits, 2, `${key} 只出现了 ${hits} 次（应该中英各一）`);
   }

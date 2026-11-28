@@ -53,7 +53,7 @@ test('价格量级对得上当地实价：柏林不是五十块一晚', () => {
   for (let i = 0; i < 200; i++) prices.push(rollLodging(rnd, false, 2.0, false, true).price);
   const lo = Math.min(...prices);
   const hi = Math.max(...prices);
-  assert.ok(lo >= 100, `柏林最低 ${lo} 元 —— 比青旅还便宜，不对劲`);
+  assert.ok(lo >= 85, `柏林最低 ${lo} 元 —— 低于差店地板 85`);
   assert.ok(hi <= 3200, `柏林最高 ${hi} 元 —— 池子里最贵的是老牌大酒店，不该过三千二`);
 });
 

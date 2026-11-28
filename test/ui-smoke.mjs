@@ -995,3 +995,39 @@ test('前端产物：双开关提示 —— 仅开「旅行花她的钱」未开
     assert.match(activeRoot.text, /花她自己的钱（已生效）/);
   } finally { restore(); }
 });
+
+test('前端产物：未配置总服时 meetBox 展示完整 https 地址并可点击「一键填入总服」', async () => {
+  const restore = installDom();
+  try {
+    const bundle = (await import(`../dist/webui.js?fillbtn=${Date.now()}`)).default;
+    const root = new FakeNode('div');
+    const setConfigCalls = [];
+    const ctx = makeCtx(root, async () => ({
+      ...snapshot,
+      guideSeen: true,
+      hubConfigured: false,
+      hubRecommendedUrl: 'https://hub.cooppetsjourney.top',
+      social: null,
+    }));
+    ctx.setConfig = async (grp, vals) => { setConfigCalls.push({ grp, vals }); return ''; };
+    await bundle.panels.now.mount(ctx);
+
+    const urlSpan = root.find((n) => String(n.className).split(' ').includes('jr-meet-url'));
+    assert.ok(urlSpan && urlSpan.text === 'https://hub.cooppetsjourney.top', '应展示完整 https 总服地址');
+
+    const copyBtn = root.all((n) => n.tagName === 'BUTTON' && n.textContent === '复制地址')[0];
+    assert.ok(copyBtn, '应有复制地址按钮');
+    globalThis.__copied = '';
+    copyBtn.handlers.click[0]();
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(globalThis.__copied, 'https://hub.cooppetsjourney.top');
+
+    const fillBtn = root.all((n) => n.tagName === 'BUTTON' && n.textContent === '一键填入总服')[0];
+    assert.ok(fillBtn, '应有一键填入总服按钮');
+    fillBtn.handlers.click[0]();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(setConfigCalls.length, 1);
+    assert.equal(setConfigCalls[0].grp, 'journey.life');
+    assert.equal(setConfigCalls[0].vals['worlds.journey.hubUrl'], 'https://hub.cooppetsjourney.top');
+  } finally { restore(); }
+});

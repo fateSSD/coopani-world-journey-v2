@@ -1,5 +1,15 @@
 # 更新日志
 
+## 2.14.0 — 2026-11-28（经济再平衡 + 城镇出行折扣联动 + 总服一键填入）
+
+- **出行、餐饮、住宿与景区体验经济再平衡**（`src/constants.ts`、`src/world-purse.ts`、`src/plan/lodging.ts`、`src/plan/leisure.ts`）：
+  - 下调长途与市内交通公里费率约 20%（含 `TRAIN_FAST=0.34`、`TRAIN_SLOW=0.17` 与飞机/轮船分段系数），`MEALS_PER_DAY` 由 `95` 调为 `65`。
+  - 国内外各档住宿价格下调约 20–25%，`abroadFactor` 整体乘 `0.75`，普通与宽裕档景观房抽中权重下调至 25%；下调景区高空热气球、滑竿、敞篷双层缆车与登山齿轨小火车票价。
+- **城镇出行倍率 Buff 联动与缓存**（`src/world.ts`、`src/world-purse.ts`）：
+  - `fareOf()` 读取并应用 `life-public.json.townBuffs.travelFareMult`（钳制 `[0.6, 1.5]`，24 小时心跳校验），并通过 `mtimeNs + size` 内存缓存消除选城/选载具循环中的高频同步读盘。
+- **总服地址完整展示与「一键填入总服」**（`src/world-webui.ts`、`dist/webui.js`、`package.json`）：
+  - 首页 `meetBox` 在未配置总服时展示完整 `https://hub.cooppetsjourney.top`，保留「复制地址」并新增「一键填入总服」按钮（调 `ctx.setConfig('journey.life', { 'worlds.journey.hubUrl': ... })` 热生效）。
+
 ## 2.13.1 — 2026-11-28（Hub v1 注册幂等自愈与超时加固）
 
 - **Hub v1 首次注册超时丢包幂等自愈**（`src/hub-client.ts`、`test/hub-v1.test.mjs`）：

@@ -84,6 +84,10 @@ const TEXT = {
     meetLead: '填一个公共地址，她到站会看一眼这一带还有谁；想找人一起走，跟她说一声就行。',
     meetHint: '下面这个是我这边一直开着的，填进设置里的「Hub 总服地址」就能用（老服兼容地址也继续支持）：',
     meetCopy: '复制地址',
+    meetFill: '一键填入总服',
+    meetFilling: '写入中…',
+    meetFilled: '已填入 ✓',
+    meetFillErr: '当前宿主不支持一键写入，请先点「复制地址」后去设置页粘贴',
     nearbyNone: '这段时间没别人',
     nearbyWas: '今天来过 {n} 只，这会儿没碰上',
     nearbyOffline: '碰面服务器没连上',
@@ -334,6 +338,10 @@ const TEXT = {
     meetLead: 'Add a public server and she will see who is around when she arrives; to travel together, just tell her.',
     meetHint: 'This one is always on — paste it into the "Hub URL" setting (legacy meet URL also supported):',
     meetCopy: 'Copy address',
+    meetFill: 'Fill hub URL',
+    meetFilling: 'Saving…',
+    meetFilled: 'Saved ✓',
+    meetFillErr: 'One-click fill unsupported here — copy and paste in Settings',
     nearbyNone: 'nobody else right now',
     nearbyWas: '{n} passed through today, none around now',
     nearbyOffline: 'meet server unreachable',
@@ -1379,13 +1387,13 @@ export default {
            * 配过之后就不显示了：那时她要的是「现在有几只」，不是再读一遍说明书。
            */
           meetBox.replaceChildren();
-          if (!s.social) {
+          if (!s.hubConfigured && !s.social) {
             meetBox.append(el('h2', 'jr-next-title', T.meetTitle));
             meetBox.append(el('p', 'jr-meet-lead', T.meetLead));
             meetBox.append(el('p', 'jr-meet-hint', T.meetHint));
             const addr = el('div', 'jr-meet-addr');
-            const url = 'https://hub.cooppetsjourney.top';
-            addr.append(el('span', 'jr-meet-url', 'hub.cooppetsjourney.top'));
+            const url = s.hubRecommendedUrl || 'https://hub.cooppetsjourney.top';
+            addr.append(el('span', 'jr-meet-url', url));
             const copy = el('button', 'jr-linkbtn', T.meetCopy);
             copy.type = 'button';
             copy.addEventListener('click', () => {
@@ -1395,6 +1403,30 @@ export default {
               });
             }, { signal: ctx.signal });
             addr.append(copy);
+            const fill = el('button', 'jr-btn jr-btn-primary', T.meetFill);
+            fill.type = 'button';
+            fill.style.marginLeft = '6px';
+            const fillNote = el('span', 'jr-hint', '');
+            fillNote.style.marginLeft = '6px';
+            fill.addEventListener('click', () => {
+              if (!ctx.setConfig) {
+                fillNote.textContent = T.meetFillErr;
+                return;
+              }
+              fill.disabled = true;
+              fill.textContent = T.meetFilling;
+              ctx.setConfig('journey.life', { 'worlds.journey.hubUrl': url })
+                .then(() => {
+                  fill.textContent = T.meetFilled;
+                  return load();
+                })
+                .catch((e) => {
+                  fill.disabled = false;
+                  fill.textContent = T.meetFill;
+                  fillNote.textContent = (e && e.message) || T.meetFillErr;
+                });
+            }, { signal: ctx.signal });
+            addr.append(fill, fillNote);
             meetBox.append(addr);
           }
 

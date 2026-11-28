@@ -1400,6 +1400,8 @@ export const webUiMethods: Record<string, any> = {
        * `depart` 早已为手动跳过 7–21 点的窗口和加载宽限，没道理单独在休息期这儿卡住。
        * 现在点了就走，事件里说清这是提前收假（见 `panelInvoke` 的 depart 分支）。
        */
+      hubConfigured: Boolean(normalizeHubUrl(String(this.cfg.hubUrl ?? '').trim())?.base),
+      hubRecommendedUrl: 'https://hub.cooppetsjourney.top',
       canDepart: this.st.phase === 'home',
       restUntil: this.st.phase === 'home' && this.stillResting(now) ? this.restDayLabel() : null,
       wishes: this.st.wishes.map((id) => this.cityName(id)),

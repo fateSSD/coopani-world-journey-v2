@@ -448,16 +448,33 @@ test('游轮/专列未开记账（purse=null）不再 0% 锁死，双港口选�
   }
   assert.ok(shipPicked >= 120, `正常预算上海↔青岛双港口选船频次应显著提升（实测 ${shipPicked}/1000）`);
 
-  // 4) 长途船票分段定价（300km 内 0.7/km，超出部分 0.35/km）、wishes 广播与港口提示
+  // 4) 长途船票分段定价（300km 内 0.56/km，超出部分 0.28/km）、wishes 广播与港口提示
+  const { writeFileSync: writeFile } = await import('node:fs');
   const dir = mkdtempSync(join(tmpdir(), 'journey-ship-tier-'));
   try {
     const st = { ...initialState('shanghai'), wishes: ['zhoushan'] };
     new StateStore(dir).save(st);
     const w = new JourneyWorld({ cfg: { ...JOURNEY_DEFAULTS(), enabled: true, homeId: 'shanghai' }, dataDir: dir });
     w.st = st;
-    assert.equal(w.fareOf('ship', 200, false, 1), 140);
-    assert.equal(w.fareOf('ship', 1000, false, 1), 455);
+    assert.equal(w.fareOf('ship', 200, false, 1), 112);
+    assert.equal(w.fareOf('ship', 1000, false, 1), 364);
     assert.match(w.nowSummary(), /港口码头.*游轮或河轮/);
+
+    // 5) 城镇 travelFareMult 折扣生效 & 超 24h 过期回退 1
+    writeFile(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: new Date(w.realNow().getTime() - 10 * 60_000).toISOString(),
+      townBuffs: { travelFareMult: 0.85 },
+    }), 'utf8');
+    assert.equal(w.fareOf('ship', 200, false, 1), 95.2);
+
+    writeFile(join(dir, 'life-public.json'), JSON.stringify({
+      schema: 2,
+      updatedAt: new Date(w.realNow().getTime() - 25 * 3_600_000).toISOString(),
+      townBuffs: { travelFareMult: 0.85 },
+    }), 'utf8');
+    assert.equal(w.fareOf('ship', 200, false, 1), 112);
+
     const pub = publicSnapshot({
       worldNow: Date.now(), speed: 1, phase: 'home', city: sh, leg: null,
       money: { enabled: true, budget: 2000, spent: 0, earned: 0, unsettledRideFare: 0 },
